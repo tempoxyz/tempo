@@ -57,25 +57,40 @@ pub struct Overlay {
     code: HashSet<B256>,
 }
 
-/// The canonical state before an input's block, plus applied deltas.
-#[derive(Clone, Debug)]
-pub struct View {
+/// The canonical state before an input's block, plus applied deltas. Executors read it by
+/// reference, so several can execute on one view without copying it.
+#[derive(Debug)]
+pub struct View<'p> {
     pub input: Arc<Input>,
+    parent: Option<&'p Self>,
     pub overlay: Overlay,
 }
 
-impl View {
+impl View<'_> {
     /// The state before the input's block.
     pub fn new(input: Arc<Input>) -> Self {
         Self {
             input,
+            parent: None,
             overlay: Overlay::default(),
         }
     }
 
-    fn account(&self, address: &Address) -> Result<Option<AccountInfo>, Missing> {
+    /// An empty layer over this view: deltas applied to it leave this view unchanged.
+    pub fn child(&self) -> View<'_> {
+        View {
+            input: self.input.clone(),
+            parent: Some(self),
+            overlay: Overlay::default(),
+        }
+    }
+
+    pub(crate) fn account(&self, address: &Address) -> Result<Option<AccountInfo>, Missing> {
         if let Some(account) = self.overlay.accounts.get(address) {
             return Ok(account.clone());
+        }
+        if let Some(parent) = self.parent {
+            return parent.account(address);
         }
         Ok(self
             .input
@@ -86,18 +101,30 @@ impl View {
             .map(|info| info.account().into()))
     }
 
-    fn storage(&self, address: &Address, key: &U256) -> Result<U256, Missing> {
+    pub(crate) fn storage(&self, address: &Address, key: &U256) -> Result<U256, Missing> {
         if let Some(value) = self.overlay.storage.get(&(*address, *key)) {
             return Ok(*value);
         }
         if self.overlay.wiped.contains(address) {
             return Ok(U256::ZERO);
         }
+        if let Some(parent) = self.parent {
+            return parent.storage(address, key);
+        }
         self.input
             .storage
             .get(&(address.into_array(), key.to_be_bytes()))
             .map(|value| U256::from_be_bytes(*value))
             .ok_or_else(|| Missing(format!("uncaptured storage {address} {key}")))
+    }
+
+    fn has_code(&self, code_hash: &B256) -> bool {
+        self.overlay.code.contains(code_hash)
+            || self
+                .parent
+                .map_or(self.input.code.contains(&code_hash.0), |parent| {
+                    parent.has_code(code_hash)
+                })
     }
 
     fn wipe(&mut self, address: Address) {
@@ -156,7 +183,7 @@ impl View {
     }
 }
 
-impl Database for View {
+impl Database for &View<'_> {
     type Error = Missing;
 
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Missing> {
@@ -167,7 +194,7 @@ impl Database for View {
         if *code_hash == KECCAK256_EMPTY {
             return Ok(Bytecode::default());
         }
-        if !self.input.code.contains(&code_hash.0) && !self.overlay.code.contains(code_hash) {
+        if !self.has_code(code_hash) {
             return Err(Missing(format!("uncaptured code {code_hash}")));
         }
         analyzed(*code_hash)
@@ -280,4 +307,127 @@ pub fn change_from_update(
             .then(|| code(current.code_hash).map(|bytes| bytes.to_vec()))
             .transpose()?,
     })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::types::{Block, Info};
+    use reth_primitives_traits::Account;
+
+    /// An input whose pre-state holds `accounts` (`None` for one known not to exist) and `storage`.
+    pub(crate) fn input(
+        accounts: &[(Address, Option<Account>)],
+        storage: &[(Address, U256, U256)],
+    ) -> Arc<Input> {
+        Arc::new(Input {
+            number: 1,
+            parent: [0; 32],
+            block: Block {
+                hash: [0; 32],
+                rlp: Vec::new(),
+                senders: Vec::new(),
+                changed_accounts: Vec::new(),
+                changed_storage: Vec::new(),
+            },
+            accounts: accounts
+                .iter()
+                .map(|(address, account)| {
+                    (address.into_array(), account.as_ref().map(Info::capture))
+                })
+                .collect(),
+            storage: storage
+                .iter()
+                .map(|(address, key, value)| {
+                    (
+                        (address.into_array(), key.to_be_bytes()),
+                        value.to_be_bytes(),
+                    )
+                })
+                .collect(),
+            code: BTreeSet::new(),
+            hashes: BTreeMap::new(),
+            phases: None,
+        })
+    }
+
+    pub(crate) fn commit(address: Address, change: Change) -> Delta {
+        Delta(vec![[(address.into_array(), change)].into()])
+    }
+
+    /// An account change that keeps its code.
+    pub(crate) fn info(nonce: Option<u64>, balance: Option<u64>) -> InfoChange {
+        InfoChange {
+            nonce,
+            balance: balance.map(|balance| U256::from(balance).to_be_bytes()),
+            code: CodeChange::Keep,
+        }
+    }
+
+    pub(crate) fn change(info: InfoChange, storage: &[(U256, U256)]) -> Change {
+        Change {
+            info: Some(info),
+            created: false,
+            storage: storage
+                .iter()
+                .map(|(key, value)| (key.to_be_bytes(), value.to_be_bytes()))
+                .collect(),
+            code: None,
+        }
+    }
+
+    #[test]
+    fn a_child_layers_deltas_over_its_parent() {
+        let address = Address::repeat_byte(1);
+        let account = Account {
+            nonce: 1,
+            balance: U256::from(10),
+            ..Default::default()
+        };
+        let (slot, other_slot) = (U256::ZERO, U256::ONE);
+        let parent = View::new(input(
+            &[(address, Some(account))],
+            &[(address, slot, U256::from(5))],
+        ));
+        let mut child = parent.child();
+        let balance = InfoChange {
+            code: CodeChange::Hash(Some([2; 32])),
+            ..info(None, Some(7))
+        };
+        child
+            .apply(&commit(address, change(balance, &[(slot, U256::from(9))])))
+            .unwrap();
+        // A canonical change keeps the fields it does not set, such as a candidate's code.
+        let nonce = change(info(Some(2), None), &[]);
+        child.apply(&commit(address, nonce)).unwrap();
+
+        let changed = child.account(&address).unwrap().unwrap();
+        assert_eq!(
+            (changed.nonce, changed.balance, changed.code_hash),
+            (2, U256::from(7), B256::repeat_byte(2))
+        );
+        assert_eq!(child.storage(&address, &slot).unwrap(), U256::from(9));
+        let unchanged = parent.account(&address).unwrap().unwrap();
+        assert_eq!((unchanged.nonce, unchanged.balance), (1, U256::from(10)));
+        assert_eq!(parent.storage(&address, &slot).unwrap(), U256::from(5));
+        // Reads the child has no value for go through to what the parent captured.
+        assert_eq!(
+            child
+                .storage(&address, &other_slot)
+                .unwrap_err()
+                .to_string(),
+            format!("uncaptured storage {address} {other_slot}")
+        );
+
+        // Creating the account in a child hides the parent's storage from the child only.
+        let mut created = parent.child();
+        let recreate = Change {
+            created: true,
+            ..change(info(Some(1), None), &[])
+        };
+        created.apply(&commit(address, recreate)).unwrap();
+        assert_eq!(created.storage(&address, &slot).unwrap(), U256::ZERO);
+        assert_eq!(created.storage(&address, &other_slot).unwrap(), U256::ZERO);
+        assert_eq!(parent.storage(&address, &slot).unwrap(), U256::from(5));
+    }
 }

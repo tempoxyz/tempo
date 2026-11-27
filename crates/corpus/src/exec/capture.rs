@@ -180,7 +180,7 @@ where
     let replayed = execute_block(
         config,
         consensus,
-        View::new(captured.input.clone()),
+        &View::new(captured.input.clone()),
         block,
         first_tx,
         Some((&cases, phases)),
@@ -193,13 +193,14 @@ where
     let mut view = View::new(captured.input.clone());
     view.apply(&phases.pre)?;
     for (index, expected) in transactions.iter().enumerate() {
-        let actual = run_standalone(
+        let (actual, _) = run_standalone(
             config,
             block,
             &view,
             expected.ordinal,
             index,
             &expected.before,
+            false,
         )?;
         eyre::ensure!(
             actual == *expected,

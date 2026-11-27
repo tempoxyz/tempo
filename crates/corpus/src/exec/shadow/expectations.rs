@@ -3,15 +3,13 @@
 //! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
 //! accepts it.
 
-use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{
-    Boundary, Evidence, ObservedTx,
+use super::{
+    Arms, Boundary, Evidence, ObservedTx, TxEvidence,
+    analysis::Field,
     fees::{fee_hook_slot_change, post_tx_fee},
 };
-use alloy::{
-    consensus::Transaction as _,
-    primitives::{Address, B256, Bytes, U256, keccak256},
-};
+use alloy_consensus::Transaction as _;
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
@@ -33,8 +31,7 @@ pub(crate) struct Expectation {
 #[derive(Clone, Copy)]
 pub(crate) struct Context<'a> {
     pub boundary: Boundary,
-    pub real: &'a Evidence,
-    pub shadow: &'a Evidence,
+    pub evidence: &'a Evidence,
     pub base_fee: Option<u64>,
     pub tx: Option<&'a TempoTxEnvelope>,
 }
@@ -45,10 +42,10 @@ impl Context<'_> {
         let Boundary::Transaction(index) = self.boundary else {
             return None;
         };
-        Some((
-            self.real.txs.get(index)?.as_ref().ok()?,
-            self.shadow.txs.get(index)?.as_ref().ok()?,
-        ))
+        let TxEvidence::Differs(arms) = self.evidence.txs.get(index)? else {
+            return None;
+        };
+        Some((&arms.real, &arms.shadow))
     }
 
     /// Returns normalized log hashes only when both fee transfers match their gas charges.
@@ -58,8 +55,8 @@ impl Context<'_> {
         let (real_fee, shadow_fee) = (post_tx_fee(&real.actions)?, post_tx_fee(&shadow.actions)?);
         let price = self.tx?.effective_gas_price(self.base_fee);
         (real_fee.log == shadow_fee.log
-            && real_fee.charged == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
-            && shadow_fee.charged == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
+            && real_fee.charged == calc_gas_balance_spending(real.charged_gas, price)
+            && shadow_fee.charged == calc_gas_balance_spending(shadow.charged_gas, price))
         .then_some((real.fee_normalized?, shadow.fee_normalized?))
     }
 }
@@ -106,8 +103,8 @@ const FEE_STATE: Expectation = Expectation {
         if real_before != shadow_before {
             return None;
         }
-        let real_net = AccountDelta(real.state.transitions.get(&address)).storage(slot)?;
-        let shadow_net = AccountDelta(shadow.state.transitions.get(&address)).storage(slot)?;
+        let real_net = real.changes.account(address).storage(slot)?;
+        let shadow_net = shadow.changes.account(address).storage(slot)?;
         (real_net.0 == shadow_net.0 && real_net.1 == real_after && shadow_net.1 == shadow_after)
             .then_some(())
     },
@@ -174,21 +171,21 @@ fn shadow_runtime_upgrade(
     }
     let address = field.address?;
     let (old_runtimes, new_runtime) = runtimes(address)?;
-    let real = ctx.real.pre_block.as_ref()?;
-    let shadow = ctx.shadow.pre_block.as_ref()?;
+    let Arms { real, shadow } = ctx.evidence.pre_block.as_ref()?;
 
     // The canonical arm may activate an earlier expected runtime on this block, while the shadow
     // arm advances directly to the candidate runtime.
-    if AccountDelta(real.transitions.get(&address))
+    if real
+        .account(address)
         .info(|info| info.code_hash)
         .is_some_and(|(_, after)| !old_runtimes.iter().any(|old| after == keccak256(old)))
     {
         return None;
     }
-    let transition = shadow.transitions.get(&address)?;
-    let after = transition.info.as_ref()?.code_hash;
+    let change = shadow.account(address).0?;
+    let after = change.after.as_ref()?.code_hash;
 
-    (transition.previous_info.as_ref().is_none_or(|info| {
+    (change.before.as_ref().is_none_or(|info| {
         info.is_empty_code_hash()
             || old_runtimes
                 .iter()
@@ -222,139 +219,139 @@ pub(crate) fn between(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
+        super::{
+            Block, Failure, RecoveredBlock, ReplayOutcome,
+            analysis::{AccountChange, MAX_SAMPLES, Report, StepChanges},
+            tests::missing_account,
+        },
         *,
     };
-    use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
-    use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
-    use evm2::evm::{AccountInfo, TxResultExt};
-    use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
+    use alloy_primitives::{Address, KECCAK256_EMPTY, Signature};
+    use evm2::evm::AccountInfo;
     use tempo_precompiles::storage::FeeHook;
     use tempo_primitives::{TempoTransaction, transaction::Call};
+
+    fn changes(address: Address, change: AccountChange) -> StepChanges {
+        StepChanges([(address, change)].into())
+    }
+
+    fn code_change(before: Option<AccountInfo>, code_hash: B256) -> AccountChange {
+        AccountChange {
+            before,
+            after: Some(AccountInfo {
+                code_hash,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn accepts_pre_block(
+        rule: &Expectation,
+        field: &Field,
+        real: StepChanges,
+        shadow: StepChanges,
+    ) -> bool {
+        let evidence = Evidence {
+            pre_block: Some(Arms { real, shadow }),
+            ..Default::default()
+        };
+        let ctx = Context {
+            boundary: Boundary::PreBlock,
+            evidence: &evidence,
+            base_fee: None,
+            tx: None,
+        };
+        (rule.check)(&ctx, field).is_some()
+    }
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
         let address = ZONE_PORTAL_IMPL_ADDRESS;
-        let transition = |info: Option<AccountInfo>, code_hash| {
-            let mut state = TransitionState::default();
-            state.transitions.insert(
-                address,
-                TransitionAccount {
-                    previous_info: info,
-                    info: Some(AccountInfo {
-                        code_hash,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            );
-            Evidence {
-                pre_block: Some(state),
-                ..Default::default()
-            }
-        };
-        let unchanged = transition(Some(AccountInfo::default()), KECCAK256_EMPTY);
-        let ctx = |real, shadow| Context {
-            boundary: Boundary::PreBlock,
-            real,
-            shadow,
-            base_fee: None,
-            tx: None,
-        };
+        let step = |before, code_hash| changes(address, code_change(before, code_hash));
+        let unchanged = || step(Some(AccountInfo::default()), KECCAK256_EMPTY);
+        let upgraded = |runtime: &Bytes| step(None, keccak256(runtime));
         let code = Field {
             name: "code",
             address: Some(address),
             slot: None,
             fee_associated: false,
         };
-        let upgraded = transition(None, keccak256(&T13_ZONE_PORTAL_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
-        let upgraded = transition(None, keccak256(&T14_ZONE_PORTAL_RUNTIME));
-        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
-        let t13 = transition(None, keccak256(&T13_ZONE_PORTAL_RUNTIME));
-        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&t13, &upgraded), &code).is_some());
-        let unexpected_real = transition(None, keccak256("unexpected"));
-        assert!(
-            (T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&unexpected_real, &upgraded), &code).is_none()
-        );
-        let unexpected = transition(None, keccak256(&ZONE_PORTAL_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unchanged, &unexpected), &code).is_none());
+        let t13 = &T13_ZONE_RUNTIME_UPGRADE;
+        let t14 = &T14_ZONE_PORTAL_UPGRADE;
+        assert!(accepts_pre_block(
+            t13,
+            &code,
+            unchanged(),
+            upgraded(&T13_ZONE_PORTAL_RUNTIME)
+        ));
+        assert!(accepts_pre_block(
+            t14,
+            &code,
+            unchanged(),
+            upgraded(&T14_ZONE_PORTAL_RUNTIME)
+        ));
+        assert!(accepts_pre_block(
+            t14,
+            &code,
+            upgraded(&T13_ZONE_PORTAL_RUNTIME),
+            upgraded(&T14_ZONE_PORTAL_RUNTIME)
+        ));
+        assert!(!accepts_pre_block(
+            t14,
+            &code,
+            step(None, keccak256("unexpected")),
+            upgraded(&T14_ZONE_PORTAL_RUNTIME)
+        ));
+        assert!(!accepts_pre_block(
+            t13,
+            &code,
+            unchanged(),
+            upgraded(&ZONE_PORTAL_RUNTIME)
+        ));
+
         let verifier = Field {
             address: Some(ZONE_VERIFIER_ADDRESS),
             ..code
         };
-        let verifier_transition = |code_hash| {
-            let mut state = TransitionState::default();
-            state.transitions.insert(
+        let upgraded = || {
+            changes(
                 ZONE_VERIFIER_ADDRESS,
-                TransitionAccount {
-                    info: Some(AccountInfo {
-                        code_hash,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            );
-            Evidence {
-                pre_block: Some(state),
-                ..Default::default()
-            }
+                code_change(None, keccak256(&T13_ZONE_VERIFIER_RUNTIME)),
+            )
         };
-        let real = Evidence {
-            pre_block: Some(TransitionState::default()),
-            ..Default::default()
-        };
-        let upgraded = verifier_transition(keccak256(&T13_ZONE_VERIFIER_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&real, &upgraded), &verifier).is_some());
+        let real = StepChanges::default;
+        assert!(accepts_pre_block(t13, &verifier, real(), upgraded()));
         // T14 and T15 leave the verifier on its T13 runtime.
-        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&real, &upgraded), &verifier).is_none());
-        assert!((T15_ZONE_RUNTIME_UPGRADE.check)(&ctx(&real, &upgraded), &verifier).is_none());
+        assert!(!accepts_pre_block(t14, &verifier, real(), upgraded()));
+        assert!(!accepts_pre_block(
+            &T15_ZONE_RUNTIME_UPGRADE,
+            &verifier,
+            real(),
+            upgraded()
+        ));
     }
 
     #[test]
     fn accepts_t15_portal_upgrade_from_any_earlier_runtime() {
         let address = ZONE_PORTAL_IMPL_ADDRESS;
-        let transition = |before: &Bytes, after: &Bytes| {
-            let mut state = TransitionState::default();
-            state.transitions.insert(
-                address,
-                TransitionAccount {
-                    previous_info: Some(AccountInfo {
-                        code_hash: keccak256(before),
-                        ..Default::default()
-                    }),
-                    info: Some(AccountInfo {
-                        code_hash: keccak256(after),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            );
-            Evidence {
-                pre_block: Some(state),
-                ..Default::default()
-            }
-        };
-        let real = Evidence {
-            pre_block: Some(TransitionState::default()),
-            ..Default::default()
-        };
         let code = Field {
             name: "code",
             address: Some(address),
             slot: None,
             fee_associated: false,
         };
-        let check = |shadow: &Evidence| {
-            (T15_ZONE_RUNTIME_UPGRADE.check)(
-                &Context {
-                    boundary: Boundary::PreBlock,
-                    real: &real,
-                    shadow,
-                    base_fee: None,
-                    tx: None,
-                },
+        let accepts = |before: &Bytes, after: &Bytes| {
+            let before = AccountInfo {
+                code_hash: keccak256(before),
+                ..Default::default()
+            };
+            let shadow = changes(address, code_change(Some(before), keccak256(after)));
+            accepts_pre_block(
+                &T15_ZONE_RUNTIME_UPGRADE,
                 &code,
+                StepChanges::default(),
+                shadow,
             )
         };
         for before in [
@@ -362,9 +359,9 @@ mod tests {
             T13_ZONE_PORTAL_RUNTIME,
             T14_ZONE_PORTAL_RUNTIME,
         ] {
-            assert!(check(&transition(&before, &T15_ZONE_PORTAL_RUNTIME)).is_some());
+            assert!(accepts(&before, &T15_ZONE_PORTAL_RUNTIME));
         }
-        assert!(check(&transition(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME)).is_none());
+        assert!(!accepts(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME));
     }
 
     #[test]
@@ -403,53 +400,50 @@ mod tests {
         );
     }
 
-    fn block(txs: Vec<TempoTxEnvelope>) -> RecoveredBlock<Block> {
+    /// A block of `txs` empty transactions at a zero base fee.
+    fn block(txs: usize) -> RecoveredBlock<Block> {
         let mut block = Block::default();
         block.header.inner.base_fee_per_gas = Some(0);
-        block.body.transactions = txs;
-        let senders = vec![Address::ZERO; block.body.transactions.len()];
+        block.body.transactions = vec![signed_tx(vec![]); txs];
+        let senders = vec![Address::ZERO; txs];
         RecoveredBlock::new_unhashed(block, senders)
     }
 
-    fn evidence(gas: &[u64]) -> Evidence {
+    /// Complete evidence of `txs` transactions the candidate reproduced exactly.
+    fn evidence(txs: usize) -> Evidence {
         Evidence {
-            pre_block: Some(TransitionState::default()),
-            post_block: Some(TransitionState::default()),
-            txs: gas
-                .iter()
-                .map(|&gas_used| {
-                    Ok(ObservedTx {
-                        outcome: TxOutcome::Success,
-                        gas: TxResultExt {
-                            total_gas_spent: gas_used,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                })
-                .collect(),
+            pre_block: Some(Arms::default()),
+            txs: (0..txs).map(|_| TxEvidence::Same).collect(),
+            post_block: Some(Arms::default()),
             failure: None,
         }
     }
 
-    fn tx_mut(evidence: &mut Evidence, index: usize) -> &mut ObservedTx {
-        evidence.txs[index].as_mut().unwrap()
+    /// Marks transaction `index` as differing, charged `gas` in each arm, and returns both arms.
+    fn differs(evidence: &mut Evidence, index: usize, gas: [u64; 2]) -> &mut Arms<ObservedTx> {
+        let observed = |charged_gas| ObservedTx {
+            charged_gas,
+            ..Default::default()
+        };
+        evidence.txs[index] = TxEvidence::Differs(Box::new(Arms {
+            real: observed(gas[0]),
+            shadow: observed(gas[1]),
+        }));
+        let TxEvidence::Differs(arms) = &mut evidence.txs[index] else {
+            unreachable!("set above");
+        };
+        arms
     }
 
     fn write_slot(tx: &mut ObservedTx, value: u64) {
         let address = Address::ZERO;
         let slot = U256::ZERO;
-        tx.state.transitions.insert(
+        tx.changes = changes(
             address,
-            TransitionAccount {
-                info: Some(AccountInfo::default()),
-                previous_info: Some(AccountInfo::default()),
-                storage: [(
-                    slot,
-                    StorageSlot::new_changed(U256::from(1_000), U256::from(value)),
-                )]
-                .into_iter()
-                .collect(),
+            AccountChange {
+                before: Some(AccountInfo::default()),
+                after: Some(AccountInfo::default()),
+                storage: [(slot, (U256::from(1_000), U256::from(value)))].into(),
                 ..Default::default()
             },
         );
@@ -466,24 +460,25 @@ mod tests {
             id: "must-not-run",
             check: |_, _| panic!("equal values"),
         };
-        let real = evidence(&[21_000, 21_000]);
-        let report = Report::analyze(&real, &real, &[&rule], &block(vec![]));
-        assert_eq!(report.outcome(&real), ReplayOutcome::Match);
+        let mut evidence = evidence(2);
+        differs(&mut evidence, 1, [21_000, 21_000]);
+        let report = Report::analyze(&evidence, &[&rule], &block(2));
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Match);
         assert_eq!(report.boundaries_evaluated, 4);
         assert_eq!(report.boundaries_not_evaluated, 0);
     }
 
     #[test]
     fn gas_only_difference_does_not_hide_unverified_fee_state() {
-        let real = evidence(&[21_000, 21_000]);
-        let mut shadow = evidence(&[21_200, 21_000]);
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
-        assert_eq!(report.outcome(&shadow), ReplayOutcome::Match);
+        let mut evidence = evidence(2);
+        differs(&mut evidence, 0, [21_000, 21_200]);
+        let report = Report::analyze(&evidence, &[], &block(2));
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Match);
 
-        write_slot(tx_mut(&mut shadow, 0), 800);
-        let report = Report::analyze(&real, &shadow, &[&FEE_STATE], &block(vec![]));
+        write_slot(&mut differs(&mut evidence, 0, [21_000, 21_200]).shadow, 800);
+        let report = Report::analyze(&evidence, &[&FEE_STATE], &block(2));
         assert_eq!(report.unexplained, 1);
-        assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Findings);
         let field = report.samples[0].1.field;
         assert_eq!(field.name, "storage");
         assert_eq!(field.address, Some(Address::ZERO));
@@ -524,28 +519,33 @@ mod tests {
         let original = B256::repeat_byte(1);
         let changed = B256::repeat_byte(2);
         let normalized = B256::repeat_byte(3);
-        let mut real = evidence(&[1_000]);
-        let mut shadow = evidence(&[1_200]);
+        let mut evidence = evidence(1);
+        let arms = differs(&mut evidence, 0, [1_000, 1_200]);
         for (tx, amount, hash) in [
-            (tx_mut(&mut real, 0), 1_000, original),
-            (tx_mut(&mut shadow, 0), 1_200, changed),
+            (&mut arms.real, 1_000, original),
+            (&mut arms.shadow, 1_200, changed),
         ] {
             tx.receipt_logs_hash = hash;
             tx.actions = post_fee(U256::from(amount), 0);
             tx.fee_normalized = Some(normalized);
         }
-        let block = block(vec![signed_tx(vec![])]);
-        let report = |shadow: &Evidence| Report::analyze(&real, shadow, &[], &block);
-        assert_eq!(report(&shadow).outcome(&shadow), ReplayOutcome::Match);
+        let block = block(1);
+        let report = |evidence: &Evidence| Report::analyze(evidence, &[], &block);
+        assert_eq!(report(&evidence).outcome(&evidence), ReplayOutcome::Match);
 
-        let mut wrong = shadow;
-        tx_mut(&mut wrong, 0).fee_normalized = Some(B256::repeat_byte(4));
-        assert_eq!(report(&wrong).unexplained, 1);
-        tx_mut(&mut wrong, 0).fee_normalized = Some(normalized);
-        tx_mut(&mut wrong, 0).actions = post_fee(U256::ZERO, 0);
-        assert_eq!(report(&wrong).unexplained, 1);
-        tx_mut(&mut wrong, 0).actions = post_fee(U256::from(1_200), 1);
-        assert_eq!(report(&wrong).unexplained, 1);
+        fn shadow(evidence: &mut Evidence) -> &mut ObservedTx {
+            match &mut evidence.txs[0] {
+                TxEvidence::Differs(arms) => &mut arms.shadow,
+                _ => unreachable!("set above"),
+            }
+        }
+        shadow(&mut evidence).fee_normalized = Some(B256::repeat_byte(4));
+        assert_eq!(report(&evidence).unexplained, 1);
+        shadow(&mut evidence).fee_normalized = Some(normalized);
+        shadow(&mut evidence).actions = post_fee(U256::ZERO, 0);
+        assert_eq!(report(&evidence).unexplained, 1);
+        shadow(&mut evidence).actions = post_fee(U256::from(1_200), 1);
+        assert_eq!(report(&evidence).unexplained, 1);
     }
 
     #[test]
@@ -562,68 +562,79 @@ mod tests {
             id: "must-not-run",
             check: |_, _| panic!("already accepted"),
         };
-        let real = evidence(&[21_000]);
-        let mut shadow = evidence(&[21_200]);
-        tx_mut(&mut shadow, 0).output_hash = B256::repeat_byte(1);
+        let mut evidence = evidence(1);
+        differs(&mut evidence, 0, [21_000, 21_200])
+            .shadow
+            .output_hash = B256::repeat_byte(1);
         for rules in [
             [&first, &second, &unreachable],
             [&second, &first, &unreachable],
         ] {
-            let report = Report::analyze(&real, &shadow, &rules, &block(vec![]));
+            let report = Report::analyze(&evidence, &rules, &block(1));
             assert_eq!(report.unexplained, 0);
             assert_eq!(report.expected, [(rules[0].id, 1)].into());
         }
     }
 
     #[test]
-    fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
-        let real = evidence(&[21_000, 21_000]);
-        let mut shadow = evidence(&[21_000, 21_000]);
-        shadow.txs[0] = Err("rejected".into());
-        tx_mut(&mut shadow, 1).outcome = TxOutcome::Revert;
+    fn uncaptured_shadow_reads_are_inconclusive() {
+        let mut evidence = evidence(2);
+        evidence.txs[0] = TxEvidence::Failed(missing_account());
+        let report = Report::analyze(&evidence, &[], &block(2));
+        assert_eq!(report.unexplained, 0);
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Inconclusive);
 
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let evidence = Evidence {
+            failure: Some(Failure {
+                boundary: Boundary::PreBlock,
+                error: missing_account(),
+            }),
+            ..Default::default()
+        };
+        let report = Report::analyze(&evidence, &[], &block(2));
+        assert_eq!(report.boundaries_not_evaluated, 4);
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Inconclusive);
+    }
+
+    #[test]
+    fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
+        let mut evidence = evidence(2);
+        evidence.txs[0] = TxEvidence::Failed(eyre::eyre!("rejected"));
+        differs(&mut evidence, 1, [21_000, 21_000]).shadow.outcome = (1, "Revert".into());
+
+        let report = Report::analyze(&evidence, &[], &block(2));
 
         assert_eq!(report.unexplained, 2);
         assert_eq!(report.boundaries_evaluated, 4);
         assert_eq!(report.boundaries_not_evaluated, 0);
         assert_eq!(report.samples[0].1.field.name, "execution");
-        assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Findings);
     }
 
     #[test]
     fn created_code_is_compared_even_when_both_accounts_are_created() {
-        let mut real = evidence(&[21_000]);
-        let mut shadow = evidence(&[21_000]);
-        for (evidence, hash) in [
-            (&mut real, B256::repeat_byte(1)),
-            (&mut shadow, B256::repeat_byte(2)),
+        let mut evidence = evidence(1);
+        let arms = differs(&mut evidence, 0, [21_000, 21_000]);
+        for (tx, hash) in [
+            (&mut arms.real, B256::repeat_byte(1)),
+            (&mut arms.shadow, B256::repeat_byte(2)),
         ] {
-            tx_mut(evidence, 0).state.transitions.insert(
-                Address::ZERO,
-                TransitionAccount {
-                    info: Some(AccountInfo {
-                        code_hash: hash,
-                        ..Default::default()
-                    }),
-                    previous_info: None,
-                    ..Default::default()
-                },
-            );
+            tx.changes = changes(Address::ZERO, code_change(None, hash));
         }
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = Report::analyze(&evidence, &[], &block(1));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "code");
     }
 
     #[test]
     fn sampling_does_not_truncate_counts() {
-        let real = evidence(&[21_000; 20]);
-        let mut shadow = evidence(&[21_000; 20]);
-        for tx in &mut shadow.txs {
-            tx.as_mut().unwrap().output_hash = B256::repeat_byte(1);
+        let mut evidence = evidence(20);
+        for index in 0..20 {
+            differs(&mut evidence, index, [21_000, 21_000])
+                .shadow
+                .output_hash = B256::repeat_byte(1);
         }
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = Report::analyze(&evidence, &[], &block(20));
         assert_eq!(report.unexplained, 20);
         assert_eq!(report.samples.len(), MAX_SAMPLES);
         assert_eq!(report.boundaries_evaluated, 22);
@@ -631,18 +642,17 @@ mod tests {
 
     #[test]
     fn storage_reset_is_compared_without_enumerated_slots() {
-        let real = evidence(&[21_000, 21_000]);
-        let mut shadow = evidence(&[21_000, 21_000]);
-        tx_mut(&mut shadow, 0).state.transitions.insert(
+        let mut evidence = evidence(2);
+        differs(&mut evidence, 0, [21_000, 21_000]).shadow.changes = changes(
             Address::ZERO,
-            TransitionAccount {
-                info: Some(AccountInfo::default()),
-                previous_info: Some(AccountInfo::default()),
-                storage_was_destroyed: true,
+            AccountChange {
+                before: Some(AccountInfo::default()),
+                after: Some(AccountInfo::default()),
+                storage_reset: true,
                 ..Default::default()
             },
         );
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = Report::analyze(&evidence, &[], &block(2));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
     }

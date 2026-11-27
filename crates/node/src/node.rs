@@ -50,7 +50,7 @@ use reth_transaction_pool::{
     validate::EthTransactionValidatorBuilder,
 };
 use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
-use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
+use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
@@ -73,7 +73,7 @@ use tempo_transaction_pool::{
 #[cfg(feature = "jit")]
 use reth_evm::BlockExecutorFactory as _;
 #[cfg(feature = "jit")]
-use tempo_chainspec::hardfork::TempoHardforks as _;
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks as _};
 #[cfg(feature = "jit")]
 use tempo_evm::{
     TempoEvmFactory,
@@ -154,15 +154,6 @@ pub struct TempoNodeArgs {
     /// between 1.0 and 1.7.
     #[arg(long = "builder.build-time-multiplier", default_value_t)]
     pub builder_build_time_multiplier: BuildTimeMultiplier,
-
-    /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
-    #[arg(
-        long = "shadow-replay",
-        visible_alias = "shadow-replay.hardfork",
-        value_name = "HARDFORK",
-        num_args = 0..=1
-    )]
-    pub shadow_replay: Option<Option<TempoHardfork>>,
 }
 
 impl Default for TempoNodeArgs {
@@ -179,7 +170,6 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: BuildTimeMultiplier::default(),
-            shadow_replay: None,
         }
     }
 }
