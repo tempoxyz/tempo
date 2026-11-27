@@ -519,6 +519,9 @@ mod tests {
             HashMapStorageProvider::new_with_spec(1, spec).with_amsterdam_eip8037_enabled(explicit);
         let enabled = explicit || spec.is_t17();
         assert_eq!(provider.amsterdam_eip8037_enabled(), enabled);
-        assert_eq!(provider.gas_params[GasId::SstoreSetState] > 0, enabled);
+        assert_eq!(
+            provider.gas_params[GasId::CodeDepositCost],
+            if enabled { 200 } else { 1_000 }
+        );
     }
 }
