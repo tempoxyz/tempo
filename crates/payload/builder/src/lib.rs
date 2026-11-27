@@ -117,6 +117,21 @@ impl PayloadTransactions {
             }
         }
     }
+
+    /// Notify the iterator of a transaction's state changes before it is committed in place.
+    ///
+    /// Noop for [`Self::Parallel`], as it doesn't use the [`StateAwareBestTransactions`] iterator.
+    #[inline]
+    fn on_state_changes(
+        &mut self,
+        state_changes: &tempo_transaction_pool::best::TxStateChanges<'_>,
+    ) {
+        match self {
+            Self::Sequential(txs) => txs.on_state_changes(state_changes),
+            Self::Prewarming(txs) => txs.on_state_changes(state_changes),
+            Self::Parallel(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +461,7 @@ where
         debug!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let use_regular_gas = executor.uses_regular_gas();
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -635,36 +651,56 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let mut result_closure = |result: &TempoTxResult| {
-                cumulative_gas_used += result.block_gas_used();
-                cumulative_state_gas_used += result.state_gas_used();
-                if !is_payment {
-                    non_payment_gas_used += result.block_gas_used();
-                }
-
-                // Score payload value by the validator-credited fee amount that the
-                // FeeManager precompile actually wrote during this transaction.
-                total_fees += result.validator_fee();
-
-                // Notify transactions iterator about the new state.
-                best_txs.on_new_result(result);
-            };
-
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
+                    |result: &TempoTxResult| {
+                        cumulative_gas_used += result.block_gas_used();
+                        cumulative_state_gas_used += result.state_gas_used();
+                        if !is_payment {
+                            non_payment_gas_used += result.block_gas_used();
+                        }
+
+                        // Score payload value by the validator-credited fee amount that the
+                        // FeeManager precompile actually wrote during this transaction.
+                        total_fees += result.validator_fee();
+
+                        // Notify transactions iterator about the new state.
+                        best_txs.on_new_result(result);
+                    },
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
+                // Commit in place: the executor validates the block section inside the commit
+                // condition and only calls this closure for a transaction it will commit, so the
+                // state is never detached into a `PendingState` and reattached.
                 executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
-                        result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
-                    })
+                    .execute_transaction_with_commit_condition(
+                        tx.transaction.executable(),
+                        |result, state_changes| {
+                            let block_gas_used = if use_regular_gas {
+                                result.execution_gas_spent()
+                            } else {
+                                result.tx_gas_used()
+                            };
+                            cumulative_gas_used += block_gas_used;
+                            cumulative_state_gas_used += result.state_gas_spent();
+                            if !is_payment {
+                                non_payment_gas_used += block_gas_used;
+                            }
+
+                            // Score payload value by the validator-credited fee amount that the
+                            // FeeManager precompile actually wrote during this transaction.
+                            total_fees += result.ext.validator_fee;
+
+                            // Notify transactions iterator about the new state.
+                            best_txs.on_state_changes(&state_changes);
+                            reth_evm::CommitChanges::Yes
+                        },
+                    )
+                    .map(|_| ())
             };
 
             if let Err(err) = execution_result {

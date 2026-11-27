@@ -332,6 +332,12 @@ pub struct TempoBlockExecutor<'a> {
 }
 
 impl<'a> TempoBlockExecutor<'a> {
+    /// Returns whether EIP-8037 (TIP-1016) regular gas accounting is active for this block.
+    #[inline]
+    pub fn uses_regular_gas(&self) -> bool {
+        self.evm().version().feature(evm2::EvmFeatures::EIP8037)
+    }
+
     pub(crate) fn new(
         evm: TempoEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,
