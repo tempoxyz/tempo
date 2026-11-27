@@ -135,11 +135,13 @@ pub struct TempoEvmExt {
     /// Per-EVM direct-mapped cache for frequent account mapping slots.
     #[doc(hidden)]
     pub sender_slot_cache: SenderSlotCache,
+    #[doc(hidden)]
+    pub allowance_slot_cache: AllowanceSlotCache,
     /// Per-transaction transient storage seeds for precompile context slots.
     #[doc(hidden)]
     pub tx_transient_seeds: TxTransientSeeds,
-    /// Whether TempoBlockExecutor::set_state_hook should batch and deduplicate
-    /// per-transaction state updates on a background worker thread.
+    /// Whether `TempoBlockExecutor::set_state_hook` should batch and deduplicate `StateUpdate`s
+    /// on a background worker thread (used by block validation; tests and corpus stay unbatched).
     #[doc(hidden)]
     pub batch_state_hook: bool,
 }
@@ -151,6 +153,7 @@ pub struct TempoEvmExt {
 pub struct TxTransientSeeds {
     active: u8,
     has_transaction_key: bool,
+    has_opened_channel: bool,
     pub(crate) has_storage_credit_refunds: bool,
     keychain_tx_origin: U256,
     channel_open_context_hash: U256,
@@ -168,6 +171,7 @@ impl TxTransientSeeds {
     pub(crate) fn clear(&mut self) {
         self.active = 0;
         self.has_transaction_key = false;
+        self.has_opened_channel = false;
         self.has_storage_credit_refunds = false;
     }
 
@@ -177,6 +181,7 @@ impl TxTransientSeeds {
         self.channel_open_context_hash = context_hash;
         self.active = Self::MASK_KEYCHAIN_ORIGIN | Self::MASK_CHANNEL_CONTEXT;
         self.has_transaction_key = false;
+        self.has_opened_channel = false;
         self.has_storage_credit_refunds = false;
     }
 
@@ -228,10 +233,12 @@ impl TxTransientSeeds {
             } else if key == tempo_precompiles::account_keychain::slots::TX_ORIGIN {
                 self.active &= !Self::MASK_KEYCHAIN_ORIGIN;
             }
-        } else if address == tempo_precompiles::TIP20_CHANNEL_RESERVE_ADDRESS
-            && key == tempo_precompiles::tip20_channel_reserve::slots::CHANNEL_OPEN_CONTEXT_HASH
-        {
-            self.active &= !Self::MASK_CHANNEL_CONTEXT;
+        } else if address == tempo_precompiles::TIP20_CHANNEL_RESERVE_ADDRESS {
+            if key == tempo_precompiles::tip20_channel_reserve::slots::CHANNEL_OPEN_CONTEXT_HASH {
+                self.active &= !Self::MASK_CHANNEL_CONTEXT;
+            } else {
+                self.has_opened_channel = true;
+            }
         } else if address == tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS {
             if key == tempo_precompiles::configurable_account::slots::TX_ORIGIN {
                 self.active &= !Self::MASK_CA_ORIGIN;
@@ -263,12 +270,69 @@ const SLOT_BALANCE: u8 = 1 << 1;
 const SLOT_RECEIVE_POLICY: u8 = 1 << 2;
 const SLOT_NONCE_OUTER: u8 = 1 << 3;
 
+const AUX_SLOT_CACHE_LEN: usize = 1024;
+const AUX_SLOT_CACHE_MASK: usize = AUX_SLOT_CACHE_LEN - 1;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AuxSlotEntry {
+    addr: Address,
+    valid: bool,
+    slot: U256,
+}
+
+const ALLOWANCE_SLOT_CACHE_LEN: usize = 256;
+const ALLOWANCE_SLOT_CACHE_MASK: usize = ALLOWANCE_SLOT_CACHE_LEN - 1;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AllowanceSlotEntry {
+    owner: Address,
+    spender: Address,
+    valid: bool,
+    slot: U256,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Default, Clone)]
+pub struct AllowanceSlotCache {
+    entries: Option<Box<[AllowanceSlotEntry]>>,
+}
+
+impl AllowanceSlotCache {
+    #[cold]
+    #[inline(never)]
+    fn alloc_entries() -> Box<[AllowanceSlotEntry]> {
+        vec![AllowanceSlotEntry::default(); ALLOWANCE_SLOT_CACHE_LEN].into_boxed_slice()
+    }
+
+    #[inline(never)]
+    pub(crate) fn allowance_slot(&mut self, owner: Address, spender: Address) -> U256 {
+        let ob = owner.0.0;
+        let sb = spender.0.0;
+        let h = u64::from_le_bytes([ob[0], ob[1], ob[2], ob[3], ob[16], ob[17], ob[18], ob[19]])
+            ^ u64::from_le_bytes([sb[0], sb[1], sb[2], sb[3], sb[16], sb[17], sb[18], sb[19]])
+                .rotate_left(17);
+        let idx = ((h.wrapping_mul(0x9e3779b97f4a7c15)) >> 56) as usize & ALLOWANCE_SLOT_CACHE_MASK;
+        let table = self.entries.get_or_insert_with(Self::alloc_entries);
+        let e = &mut table[idx];
+        if !e.valid || e.owner != owner || e.spender != spender {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.owner = owner;
+            e.spender = spender;
+            e.valid = true;
+            e.slot = spender
+                .mapping_slot(owner.mapping_slot(tempo_precompiles::tip20::slots::ALLOWANCES));
+        }
+        e.slot
+    }
+}
+
 /// Per-EVM direct-mapped cache for frequent account mapping slots.
 #[doc(hidden)]
 #[derive(Debug, Default, Clone)]
 pub struct SenderSlotCache {
     inline_entry: SenderSlotEntry,
     entries: Option<Box<[SenderSlotEntry]>>,
+    channel_credit_entries: Option<Box<[AuxSlotEntry]>>,
 }
 
 impl SenderSlotCache {
@@ -288,12 +352,23 @@ impl SenderSlotCache {
         e
     }
 
+    #[cold]
+    #[inline(never)]
+    fn alloc_aux_entries() -> Box<[AuxSlotEntry]> {
+        vec![AuxSlotEntry::default(); AUX_SLOT_CACHE_LEN].into_boxed_slice()
+    }
+
     #[inline]
-    fn idx(addr: Address) -> usize {
+    fn hash_addr(addr: Address) -> u64 {
         let b = addr.0.0;
         let h = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
             ^ u64::from_le_bytes([b[12], b[13], b[14], b[15], b[16], b[17], b[18], b[19]]);
-        ((h.wrapping_mul(0x9e3779b97f4a7c15)) >> 52) as usize & SENDER_SLOT_CACHE_MASK
+        h.wrapping_mul(0x9e3779b97f4a7c15)
+    }
+
+    #[inline]
+    fn idx(addr: Address) -> usize {
+        (Self::hash_addr(addr) >> 52) as usize & SENDER_SLOT_CACHE_MASK
     }
 
     #[inline]
@@ -355,6 +430,24 @@ impl SenderSlotCache {
             e.nonce_outer_slot = addr.mapping_slot(tempo_precompiles::nonce::slots::NONCES);
         }
         e.nonce_outer_slot
+    }
+
+    #[inline(never)]
+    pub(crate) fn channel_credit_slot(&mut self, payer: Address) -> U256 {
+        let idx = (Self::hash_addr(payer) >> 54) as usize & AUX_SLOT_CACHE_MASK;
+        let table = self
+            .channel_credit_entries
+            .get_or_insert_with(Self::alloc_aux_entries);
+        let e = &mut table[idx];
+        if !e.valid || e.addr != payer {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.addr = payer;
+            e.valid = true;
+            e.slot = payer.mapping_slot(
+                tempo_precompiles::tip20_channel_reserve::slots::CHANNEL_STORAGE_CREDITS,
+            );
+        }
+        e.slot
     }
 }
 
@@ -452,6 +545,7 @@ impl TempoEvmExt {
             has_two_hop_intermediate: false,
             fee_slot_cache: FeeSlotCache::default(),
             sender_slot_cache: SenderSlotCache::default(),
+            allowance_slot_cache: AllowanceSlotCache::default(),
             tx_transient_seeds: TxTransientSeeds::default(),
             batch_state_hook: false,
         }
@@ -499,8 +593,23 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
     }
 
     #[inline]
+    fn cached_allowance_slot(&mut self, owner: Address, spender: Address) -> U256 {
+        self.allowance_slot_cache.allowance_slot(owner, spender)
+    }
+
+    #[inline]
+    fn cached_channel_credit_slot(&mut self, payer: Address) -> U256 {
+        self.sender_slot_cache.channel_credit_slot(payer)
+    }
+
+    #[inline]
     fn maybe_has_transaction_key(&self) -> bool {
         self.tx_transient_seeds.has_transaction_key
+    }
+
+    #[inline]
+    fn maybe_has_opened_channel(&self) -> bool {
+        self.tx_transient_seeds.has_opened_channel
     }
 
     #[inline]

@@ -299,7 +299,19 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
     {
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
         // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
-        let input = evm.message_input(message).to_vec();
+        let mut stack_buf = [0u8; 256];
+        let raw_input = evm.message_input(message);
+        let input_len = raw_input.len();
+        let heap_input = if input_len <= stack_buf.len() {
+            stack_buf[..input_len].copy_from_slice(raw_input);
+            None
+        } else {
+            Some(raw_input.to_vec())
+        };
+        let input: &[u8] = match heap_input.as_deref() {
+            Some(v) => v,
+            None => &stack_buf[..input_len],
+        };
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone())
@@ -308,7 +320,7 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
                 depth: message.depth,
                 nested_calls: self.nested_calls.clone(),
             });
-        StorageCtx::enter(&mut storage, || precompile(&input))
+        StorageCtx::enter(&mut storage, || precompile(input))
     }
 }
 
@@ -370,18 +382,57 @@ where
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
         if message.call_target.is_tip20()
             && self.spec.is_t8()
-            && !is_static
-            && (input_len == 68 || input_len == 100)
+            && matches!(input_len, 4 | 36 | 68 | 100)
         {
             let mut stack_buf = [0u8; 100];
             stack_buf[..input_len].copy_from_slice(evm.message_input(message));
+            let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
+                .with_actions(self.actions.clone())
+                .with_non_creditable_slots(self.non_creditable_slots.clone());
+            if !is_static
+                && matches!(input_len, 68 | 100)
+                && let Some(res) = TIP20Token::try_execute_direct(
+                    &mut storage,
+                    message.call_target,
+                    &stack_buf[..input_len],
+                    message.caller,
+                    message.depth,
+                    &self.nested_calls,
+                )
+            {
+                return Some(res);
+            }
+            if matches!(input_len, 4 | 36 | 68)
+                && let Some(res) = TIP20Token::try_execute_view_direct(
+                    &mut storage,
+                    message.call_target,
+                    &stack_buf[..input_len],
+                )
+            {
+                return Some(res);
+            }
+            storage.set_frame(Frame {
+                address: message.call_target,
+                depth: message.depth,
+                nested_calls: self.nested_calls.clone(),
+            });
+            return Some(StorageCtx::enter(&mut storage, || {
+                self.call_tempo(message.call_target, &stack_buf[..input_len], message.caller)
+            }));
+        }
+        if message.call_target == TIP20_CHANNEL_RESERVE_ADDRESS
+            && self.spec.is_t12()
+            && !is_static
+            && input_len == 196
+        {
+            let mut stack_buf = [0u8; 196];
+            stack_buf.copy_from_slice(evm.message_input(message));
             let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, false)
                 .with_actions(self.actions.clone())
                 .with_non_creditable_slots(self.non_creditable_slots.clone());
-            if let Some(res) = TIP20Token::try_execute_direct(
+            if let Some(res) = TIP20ChannelReserve::try_execute_open_direct(
                 &mut storage,
-                message.call_target,
-                &stack_buf[..input_len],
+                &stack_buf,
                 message.caller,
                 message.depth,
                 &self.nested_calls,
@@ -394,7 +445,7 @@ where
                 nested_calls: self.nested_calls.clone(),
             });
             return Some(StorageCtx::enter(&mut storage, || {
-                self.call_tempo(message.call_target, &stack_buf[..input_len], message.caller)
+                self.call_tempo(message.call_target, &stack_buf, message.caller)
             }));
         }
         Some(self.execute_in_frame(evm, message, gas, |input| {

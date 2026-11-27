@@ -232,16 +232,15 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
-    // Fast path for primitive-signed AA transactions on Tempo L1 without key authorization or fee payer.
+    // Fast path for primitive-signed AA transactions on Tempo L1 without key authorization.
     if spec.is_t14()
         && host.ext().kind == TempoEvmKind::L1
         && let Some(aa) = envelope.as_aa()
         && matches!(aa.signature(), TempoSignature::Primitive(_))
         && aa.tx().key_authorization.is_none()
-        && aa.tx().fee_payer_signature.is_none()
     {
+        let caller = aa.signer();
         if !matches!(envelope.execution_context(), ExecutionContext::Simulation) {
-            let caller = aa.signer();
             let mut account = host.state_mut().account(&caller)?;
             account.warm();
             if let Some(info) = account.get()
@@ -257,7 +256,30 @@ pub(crate) fn validate_state(
             drop(account);
             host.state_mut().prewarm(&caller);
         }
-        return Ok((0, 0));
+        let mut extra_gas = 0u64;
+        if aa.tx().fee_payer_signature.is_some() {
+            let fee_payer = envelope
+                .fee_payer()
+                .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
+            let mut account = host.state_mut().account(&fee_payer)?;
+            let was_cold = account.warm();
+            if let Some(info) = account.get()
+                && !info.extension.is_empty()
+                && !account_config_commitment(info, spec)?.is_zero()
+            {
+                return Err(TempoInvalidTransaction::RootKeyRetired {
+                    account: fee_payer,
+                    role: RootKeyRole::FeePayer,
+                }
+                .into());
+            }
+            drop(account);
+            host.state_mut().prewarm(&fee_payer);
+            if fee_payer != caller {
+                extra_gas += account_access_gas(&host.version().gas_params, was_cold);
+            }
+        }
+        return Ok((extra_gas, 0));
     }
     let ConfigurableRoleCharges {
         mut extra_gas,

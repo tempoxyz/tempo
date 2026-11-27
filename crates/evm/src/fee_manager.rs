@@ -415,21 +415,26 @@ where
     let candidates = spec.fallback_fee_tokens();
     let mut richest_token = DEFAULT_FEE_TOKEN;
     let mut highest_balance = U256::ZERO;
+    let balance_slot = actions.is_enabled().then(|| {
+        tempo_precompiles::storage::StorageKey::mapping_slot(
+            &fee_payer,
+            tempo_precompiles::tip20::slots::BALANCES,
+        )
+    });
     // Replay depends on affordability, not the exact balance.
     for &token in candidates {
         let balance = actions
             .unrecorded(|| state.get_token_balance(token, fee_payer, spec, actions.clone()))?;
         let sufficient = balance >= max_fee;
-        actions.record(StorageAction::FeeTokenBalanceCheck(
-            token,
-            tempo_precompiles::storage::StorageKey::mapping_slot(
-                &fee_payer,
-                tempo_precompiles::tip20::slots::BALANCES,
-            ),
-            balance,
-            max_fee,
-            sufficient,
-        ));
+        if let Some(balance_slot) = balance_slot {
+            actions.record(StorageAction::FeeTokenBalanceCheck(
+                token,
+                balance_slot,
+                balance,
+                max_fee,
+                sufficient,
+            ));
+        }
         if sufficient {
             return Ok(ResolvedFeeToken::Fallback(token));
         }

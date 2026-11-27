@@ -32,6 +32,23 @@ use tempo_primitives::{TempoAddressExt, transaction::tt_signature::TempoSignatur
 /// 15 minute grace period between `requestClose` and `withdraw`.
 pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
 
+const TIP20_CHANNEL_RESERVE_RECEIVE_POLICY_SLOT: U256 = {
+    let mut buf = [0u8; 64];
+    let addr = TIP20_CHANNEL_RESERVE_ADDRESS.0.0;
+    let mut i = 0;
+    while i < 20 {
+        buf[12 + i] = addr[i];
+        i += 1;
+    }
+    let slot = crate::tip403_registry::slots::RECEIVE_POLICIES.to_be_bytes::<32>();
+    let mut j = 0;
+    while j < 32 {
+        buf[32 + j] = slot[j];
+        j += 1;
+    }
+    U256::from_be_bytes(Keccak256::new().update(&buf).finalize())
+};
+
 /// EIP-712 type hash for signed cumulative payment vouchers.
 const VOUCHER_TYPEHASH: B256 = B256::new(
     Keccak256::new()
@@ -99,6 +116,29 @@ impl PackedChannelState {
         }
     }
 
+    #[inline]
+    fn exists_in_word(word: U256) -> bool {
+        // `deposit` occupies bytes 12..24 (bits 96..192) of the packed LSB-first slot.
+        let limbs = word.as_limbs();
+        (limbs[1] >> 32) != 0 || limbs[2] != 0
+    }
+
+    #[inline]
+    fn to_word_direct(self) -> U256 {
+        // Packed LSB-first layout: settled (0..12), deposit (12..24), close_requested_at (24..28),
+        // uses_logical_receive_policy_sender (28), has_opening_commitment (29).
+        let settled_le = self.settled.to_le_bytes::<12>();
+        let deposit_le = self.deposit.to_le_bytes::<12>();
+        let close_le = self.close_requested_at.to_le_bytes();
+        let mut le = [0u8; 32];
+        le[0..12].copy_from_slice(&settled_le);
+        le[12..24].copy_from_slice(&deposit_le);
+        le[24..28].copy_from_slice(&close_le);
+        le[28] = u8::from(self.uses_logical_receive_policy_sender);
+        le[29] = u8::from(self.has_opening_commitment);
+        U256::from_le_bytes(le)
+    }
+
     /// Converts packed native storage to the public Solidity ABI shape.
     fn to_sol(self) -> ITIP20ChannelReserve::ChannelState {
         ITIP20ChannelReserve::ChannelState {
@@ -156,6 +196,373 @@ impl TIP20ChannelReserve {
             crate::TIP20_CHANNEL_RESERVE_ADDRESS,
         )
         .t_write(hash)
+    }
+
+    #[inline]
+    pub(crate) fn try_execute_open_direct<T>(
+        storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
+        calldata: &[u8],
+        msg_sender: Address,
+        frame_depth: u16,
+        nested_calls: &std::rc::Rc<std::cell::Cell<u16>>,
+    ) -> Option<evm2::precompiles::PrecompileResult>
+    where
+        T: evm2::EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+        T::EvmExt: crate::storage::evm::EvmStorageExt,
+    {
+        use crate::{
+            account_keychain::AccountKeychain,
+            storage::{
+                PrecompileStorageProvider as _, StorageCtx, StorageKey as _,
+                evm::{EvmStorageExt as _, Frame},
+            },
+            tip20::{TIP20_CHANNEL_RESERVE_BALANCE_SLOT, TIP20Error, TIP20Event, TIP20Token},
+            tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, TIP403Registry},
+        };
+        use alloy::sol_types::SolCall as _;
+
+        let spec = storage.spec();
+        if !spec.is_t12() || storage.is_static() || calldata.len() != 196 {
+            return None;
+        }
+        if calldata[..4] != ITIP20ChannelReserve::openCall::SELECTOR
+            || calldata[4..16] != [0u8; 12]
+            || calldata[36..48] != [0u8; 12]
+            || calldata[68..80] != [0u8; 12]
+            || calldata[100..120] != [0u8; 20]
+            || calldata[164..176] != [0u8; 12]
+        {
+            return None;
+        }
+
+        let payee = Address::from_slice(&calldata[16..36]);
+        let operator = Address::from_slice(&calldata[48..68]);
+        let token = Address::from_slice(&calldata[80..100]);
+        let deposit = U96::from_be_slice(&calldata[120..132]);
+        let salt = B256::from_slice(&calldata[132..164]);
+        let authorized_signer = Address::from_slice(&calldata[176..196]);
+
+        let is_t15 = spec.is_t15();
+        if payee.is_zero()
+            || is_tip20_prefix(payee)
+            || payee.is_virtual()
+            || (is_t15 && ZoneDepositAddress::is_reserved(&payee))
+            || !token.is_tip20()
+            || deposit.is_zero()
+        {
+            return None;
+        }
+
+        if crate::input_cost(spec, 196)
+            .and_then(|cost| storage.deduct_gas(cost))
+            .is_err()
+        {
+            return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+        }
+        if let Err(err) = storage.preserve_storage_credits_direct(TIP20_CHANNEL_RESERVE_ADDRESS) {
+            return Some(err.into_precompile_result());
+        }
+
+        let signer = if authorized_signer.is_zero() {
+            msg_sender
+        } else {
+            authorized_signer
+        };
+        if !is_t15
+            && let Err(err) =
+                StorageCtx::enter(storage, || Self::new().ensure_voucher_signer_active(signer))
+        {
+            return Some(err.into_precompile_result());
+        }
+
+        let expiring_nonce_hash = match storage.tload_direct(
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            slots::CHANNEL_OPEN_CONTEXT_HASH,
+        ) {
+            Ok(word) => B256::from(word),
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+        if expiring_nonce_hash.is_zero() {
+            return Some(
+                TempoPrecompileError::from(TIP20ChannelReserveError::expiring_nonce_hash_not_set())
+                    .into_precompile_result(),
+            );
+        }
+
+        let descriptor = ITIP20ChannelReserve::ChannelDescriptor {
+            payer: msg_sender,
+            payee,
+            operator,
+            token,
+            salt,
+            authorizedSigner: authorized_signer,
+            expiringNonceHash: expiring_nonce_hash,
+        };
+        let preimage = descriptor.id_preimage_bytes(storage.chain_id());
+        let channel_id = match storage.keccak256(&preimage) {
+            Ok(id) => id,
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+
+        let channel_state_slot = channel_id.mapping_slot(slots::CHANNEL_STATES);
+        let raw_state =
+            match storage.sload_direct(TIP20_CHANNEL_RESERVE_ADDRESS, channel_state_slot) {
+                Ok(w) => w,
+                Err(err) => return Some(err.into_precompile_result()),
+            };
+        if PackedChannelState::exists_in_word(raw_state) {
+            return Some(
+                TempoPrecompileError::from(TIP20ChannelReserveError::channel_already_exists())
+                    .into_precompile_result(),
+            );
+        }
+        let opened_slot = channel_id.mapping_slot(slots::OPENED_THIS_TX);
+        match storage.tload_direct(TIP20_CHANNEL_RESERVE_ADDRESS, opened_slot) {
+            Ok(w) if !w.is_zero() => {
+                return Some(
+                    TempoPrecompileError::from(TIP20ChannelReserveError::channel_already_exists())
+                        .into_precompile_result(),
+                );
+            }
+            Ok(_) => {}
+            Err(err) => return Some(err.into_precompile_result()),
+        }
+
+        let opening_commitment = if is_t15 {
+            match storage.config_commitment(signer) {
+                Ok(c) => c,
+                Err(err) => return Some(err.into_precompile_result()),
+            }
+        } else {
+            B256::ZERO
+        };
+        if !opening_commitment.is_zero() && salt != opening_commitment {
+            return Some(
+                TempoPrecompileError::from(TIP20ChannelReserveError::salt_not_signer_commitment(
+                    signer,
+                    opening_commitment,
+                ))
+                .into_precompile_result(),
+            );
+        }
+
+        let policy_id = match TIP20Token::transfer_policy_id_on_provider(storage, token) {
+            Ok(id) => id,
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+        if policy_id != ALLOW_ALL_POLICY_ID {
+            let res = StorageCtx::enter(storage, || -> Result<()> {
+                let registry = TIP403Registry::new();
+                for &(user, role) in &[
+                    (msg_sender, AuthRole::sender()),
+                    (payee, AuthRole::recipient()),
+                ] {
+                    if !registry.is_authorized_as(policy_id, user, role)? {
+                        return Err(TIP20Error::policy_forbids().into());
+                    }
+                }
+                Ok(())
+            });
+            if let Err(err) = res {
+                return Some(err.into_precompile_result());
+            }
+        }
+
+        let (_, payee_rp_slot) = storage
+            .evm_ext_mut()
+            .cached_balance_and_receive_policy_slots(payee);
+        let payee_rp_raw = match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, payee_rp_slot)
+        {
+            Ok(v) => v,
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+        if !payee_rp_raw.is_zero() {
+            let res = StorageCtx::enter(storage, || -> Result<()> {
+                if TIP403Registry::check_receive_policy_from_raw(
+                    token,
+                    msg_sender,
+                    payee,
+                    payee_rp_raw,
+                )?
+                .is_some()
+                {
+                    return Err(TIP20Error::policy_forbids().into());
+                }
+                Ok(())
+            });
+            if let Err(err) = res {
+                return Some(err.into_precompile_result());
+            }
+        }
+
+        let paused_word = match storage.sload_direct(token, crate::tip20::slots::PAUSED) {
+            Ok(v) => v,
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+        if !paused_word.is_zero() {
+            return Some(
+                TempoPrecompileError::from(TIP20Error::contract_paused()).into_precompile_result(),
+            );
+        }
+
+        let deposit_u256 = U256::from(deposit);
+        let tx_key_word = match storage.tload_direct(
+            crate::ACCOUNT_KEYCHAIN_ADDRESS,
+            crate::account_keychain::slots::TRANSACTION_KEY,
+        ) {
+            Ok(v) => v,
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+        if !tx_key_word.is_zero() {
+            let tx_key = Address::from_word(tx_key_word.into());
+            let res = StorageCtx::enter(storage, || {
+                AccountKeychain::authorize_transfer_with_key(
+                    tx_key,
+                    msg_sender,
+                    token,
+                    deposit_u256,
+                )
+            });
+            if let Err(err) = res {
+                return Some(err.into_precompile_result());
+            }
+        }
+
+        let reserve_rp_raw = match storage.sload_direct(
+            crate::TIP403_REGISTRY_ADDRESS,
+            TIP20_CHANNEL_RESERVE_RECEIVE_POLICY_SLOT,
+        ) {
+            Ok(v) => v,
+            Err(err) => return Some(err.into_precompile_result()),
+        };
+        if !reserve_rp_raw.is_zero() {
+            let res = StorageCtx::enter(storage, || -> Result<()> {
+                if TIP403Registry::check_receive_policy_from_raw(
+                    token,
+                    msg_sender,
+                    TIP20_CHANNEL_RESERVE_ADDRESS,
+                    reserve_rp_raw,
+                )?
+                .is_some()
+                {
+                    return Err(TIP20Error::policy_forbids().into());
+                }
+                Ok(())
+            });
+            if let Err(err) = res {
+                return Some(err.into_precompile_result());
+            }
+        }
+
+        let from_slot = storage
+            .evm_ext()
+            .resolved_fee_balance_slot(msg_sender)
+            .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(msg_sender));
+        if let Err(err) = storage.sdelta_pair(
+            token,
+            from_slot,
+            TIP20_CHANNEL_RESERVE_BALANCE_SLOT,
+            deposit_u256,
+        ) {
+            let mapped: TempoPrecompileError = match err {
+                TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                    TIP20Error::insufficient_balance(current, deposit_u256, token).into()
+                }
+                e if e == TempoPrecompileError::under_overflow() => {
+                    TIP20Error::supply_cap_exceeded().into()
+                }
+                e => e,
+            };
+            return Some(mapped.into_precompile_result());
+        }
+
+        if let Err(err) = storage.emit_event_direct(
+            token,
+            alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                msg_sender,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                deposit_u256,
+            )),
+        ) {
+            return Some(err.into_precompile_result());
+        }
+
+        let state = PackedChannelState {
+            settled: U96::ZERO,
+            deposit,
+            close_requested_at: 0,
+            uses_logical_receive_policy_sender: true,
+            has_opening_commitment: !opening_commitment.is_zero(),
+        };
+        let credit_slot = storage.evm_ext_mut().cached_channel_credit_slot(msg_sender);
+        let encoded_state = state.to_word_direct();
+        match storage.channel_reserve_write_if_no_credit(
+            credit_slot,
+            channel_state_slot,
+            encoded_state,
+        ) {
+            Ok(None) => {}
+            Ok(Some(current)) => {
+                storage.set_frame(Frame {
+                    address: TIP20_CHANNEL_RESERVE_ADDRESS,
+                    depth: frame_depth,
+                    nested_calls: nested_calls.clone(),
+                });
+                if let Err(err) = StorageCtx::enter(storage, || {
+                    Self::new().write_channel_state_with_existing_credit(
+                        msg_sender, channel_id, state, current,
+                    )
+                }) {
+                    return Some(err.into_precompile_result());
+                }
+            }
+            Err(err) => return Some(err.into_precompile_result()),
+        }
+
+        if let Err(err) =
+            storage.tstore_direct(TIP20_CHANNEL_RESERVE_ADDRESS, opened_slot, U256::from(1u64))
+        {
+            return Some(err.into_precompile_result());
+        }
+
+        if let Err(err) = storage.emit_event_direct(
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            alloy::primitives::IntoLogData::to_log_data(&TIP20ChannelReserveEvent::ChannelOpened(
+                ITIP20ChannelReserve::ChannelOpened {
+                    channelId: channel_id,
+                    payer: msg_sender,
+                    payee,
+                    operator,
+                    token,
+                    authorizedSigner: authorized_signer,
+                    salt,
+                    expiringNonceHash: expiring_nonce_hash,
+                    deposit,
+                },
+            )),
+        ) {
+            return Some(err.into_precompile_result());
+        }
+        if state.has_opening_commitment
+            && let Err(err) = storage.emit_event_direct(
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                alloy::primitives::IntoLogData::to_log_data(
+                    &TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                        ITIP20ChannelReserve::OpeningCommitmentRecorded {
+                            channelId: channel_id,
+                            signer,
+                            commitment: opening_commitment,
+                        },
+                    ),
+                ),
+            )
+        {
+            return Some(err.into_precompile_result());
+        }
+
+        Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+            alloy::primitives::Bytes::copy_from_slice(channel_id.as_slice()),
+        )))
     }
 
     /// Returns the number of reusable channel storage credits owned by `payer`.
@@ -826,6 +1233,16 @@ impl TIP20ChannelReserve {
             return self.channel_states[channel_id].write(state);
         }
 
+        self.write_channel_state_with_existing_credit(payer, channel_id, state, current)
+    }
+
+    fn write_channel_state_with_existing_credit(
+        &mut self,
+        payer: Address,
+        channel_id: B256,
+        state: PackedChannelState,
+        current: u64,
+    ) -> Result<()> {
         self.channel_storage_credits[payer].delete()?;
 
         let mut storage_credits = StorageCredits::new();
@@ -1772,6 +2189,59 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_packed_channel_state_word_direct_matches_storable() -> eyre::Result<()> {
+        use crate::storage::{
+            LayoutCtx, Storable as _, StorageCtx, StorageOps, hashmap::HashMapStorageProvider,
+        };
+        struct WordCapture(U256);
+        impl StorageOps for WordCapture {
+            fn load(&self, _slot: U256) -> Result<U256> {
+                Ok(self.0)
+            }
+            fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
+                self.0 = value;
+                Ok(())
+            }
+        }
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            for state in [
+                PackedChannelState::default(),
+                PackedChannelState {
+                    settled: U96::from(0x1122_3344_5566_7788_99aa_bbcc_u128),
+                    deposit: U96::from(0x0102_0304_0506_0708_090a_0b0c_u128),
+                    close_requested_at: 0xdead_beef,
+                    uses_logical_receive_policy_sender: true,
+                    has_opening_commitment: false,
+                },
+                PackedChannelState {
+                    settled: U96::ZERO,
+                    deposit: U96::from(1u64),
+                    close_requested_at: 0,
+                    uses_logical_receive_policy_sender: true,
+                    has_opening_commitment: true,
+                },
+            ] {
+                let mut cap = WordCapture(U256::ZERO);
+                state.store(&mut cap, U256::ZERO, LayoutCtx::FULL)?;
+                assert_eq!(state.to_word_direct(), cap.0);
+                assert_eq!(PackedChannelState::exists_in_word(cap.0), state.exists());
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_channel_reserve_receive_policy_slot_matches_mapping_slot() {
+        use crate::storage::StorageKey as _;
+        assert_eq!(
+            TIP20_CHANNEL_RESERVE_RECEIVE_POLICY_SLOT,
+            TIP20_CHANNEL_RESERVE_ADDRESS
+                .mapping_slot(crate::tip403_registry::slots::RECEIVE_POLICIES)
+        );
     }
 
     #[test]

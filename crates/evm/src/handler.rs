@@ -4,9 +4,9 @@ mod config;
 pub(crate) mod configurable_account;
 
 pub use self::config::{
-    FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
-    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds, build_tempo_evm,
-    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
+    AllowanceSlotCache, FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig,
+    TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds,
+    build_tempo_evm, tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
@@ -319,18 +319,30 @@ fn intrinsic_gas(
     let warm_account = params.get(GasId::WarmStorageReadCost);
     let cold_account = warm_account + params.get(GasId::ColdAccountAdditionalCost);
     if spec.is_t14() {
-        // From T14 the handler warms the transaction's accounts before this runs, so only a
-        // target outside that warm set pays the cold access, once per batch.
-        let warm = host.state().prewarm_set();
-        let mut targeted = AddressSet::default();
-        let first = tx.calls.first().and_then(|call| call.to.to());
-        for to in tx.calls.iter().skip(1).filter_map(|call| call.to.to()) {
-            let access = if Some(to) == first || warm.is_warm(to) || !targeted.insert(*to) {
-                warm_account
-            } else {
-                cold_account
-            };
-            regular = regular.saturating_add(access);
+        if tx.calls.len() == 2 {
+            if let Some(to) = tx.calls[1].to.to() {
+                let first = tx.calls[0].to.to();
+                let access = if Some(to) == first || host.state().prewarm_set().is_warm(to) {
+                    warm_account
+                } else {
+                    cold_account
+                };
+                regular = regular.saturating_add(access);
+            }
+        } else if tx.calls.len() > 2 {
+            // From T14 the handler warms the transaction's accounts before this runs, so only a
+            // target outside that warm set pays the cold access, once per batch.
+            let warm = host.state().prewarm_set();
+            let mut targeted = AddressSet::default();
+            let first = tx.calls.first().and_then(|call| call.to.to());
+            for to in tx.calls.iter().skip(1).filter_map(|call| call.to.to()) {
+                let access = if Some(to) == first || warm.is_warm(to) || !targeted.insert(*to) {
+                    warm_account
+                } else {
+                    cold_account
+                };
+                regular = regular.saturating_add(access);
+            }
         }
     } else {
         regular = regular

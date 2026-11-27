@@ -163,6 +163,14 @@ const BOOL_TRUE_WORD: [u8; 32] = {
     b
 };
 
+const BOOL_FALSE_WORD: [u8; 32] = [0u8; 32];
+
+const DECIMALS_WORD: [u8; 32] = {
+    let mut b = [0u8; 32];
+    b[31] = TIP20_DECIMALS;
+    b
+};
+
 /// EIP-712 domain separator typehash
 pub const EIP712_DOMAIN_TYPEHASH: B256 = B256::new(
     Keccak256::new()
@@ -1243,6 +1251,136 @@ impl TIP20Token {
     /// # Safety
     /// Caller must ensure `is_tip20_prefix(address)` returns true.
     #[inline]
+    pub(crate) fn try_execute_view_direct<T>(
+        storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
+        address: Address,
+        calldata: &[u8],
+    ) -> Option<evm2::precompiles::PrecompileResult>
+    where
+        T: evm2::EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+        T::EvmExt: crate::storage::evm::EvmStorageExt,
+    {
+        use crate::storage::{PrecompileStorageProvider as _, evm::EvmStorageExt as _};
+        let spec = storage.spec();
+        if !spec.is_t8() {
+            return None;
+        }
+        match calldata.len() {
+            36 if calldata[..4] == ITIP20::balanceOfCall::SELECTOR
+                && calldata[4..16] == [0u8; 12] =>
+            {
+                if crate::input_cost(spec, 36)
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                let account = Address::from_slice(&calldata[16..36]);
+                let slot = storage
+                    .evm_ext()
+                    .resolved_fee_balance_slot(account)
+                    .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(account));
+                match storage.tip20_init_and_sload(address, slot) {
+                    Ok(Some(val)) => Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                        alloy::primitives::Bytes::copy_from_slice(&val.to_be_bytes::<32>()),
+                    ))),
+                    Ok(None) => Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    ),
+                    Err(e) => Some(e.into_precompile_result()),
+                }
+            }
+            68 if calldata[..4] == ITIP20::allowanceCall::SELECTOR
+                && calldata[4..16] == [0u8; 12]
+                && calldata[36..48] == [0u8; 12] =>
+            {
+                if crate::input_cost(spec, 68)
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                let owner = Address::from_slice(&calldata[16..36]);
+                let spender = Address::from_slice(&calldata[48..68]);
+                let slot = storage.evm_ext_mut().cached_allowance_slot(owner, spender);
+                match storage.tip20_init_and_sload(address, slot) {
+                    Ok(Some(val)) => Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                        alloy::primitives::Bytes::copy_from_slice(&val.to_be_bytes::<32>()),
+                    ))),
+                    Ok(None) => Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    ),
+                    Err(e) => Some(e.into_precompile_result()),
+                }
+            }
+            4 if calldata == ITIP20::decimalsCall::SELECTOR => {
+                if crate::input_cost(spec, 4)
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                match storage.tip20_is_initialized(address) {
+                    Ok(true) => Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                        alloy::primitives::Bytes::from_static(&DECIMALS_WORD),
+                    ))),
+                    Ok(false) => Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    ),
+                    Err(e) => Some(e.into_precompile_result()),
+                }
+            }
+            4 if calldata == ITIP20::totalSupplyCall::SELECTOR => {
+                if crate::input_cost(spec, 4)
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                match storage.tip20_init_and_sload(address, slots::TOTAL_SUPPLY) {
+                    Ok(Some(val)) => Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                        alloy::primitives::Bytes::copy_from_slice(&val.to_be_bytes::<32>()),
+                    ))),
+                    Ok(None) => Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    ),
+                    Err(e) => Some(e.into_precompile_result()),
+                }
+            }
+            4 if calldata == ITIP20::pausedCall::SELECTOR => {
+                if crate::input_cost(spec, 4)
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                match storage.tip20_init_and_sload(address, slots::PAUSED) {
+                    Ok(Some(val)) => {
+                        let out = if val.is_zero() {
+                            &BOOL_FALSE_WORD
+                        } else {
+                            &BOOL_TRUE_WORD
+                        };
+                        Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                            alloy::primitives::Bytes::from_static(out),
+                        )))
+                    }
+                    Ok(None) => Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    ),
+                    Err(e) => Some(e.into_precompile_result()),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub(crate) fn try_execute_direct<T>(
         storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
         address: Address,
@@ -1256,7 +1394,7 @@ impl TIP20Token {
         T::EvmExt: crate::storage::evm::EvmStorageExt,
     {
         use crate::storage::{
-            PrecompileStorageProvider as _, StorageKey as _,
+            PrecompileStorageProvider as _,
             evm::{EvmStorageExt as _, Frame},
         };
         let spec = storage.spec();
@@ -1443,7 +1581,7 @@ impl TIP20Token {
             {
                 return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
             }
-            let allowance_slot = spender.mapping_slot(caller.mapping_slot(slots::ALLOWANCES));
+            let allowance_slot = storage.evm_ext_mut().cached_allowance_slot(caller, spender);
             match storage.tip20_approve_fast(address, allowance_slot, amount) {
                 Ok(None) => {}
                 Ok(Some((tx_key, old_allowance))) => {
@@ -1513,12 +1651,42 @@ impl TIP20Token {
                             .into_precompile_result(),
                     );
                 }
-                let policy_id = match Self::transfer_policy_id_on_provider(storage, address) {
-                    Ok(id) => id,
-                    Err(e) => return Some(e.into_precompile_result()),
+                let registered_policy = if spec.is_t9() {
+                    let reg_slot = storage
+                        .evm_ext_mut()
+                        .cached_token_transfer_policy_slot(address);
+                    let reg_raw =
+                        match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, reg_slot) {
+                            Ok(v) => v,
+                            Err(e) => return Some(e.into_precompile_result()),
+                        };
+                    match TIP403Registry::decode_token_transfer_policy_raw(reg_raw) {
+                        Ok(v) => v,
+                        Err(e) => return Some(e.into_precompile_result()),
+                    }
+                } else {
+                    None
                 };
                 let amount = U256::from_be_slice(&calldata[68..100]);
-                if policy_id != ALLOW_ALL_POLICY_ID {
+                let allowance_slot = storage.evm_ext_mut().cached_allowance_slot(from, caller);
+                let non_allow_all_policy =
+                    if registered_policy.is_none_or(|id| id == ALLOW_ALL_POLICY_ID) {
+                        match storage.tip20_policy_and_consume_allowance_fast(
+                            address,
+                            registered_policy.is_none(),
+                            slots::TRANSFER_POLICY_ID,
+                            slots::TRANSFER_POLICY_ID_OFFSET * 8,
+                            ALLOW_ALL_POLICY_ID,
+                            allowance_slot,
+                            amount,
+                        ) {
+                            Ok(policy) => policy,
+                            Err(err) => return Some(err.into_precompile_result()),
+                        }
+                    } else {
+                        registered_policy
+                    };
+                if let Some(policy_id) = non_allow_all_policy {
                     let res = StorageCtx::enter(storage, || -> Result<()> {
                         let registry = TIP403Registry::new();
                         for &(user, role) in
@@ -1533,26 +1701,15 @@ impl TIP20Token {
                     if let Err(err) = res {
                         return Some(err.into_precompile_result());
                     }
-                }
-                let allowance_slot = caller.mapping_slot(from.mapping_slot(slots::ALLOWANCES));
-                let allowed = match storage.sload_direct(address, allowance_slot) {
-                    Ok(v) => v,
-                    Err(e) => return Some(e.into_precompile_result()),
-                };
-                if amount > allowed {
-                    return Some(
-                        TempoPrecompileError::from(TIP20Error::insufficient_allowance())
-                            .into_precompile_result(),
-                    );
-                }
-                if allowed != U256::MAX {
-                    let new_allowance = allowed - amount;
-                    if let Err(err) = storage.sstore_direct(address, allowance_slot, new_allowance)
+                    if let Err(err) =
+                        storage.tip20_consume_allowance_fast(address, allowance_slot, amount)
                     {
                         return Some(err.into_precompile_result());
                     }
                 }
-                let rp_slot = to.mapping_slot(crate::tip403_registry::slots::RECEIVE_POLICIES);
+                let (to_slot, rp_slot) = storage
+                    .evm_ext_mut()
+                    .cached_balance_and_receive_policy_slots(to);
                 let rp_raw = match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, rp_slot) {
                     Ok(v) => v,
                     Err(e) => return Some(e.into_precompile_result()),
@@ -1597,7 +1754,6 @@ impl TIP20Token {
                     .evm_ext()
                     .resolved_fee_balance_slot(from)
                     .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(from));
-                let to_slot = to.mapping_slot(slots::BALANCES);
                 if let Err(err) = storage.sdelta_pair(address, from_slot, to_slot, amount) {
                     let mapped: TempoPrecompileError = match err {
                         TempoPrecompileError::StorageDeltaUnderflow(current) => {

@@ -43,10 +43,10 @@ pub use fee_manager::{
     fee_token_inference_target,
 };
 pub use handler::{
-    FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
-    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds, build_tempo_evm,
-    configurable_account::account_access_gas, tempo_execution_config, tempo_opcode_config,
-    tempo_tx_registry,
+    AllowanceSlotCache, FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig,
+    TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds,
+    build_tempo_evm, configurable_account::account_access_gas, tempo_execution_config,
+    tempo_opcode_config, tempo_tx_registry,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
