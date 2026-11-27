@@ -10,7 +10,8 @@ pub use self::config::{
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
-    ExecutionContext, FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
+    ExecutionContext, ExpiringNonce, FeePaymentError, TempoAaTx, TempoInvalidTransaction,
+    TempoTxEnv,
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
     transaction_error::ConfigurableAccountError,
 };
@@ -36,9 +37,7 @@ use evm2::{
 };
 use std::cmp::Ordering;
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError,
-};
+use tempo_contracts::precompiles::IAccountKeychain::SignatureType as PrecompileSignatureType;
 use tempo_precompiles::{
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
@@ -47,7 +46,7 @@ use tempo_precompiles::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
-    storage::{Handler as _, StorageCtx, account_config_commitment},
+    storage::{StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, validate_calls,
@@ -1124,7 +1123,7 @@ fn apply_nonce(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
     aa: &TempoAaTx,
-) -> HandlerResult<u64> {
+) -> HandlerResult<(u64, Option<ExpiringNonce>)> {
     let caller = aa.signer();
     let tx = aa.inner().tx();
     let spec = host.config_spec_id();
@@ -1166,7 +1165,7 @@ fn apply_nonce(
         if tx.calls.first().is_some_and(|call| call.to.is_call()) {
             account.bump_nonce();
         }
-        return Ok(protocol_nonce);
+        return Ok((protocol_nonce, None));
     }
     drop(account);
 
@@ -1185,55 +1184,30 @@ fn apply_nonce(
             .valid_before
             .map(|value| value.get())
             .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
-        let replay_hash = if spec.is_t1b() {
+        let timestamp = host.block().timestamp.saturating_to::<u64>();
+        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+        let max_allowed = timestamp.saturating_add(max_expiry_secs);
+        if valid_before <= timestamp {
+            return Err(TempoInvalidTransaction::NonceManagerError(format!(
+                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
+            ))
+            .into());
+        }
+        if valid_before > max_allowed {
+            return Err(TempoInvalidTransaction::NonceManagerError(format!(
+                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
+            ))
+            .into());
+        }
+        let hash = if spec.is_t1b() {
             envelope.unique_tx_identifier()
         } else {
             envelope.tx_hash()
         };
-        let timestamp = host.block().timestamp.saturating_to::<u64>();
-        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
-        let capacity = spec.expiring_nonce_set_capacity();
-        return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            let mut nonces = NonceManager::new();
-            let previous_pointer = if let Some(index) = aa.expiring_nonce_idx() {
-                let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(nonce_error)?;
-                nonces
-                    .expiring_nonce_ring_ptr
-                    .write((pointer + index as u32) % capacity)
-                    .map_err(nonce_error)?;
-                Some(pointer)
-            } else {
-                None
-            };
-            nonces
-                .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                .map_err(|error| match error {
-                    TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
-                    TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {
-                        let max_allowed = timestamp.saturating_add(max_expiry_secs);
-                        if valid_before <= timestamp {
-                            TempoInvalidTransaction::NonceManagerError(format!(
-                                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
-                            )).into()
-                        } else {
-                            TempoInvalidTransaction::NonceManagerError(format!(
-                                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
-                            )).into()
-                        }
-                    }
-                    TempoPrecompileError::NonceError(NonceError::ExpiringNonceReplay(_)) => {
-                        TempoInvalidTransaction::ExpiringNonceReplay.into()
-                    }
-                    error => nonce_error(error),
-                })?;
-            if let Some(pointer) = previous_pointer {
-                nonces
-                    .expiring_nonce_ring_ptr
-                    .write(pointer)
-                    .map_err(nonce_error)?;
-            }
-            Ok::<_, HandlerError>(protocol_nonce)
-        });
+        let expiring_nonce = ExpiringNonce { hash, valid_before };
+        let manager = host.ext().expiring_nonce_manager.clone();
+        manager.check(host, expiring_nonce, aa.expiring_nonce_idx())?;
+        return Ok((protocol_nonce, Some(expiring_nonce)));
     }
 
     // 2D nonce transaction
@@ -1259,7 +1233,7 @@ fn apply_nonce(
         nonces
             .increment_nonce(caller, tx.nonce_key)
             .map_err(nonce_error)?;
-        Ok::<_, HandlerError>(protocol_nonce)
+        Ok::<_, HandlerError>((protocol_nonce, None))
     })
 }
 
@@ -1379,6 +1353,7 @@ struct PreparedAa {
     caller: Address,
     access_key: Option<Address>,
     create_nonce: u64,
+    expiring_nonce: Option<ExpiringNonce>,
     gas_price: U256,
     intrinsic: u64,
     initial_state_gas: u64,
@@ -1564,7 +1539,8 @@ fn prepare_aa(
     // Collect fees for the transaction.
     let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
 
-    let create_nonce = apply_nonce(request.host, request.envelope, request.tx.inner())?;
+    let (create_nonce, expiring_nonce) =
+        apply_nonce(request.host, request.envelope, request.tx.inner())?;
     // Owner quorums are verified after the nonce checks and before the access-key checks.
     configurable_account::verify(request.envelope.execution_context(), request.tx.inner())?;
 
@@ -1609,7 +1585,7 @@ fn prepare_aa(
             gas: GasTracker::new_spent_with_reservoir(tx.gas_limit.saturating_sub(intrinsic), 0),
             ..MessageResult::<TempoEvmTypes>::default()
         };
-        Some(TempoHandlerHooks::settle_transaction(
+        let mut settled = TempoHandlerHooks::settle_transaction(
             request.host,
             request.envelope,
             GasSettlement {
@@ -1620,7 +1596,9 @@ fn prepare_aa(
                 initial_state_gas,
                 result,
             },
-        )?)
+        )?;
+        settled.ext.expiring_nonce = expiring_nonce;
+        Some(settled)
     } else {
         intrinsic = intrinsic.saturating_add(key_auth_gas);
         None
@@ -1630,6 +1608,7 @@ fn prepare_aa(
         caller,
         access_key: keychain.access_key,
         create_nonce,
+        expiring_nonce,
         gas_price,
         intrinsic,
         initial_state_gas,
@@ -1667,6 +1646,7 @@ fn execute_aa(
         caller,
         access_key,
         create_nonce,
+        expiring_nonce,
         gas_price,
         intrinsic,
         initial_state_gas,
@@ -1729,6 +1709,7 @@ fn execute_aa(
             result,
         },
     )?;
+    result.ext.expiring_nonce = expiring_nonce;
     // The authorization state-gas refund was credited to the reservoir, so it is not state gas
     // spent.
     result.state_gas_spent = result.state_gas_spent.saturating_sub(state_refund);

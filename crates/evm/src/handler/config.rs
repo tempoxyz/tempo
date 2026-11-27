@@ -2,9 +2,9 @@
 
 use super::configurable_account;
 use crate::{
-    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken,
-    SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
-    TempoTxEnv,
+    ExpiringNonce, ExpiringNonceManager, FeePaymentError, ProtocolFeeContext, ProtocolFeeManager,
+    ResolvedFeeToken, SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoExpiringNonceManager,
+    TempoFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -89,6 +89,8 @@ impl EvmConfigSelector<TempoEvmTypes> for TempoConfigSelector {
 pub struct TempoTxResultExt {
     /// Fee credited to the block beneficiary after fee-AMM settlement.
     pub validator_fee: U256,
+    /// Expiring nonce validated by this transaction, if it is an expiring-nonce AA transaction.
+    pub expiring_nonce: Option<ExpiringNonce>,
 }
 
 /// Tempo-specific state owned by an EVM2 instance.
@@ -98,6 +100,8 @@ pub struct TempoEvmExt {
     pub kind: TempoEvmKind,
     /// Protocol fee implementation used by transaction hooks.
     pub fee_manager: Arc<dyn ProtocolFeeManager>,
+    /// Expiring nonce replay-protection implementation used by AA transaction hooks.
+    pub expiring_nonce_manager: Arc<dyn ExpiringNonceManager>,
     /// Recorder for protocol storage accesses.
     pub actions: StorageActions,
     /// Transaction-local slots whose clears must not create storage credits.
@@ -125,6 +129,7 @@ impl TempoEvmExt {
         Self {
             kind,
             fee_manager: Arc::new(fee_manager),
+            expiring_nonce_manager: Arc::new(TempoExpiringNonceManager::new()),
             actions: StorageActions::disabled(),
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             skip_valid_after_check: false,
@@ -132,6 +137,15 @@ impl TempoEvmExt {
             resolved_fee_token: None,
             key_expiry: None,
         }
+    }
+
+    /// Uses a custom expiring nonce replay-protection implementation for this EVM.
+    pub fn with_expiring_nonce_manager(
+        mut self,
+        expiring_nonce_manager: impl ExpiringNonceManager + 'static,
+    ) -> Self {
+        self.expiring_nonce_manager = Arc::new(expiring_nonce_manager);
+        self
     }
 }
 

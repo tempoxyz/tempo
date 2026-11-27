@@ -10,6 +10,7 @@ use alloy_sol_types::SolCall;
 use commonware_codec::{DecodeExt as _, ReadExt};
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
+    block::ethereum::execution::map_transaction_error,
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
@@ -972,6 +973,15 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // section and lane budgets do not reflect the transactions committed before it.
         let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
 
+        if let Some(expiring_nonce) = inner.result().result.ext.expiring_nonce {
+            let manager = self.evm().ext().expiring_nonce_manager.clone();
+            let timestamp = self.evm().block().timestamp.saturating_to::<u64>();
+            let spec = self.evm().config_spec_id();
+            manager
+                .commit(expiring_nonce, timestamp, spec)
+                .map_err(|err| map_transaction_error(err, tx_hash))?;
+        }
+
         let gas_output = self.inner.commit_transaction(inner)?;
         self.record_committed_tx(next_section, block_gas_used, is_payment);
 
@@ -991,6 +1001,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
+        let expiring_nonce_manager = self.evm().ext().expiring_nonce_manager.clone();
+        let timestamp = self.evm().block().timestamp.saturating_to::<u64>();
+        let spec = self.evm().config_spec_id();
         let (section, non_shared_gas_left, non_payment_gas_left) = (
             self.section,
             self.non_shared_gas_left,
@@ -1000,6 +1013,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Validate the section inside the commit condition so the transaction commits in place
         // instead of detaching its state and reattaching it in `commit_transaction`.
         let mut validated = None;
+        let mut expiring_nonce_commit_err = None;
         let gas_output = self.inner.execute_transaction_with_commit_condition(
             (tx_env, recovered),
             |result, state_changes| {
@@ -1023,9 +1037,20 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     CommitChanges::No
                 };
                 validated = Some(next_section.map(|section| (section, block_gas_used)));
+                if commit.should_commit()
+                    && let Some(expiring_nonce) = result.ext.expiring_nonce
+                    && let Err(err) = expiring_nonce_manager.commit(expiring_nonce, timestamp, spec)
+                {
+                    expiring_nonce_commit_err = Some(err);
+                    return CommitChanges::No;
+                }
                 commit
             },
         )?;
+
+        if let Some(err) = expiring_nonce_commit_err {
+            return Err(map_transaction_error(err, tx_hash));
+        }
 
         let Some(gas_output) = gas_output else {
             return match validated {
