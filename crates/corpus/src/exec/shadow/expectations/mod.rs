@@ -9,9 +9,9 @@ use super::{
     fees::{fee_hook_slot_change, post_tx_fee},
 };
 use alloy_consensus::Transaction as _;
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use eyre::{OptionExt as _, WrapErr as _};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use std::collections::HashSet;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
@@ -74,13 +74,17 @@ pub(crate) enum Check {
 }
 
 /// A code change the candidate's pre-block setup makes to `address`.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RuntimeUpgrade {
     /// The account whose code changes.
+    #[serde(deserialize_with = "address")]
     address: Address,
     /// Code hashes the account may have before the change, besides empty code.
+    #[serde(deserialize_with = "runtimes")]
     from: Vec<B256>,
     /// The code hash after the change.
+    #[serde(deserialize_with = "runtime")]
     to: B256,
 }
 
@@ -213,30 +217,14 @@ fn parse(
                 "expectation {id} for {fork} is out of fork order or after {candidate}"
             );
             previous = fork;
-            let runtime_hash = |name| runtime(name).map(keccak256);
             let mut addresses = HashSet::new();
-            let upgrades = accounts
-                .into_iter()
-                .map(|upgrade| {
-                    let address = address(upgrade.address)?;
-                    eyre::ensure!(
-                        addresses.insert(address),
-                        "duplicate account {}",
-                        upgrade.address
-                    );
-                    Ok(RuntimeUpgrade {
-                        address,
-                        from: upgrade
-                            .from
-                            .into_iter()
-                            .map(runtime_hash)
-                            .collect::<eyre::Result<_>>()?,
-                        to: runtime_hash(upgrade.to)?,
-                    })
-                })
-                .collect::<eyre::Result<_>>()
-                .wrap_err_with(|| format!("expectation {id}"))?;
-            let check = Check::RuntimeUpgrade(upgrades);
+            if let Some(upgrade) = accounts
+                .iter()
+                .find(|upgrade| !addresses.insert(upgrade.address))
+            {
+                eyre::bail!("expectation {id} lists account {} twice", upgrade.address);
+            }
+            let check = Check::RuntimeUpgrade(accounts);
             Ok((fork, Expectation { id, check }))
         })
         .collect()
@@ -249,39 +237,38 @@ enum Rule<'a> {
     RuntimeUpgrade {
         id: &'a str,
         fork: TempoHardfork,
-        #[serde(borrow)]
-        accounts: Vec<RuntimeUpgradeNames<'a>>,
+        accounts: Vec<RuntimeUpgrade>,
     },
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeUpgradeNames<'a> {
-    address: &'a str,
-    #[serde(borrow)]
-    from: Vec<&'a str>,
-    to: &'a str,
-}
-
-/// Defines a lookup from a constant's name to its value, for the constants rule files may name.
+/// Defines `$name`, deserializing `$map` of a constant a rule file names.
 macro_rules! named_constants {
-    ($lookup:ident -> $ty:ty { $($constant:ident),* $(,)? }) => {
-        fn $lookup(name: &str) -> eyre::Result<$ty> {
-            match name {
-                $(stringify!($constant) => Ok($constant),)*
-                _ => eyre::bail!("unknown constant {name}"),
+    ($name:ident -> $ty:ty = $map:path { $($constant:ident),* $(,)? }) => {
+        fn $name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<$ty, D::Error> {
+            match <&str>::deserialize(deserializer)? {
+                $(stringify!($constant) => Ok($map($constant)),)*
+                name => Err(D::Error::custom(format!("unknown constant {name}"))),
             }
         }
     };
 }
 
-named_constants!(address -> Address {
+fn runtimes<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<B256>, D::Error> {
+    #[derive(Deserialize)]
+    struct Runtime(#[serde(deserialize_with = "runtime")] B256);
+    Ok(Vec::<Runtime>::deserialize(deserializer)?
+        .into_iter()
+        .map(|runtime| runtime.0)
+        .collect())
+}
+
+named_constants!(address -> Address = Address::from {
     ZONE_MESSENGER_ADDRESS,
     ZONE_PORTAL_IMPL_ADDRESS,
     ZONE_VERIFIER_ADDRESS,
 });
 
-named_constants!(runtime -> Bytes {
+named_constants!(runtime -> B256 = keccak256 {
     ZONE_MESSENGER_RUNTIME,
     ZONE_PORTAL_RUNTIME,
     ZONE_VERIFIER_RUNTIME,
@@ -302,7 +289,7 @@ mod tests {
         },
         *,
     };
-    use alloy_primitives::{Address, KECCAK256_EMPTY, Signature};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Signature};
     use evm2::evm::AccountInfo;
     use tempo_precompiles::storage::FeeHook;
     use tempo_primitives::{TempoTransaction, transaction::Call};
@@ -479,8 +466,8 @@ mod tests {
     #[test_case(&[("a", "T14", &[PORTAL]), ("a", "T14", &[PORTAL])], None => "duplicate expectation a")]
     #[test_case(&[("a", "T14", &[PORTAL]), ("b", "T13", &[PORTAL])], None => "expectation b for T13 is out of fork order or after T14")]
     #[test_case(&[("a", "T15", &[PORTAL])], None => "expectation a for T15 is out of fork order or after T14")]
-    #[test_case(&[("a", "T14", &["ZONE_PORTAL"])], None => "expectation a: unknown constant ZONE_PORTAL")]
-    #[test_case(&[("a", "T14", &[PORTAL, PORTAL])], None => "expectation a: duplicate account ZONE_PORTAL_IMPL_ADDRESS")]
+    #[test_case(&[("a", "T14", &["ZONE_PORTAL"])], None => "unknown constant ZONE_PORTAL at line 1 column 142")]
+    #[test_case(&[("a", "T14", &[PORTAL, PORTAL])], None => "expectation a lists account 0x5AD1000000000000000000000000000000000000 twice")]
     #[test_case(&[("a", "T14", &[PORTAL])], Some((r#""to""#, r#""extra": 1, "to""#)) => "unknown field `extra`, expected one of `address`, `from`, `to` at line 1 column 167")]
     #[test_case(&[("a", "T14", &[PORTAL])], Some((r#""kind""#, r#""extra": 1, "kind""#)) => "unknown field `extra`, expected one of `id`, `fork`, `accounts` at line 1 column 167")]
     #[test_case(&[("a", "T14", &[PORTAL])], Some(("runtime-upgrade", "storage")) => "unknown variant `storage`, expected `runtime-upgrade` at line 1 column 45")]
