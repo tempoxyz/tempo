@@ -858,7 +858,7 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
             let entries = ((if $mode == mixed { [deposit withdraw] } else { [$mode] }) | each { |kind|
                 mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
                 if $kind == deposit {
-                    $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+                    $template = ($template | update calls.0.to $portal | update calls.0.args.5 $recipient)
                 }
                 let settlement_index = if $kind == deposit { 1 } else { 0 }
                 let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
