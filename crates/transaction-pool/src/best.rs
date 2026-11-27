@@ -2,6 +2,7 @@
 
 use crate::transaction::TempoPooledTransaction;
 use alloy_primitives::{Address, U256, map::HashMap};
+pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -80,9 +81,14 @@ where
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
-        result
-            .result()
-            .pending_state
+        self.on_state_changes(&result.result().pending_state);
+    }
+
+    /// Processes a transaction's state changes in place, without requiring a detached
+    /// `PendingState`.
+    #[inline]
+    pub fn on_state_changes(&mut self, state_changes: &impl StateChangeSource) {
+        state_changes
             .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
             .unwrap();
     }
