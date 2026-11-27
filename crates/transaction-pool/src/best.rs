@@ -41,12 +41,11 @@ impl Hasher for SlotKeyHasher {
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in chunks.by_ref() {
-            let v = u64::from_ne_bytes(chunk.try_into().unwrap());
+        let (chunks, rem) = bytes.as_chunks::<8>();
+        for &chunk in chunks {
+            let v = u64::from_ne_bytes(chunk);
             self.0 = (self.0 ^ v).wrapping_mul(0x9e3779b97f4a7c15);
         }
-        let rem = chunks.remainder();
         if !rem.is_empty() {
             let mut tail = 0u64;
             for &b in rem {

@@ -72,6 +72,57 @@ use tempo_transaction_pool::{
 use tokio::sync::oneshot;
 use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
+/// Builds a [`reth_trie_common::HashedPostState`] from a [`reth_evm::BundleState`] without
+/// destroyed accounts, hashing large storage maps in parallel across rayon workers.
+fn parallel_hashed_post_state(
+    bundle_state: &reth_evm::BundleState,
+) -> reth_trie_common::HashedPostState {
+    use alloy_primitives::{keccak256, map::B256Map};
+    use rayon::prelude::*;
+    use reth_trie_common::{HashedPostState, HashedStorage};
+
+    let state = bundle_state.state();
+    let entries: Vec<_> = state.iter().collect();
+    let results: Vec<_> = entries
+        .par_iter()
+        .map(|&(address, account)| {
+            let hashed_address = keccak256(address);
+            let hashed_account = account.info.as_ref().map(Into::into);
+            let hashed_storage = if account.storage.is_empty() {
+                None
+            } else if account.storage.len() >= 256 {
+                let slots: Vec<_> = account.storage.iter().collect();
+                let hashed_slots: Vec<(B256, U256)> = slots
+                    .par_iter()
+                    .map(|&(slot, value)| (keccak256(B256::from(*slot)), value.present_value))
+                    .collect();
+                let mut map =
+                    B256Map::with_capacity_and_hasher(hashed_slots.len(), Default::default());
+                map.extend(hashed_slots);
+                Some(HashedStorage { storage: map })
+            } else {
+                let mut map =
+                    B256Map::with_capacity_and_hasher(account.storage.len(), Default::default());
+                for (slot, value) in &account.storage {
+                    map.insert(keccak256(B256::from(*slot)), value.present_value);
+                }
+                Some(HashedStorage { storage: map })
+            };
+            (hashed_address, hashed_account, hashed_storage)
+        })
+        .collect();
+
+    let mut accounts = B256Map::with_capacity_and_hasher(results.len(), Default::default());
+    let mut storages = B256Map::with_capacity_and_hasher(results.len(), Default::default());
+    for (hashed_address, hashed_account, hashed_storage) in results {
+        accounts.insert(hashed_address, hashed_account);
+        if let Some(storage) = hashed_storage {
+            storages.insert(hashed_address, storage);
+        }
+    }
+    HashedPostState { accounts, storages }
+}
+
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
 /// Exact block RLP length is computed asynchronously after payload construction, so the builder uses
@@ -867,8 +918,10 @@ where
             .map(|rx| rx.recv())
         {
             hashed_state
-        } else {
+        } else if execution_state.state().values().any(|a| a.was_destroyed()) {
             Arc::new(finish_provider.hashed_post_state(execution_state)?)
+        } else {
+            Arc::new(parallel_hashed_post_state(execution_state))
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1334,6 +1387,35 @@ type RootsTaskHandles = (
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parallel_hashed_post_state_matches_sequential() {
+        use reth_trie_common::{
+            HashedPostState, KeccakKeyHasher,
+            bundle_state::{AccountStatus, BundleAccount, BundleState, StorageSlot},
+        };
+
+        let mut bundle = BundleState::default();
+        for acct_idx in 0u64..4 {
+            let addr = Address::from_slice(&[acct_idx as u8; 20]);
+            let mut storage = alloy_primitives::map::HashMap::default();
+            let slot_count = if acct_idx == 0 { 600u64 } else { 10u64 };
+            for slot_idx in 0..slot_count {
+                storage.insert(
+                    U256::from(slot_idx),
+                    StorageSlot::new_changed(U256::ZERO, U256::from(slot_idx + 1)),
+                );
+            }
+            bundle.state.insert(
+                addr,
+                BundleAccount::new(None, None, storage, AccountStatus::Changed),
+            );
+        }
+
+        let expected = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state());
+        let actual = parallel_hashed_post_state(&bundle);
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {

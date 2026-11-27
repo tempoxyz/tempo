@@ -5,8 +5,8 @@ pub(crate) mod configurable_account;
 
 pub use self::config::{
     FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
-    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, build_tempo_evm, tempo_execution_config,
-    tempo_opcode_config, tempo_tx_registry,
+    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds, build_tempo_evm,
+    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
@@ -1276,10 +1276,15 @@ fn apply_nonce(
         };
 
         let ring_key = ptr.mapping_slot(nonce_slots::EXPIRING_NONCE_RING);
+        let new_hash_word = U256::from_be_bytes(replay_hash.0);
         let old_hash_word = {
             let mut slot = account.storage().into_slot(ring_key)?;
             slot.warm();
-            slot.current()
+            let old = slot.current();
+            if old.is_zero() {
+                slot.write(new_hash_word);
+            }
+            old
         };
         actions.record(StorageAction::Sload(
             NONCE_PRECOMPILE_ADDRESS,
@@ -1308,10 +1313,6 @@ fn apply_nonce(
                 old_expiry_word,
                 U256::ZERO,
             ));
-        }
-
-        let new_hash_word = U256::from_be_bytes(replay_hash.0);
-        {
             let mut slot = account.storage().into_slot(ring_key)?;
             slot.write(new_hash_word);
         }

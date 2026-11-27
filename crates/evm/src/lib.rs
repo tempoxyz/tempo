@@ -43,7 +43,7 @@ pub use fee_manager::{
 };
 pub use handler::{
     FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
-    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, build_tempo_evm,
+    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds, build_tempo_evm,
     configurable_account::account_access_gas, tempo_execution_config, tempo_opcode_config,
     tempo_tx_registry,
 };

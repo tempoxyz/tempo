@@ -119,77 +119,195 @@ pub struct TempoEvmExt {
     /// Per-block cached fee-manager mapping slots keyed by beneficiary.
     #[doc(hidden)]
     pub fee_slot_cache: FeeSlotCache,
-    /// Per-EVM direct-mapped cache for frequent sender mapping slots.
+    /// Per-EVM direct-mapped cache for frequent account mapping slots.
     #[doc(hidden)]
     pub sender_slot_cache: SenderSlotCache,
+    /// Per-transaction transient storage seeds for precompile context slots.
+    #[doc(hidden)]
+    pub tx_transient_seeds: TxTransientSeeds,
 }
 
-const SENDER_SLOT_CACHE_LEN: usize = 1024;
+/// Per-transaction transient storage seeds stored inline on [`TempoEvmExt`] so normal
+/// transactions avoid inserting four entries into EVM transient storage.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TxTransientSeeds {
+    active: u8,
+    has_transaction_key: bool,
+    keychain_tx_origin: U256,
+    channel_open_context_hash: U256,
+    ca_tx_origin: U256,
+    ca_packed_auth: U256,
+}
+
+impl TxTransientSeeds {
+    const MASK_KEYCHAIN_ORIGIN: u8 = 1 << 0;
+    const MASK_CHANNEL_CONTEXT: u8 = 1 << 1;
+    const MASK_CA_ORIGIN: u8 = 1 << 2;
+    const MASK_CA_PACKED: u8 = 1 << 3;
+
+    #[inline]
+    pub(crate) fn clear(&mut self) {
+        self.active = 0;
+        self.has_transaction_key = false;
+    }
+
+    #[inline]
+    pub(crate) fn seed_base(&mut self, origin: U256, context_hash: U256) {
+        self.keychain_tx_origin = origin;
+        self.channel_open_context_hash = context_hash;
+        self.active = Self::MASK_KEYCHAIN_ORIGIN | Self::MASK_CHANNEL_CONTEXT;
+        self.has_transaction_key = false;
+    }
+
+    #[inline]
+    pub(crate) fn seed_configurable_account(&mut self, origin: U256, packed_auth: U256) {
+        self.ca_tx_origin = origin;
+        self.ca_packed_auth = packed_auth;
+        self.active |= Self::MASK_CA_ORIGIN | Self::MASK_CA_PACKED;
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, address: Address, key: U256) -> Option<U256> {
+        if self.active == 0 {
+            return None;
+        }
+        if address == tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS {
+            if (self.active & Self::MASK_KEYCHAIN_ORIGIN) != 0
+                && key == tempo_precompiles::account_keychain::slots::TX_ORIGIN
+            {
+                return Some(self.keychain_tx_origin);
+            }
+        } else if address == tempo_precompiles::TIP20_CHANNEL_RESERVE_ADDRESS {
+            if (self.active & Self::MASK_CHANNEL_CONTEXT) != 0
+                && key == tempo_precompiles::tip20_channel_reserve::slots::CHANNEL_OPEN_CONTEXT_HASH
+            {
+                return Some(self.channel_open_context_hash);
+            }
+        } else if address == tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS {
+            if (self.active & Self::MASK_CA_ORIGIN) != 0
+                && key == tempo_precompiles::configurable_account::slots::TX_ORIGIN
+            {
+                return Some(self.ca_tx_origin);
+            }
+            if (self.active & Self::MASK_CA_PACKED) != 0
+                && key
+                    == tempo_precompiles::configurable_account::slots::DIRECTLY_AUTHORIZED_ACCOUNT
+            {
+                return Some(self.ca_packed_auth);
+            }
+        }
+        None
+    }
+
+    #[inline]
+    pub(crate) fn on_tstore(&mut self, address: Address, key: U256, value: U256) {
+        if address == tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS {
+            if key == tempo_precompiles::account_keychain::slots::TRANSACTION_KEY {
+                self.has_transaction_key = !value.is_zero();
+            } else if key == tempo_precompiles::account_keychain::slots::TX_ORIGIN {
+                self.active &= !Self::MASK_KEYCHAIN_ORIGIN;
+            }
+        } else if address == tempo_precompiles::TIP20_CHANNEL_RESERVE_ADDRESS
+            && key == tempo_precompiles::tip20_channel_reserve::slots::CHANNEL_OPEN_CONTEXT_HASH
+        {
+            self.active &= !Self::MASK_CHANNEL_CONTEXT;
+        } else if address == tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS {
+            if key == tempo_precompiles::configurable_account::slots::TX_ORIGIN {
+                self.active &= !Self::MASK_CA_ORIGIN;
+            } else if key
+                == tempo_precompiles::configurable_account::slots::DIRECTLY_AUTHORIZED_ACCOUNT
+            {
+                self.active &= !Self::MASK_CA_PACKED;
+            }
+        }
+    }
+}
+
+const SENDER_SLOT_CACHE_LEN: usize = 4096;
 const SENDER_SLOT_CACHE_MASK: usize = SENDER_SLOT_CACHE_LEN - 1;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct SenderSlotEntry {
     addr: Address,
-    valid: bool,
-    has_balance: bool,
-    has_nonce_outer: bool,
+    flags: u8,
     balance_slot: U256,
+    receive_policy_slot: U256,
     nonce_outer_slot: U256,
 }
 
-/// Per-EVM direct-mapped cache for frequent sender mapping slots.
+const SLOT_VALID: u8 = 1 << 0;
+const SLOT_BALANCE: u8 = 1 << 1;
+const SLOT_RECEIVE_POLICY: u8 = 1 << 2;
+const SLOT_NONCE_OUTER: u8 = 1 << 3;
+
+/// Per-EVM direct-mapped cache for frequent account mapping slots.
 #[doc(hidden)]
 #[derive(Debug, Default, Clone)]
 pub struct SenderSlotCache {
-    entries: Option<Box<[SenderSlotEntry; SENDER_SLOT_CACHE_LEN]>>,
+    entries: Option<Box<[SenderSlotEntry]>>,
 }
 
 impl SenderSlotCache {
+    #[cold]
+    #[inline(never)]
+    fn alloc_entries() -> Box<[SenderSlotEntry]> {
+        vec![SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN].into_boxed_slice()
+    }
+
     #[inline]
     fn idx(addr: Address) -> usize {
         let b = addr.0.0;
         let h = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
             ^ u64::from_le_bytes([b[12], b[13], b[14], b[15], b[16], b[17], b[18], b[19]]);
-        ((h.wrapping_mul(0x9e3779b97f4a7c15)) >> 54) as usize & SENDER_SLOT_CACHE_MASK
+        ((h.wrapping_mul(0x9e3779b97f4a7c15)) >> 52) as usize & SENDER_SLOT_CACHE_MASK
+    }
+
+    #[inline]
+    fn entry_for(&mut self, addr: Address) -> &mut SenderSlotEntry {
+        let table = self.entries.get_or_insert_with(Self::alloc_entries);
+        let e = &mut table[Self::idx(addr)];
+        if (e.flags & SLOT_VALID) == 0 || e.addr != addr {
+            e.addr = addr;
+            e.flags = SLOT_VALID;
+        }
+        e
     }
 
     #[inline]
     pub(crate) fn balance_slot(&mut self, addr: Address) -> U256 {
-        let table = self
-            .entries
-            .get_or_insert_with(|| Box::new([SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN]));
-        let e = &mut table[Self::idx(addr)];
-        if !e.valid || e.addr != addr {
+        let e = self.entry_for(addr);
+        if (e.flags & SLOT_BALANCE) == 0 {
             use tempo_precompiles::storage::StorageKey as _;
-            e.addr = addr;
-            e.valid = true;
-            e.has_balance = true;
-            e.has_nonce_outer = false;
-            e.balance_slot = addr.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
-        } else if !e.has_balance {
-            use tempo_precompiles::storage::StorageKey as _;
-            e.has_balance = true;
+            e.flags |= SLOT_BALANCE;
             e.balance_slot = addr.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
         }
         e.balance_slot
     }
 
     #[inline]
+    pub(crate) fn balance_and_receive_policy_slots(&mut self, addr: Address) -> (U256, U256) {
+        let e = self.entry_for(addr);
+        if (e.flags & SLOT_BALANCE) == 0 {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.flags |= SLOT_BALANCE;
+            e.balance_slot = addr.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
+        }
+        if (e.flags & SLOT_RECEIVE_POLICY) == 0 {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.flags |= SLOT_RECEIVE_POLICY;
+            e.receive_policy_slot =
+                addr.mapping_slot(tempo_precompiles::tip403_registry::slots::RECEIVE_POLICIES);
+        }
+        (e.balance_slot, e.receive_policy_slot)
+    }
+
+    #[inline]
     pub(crate) fn nonce_outer_slot(&mut self, addr: Address) -> U256 {
-        let table = self
-            .entries
-            .get_or_insert_with(|| Box::new([SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN]));
-        let e = &mut table[Self::idx(addr)];
-        if !e.valid || e.addr != addr {
+        let e = self.entry_for(addr);
+        if (e.flags & SLOT_NONCE_OUTER) == 0 {
             use tempo_precompiles::storage::StorageKey as _;
-            e.addr = addr;
-            e.valid = true;
-            e.has_balance = false;
-            e.has_nonce_outer = true;
-            e.nonce_outer_slot = addr.mapping_slot(tempo_precompiles::nonce::slots::NONCES);
-        } else if !e.has_nonce_outer {
-            use tempo_precompiles::storage::StorageKey as _;
-            e.has_nonce_outer = true;
+            e.flags |= SLOT_NONCE_OUTER;
             e.nonce_outer_slot = addr.mapping_slot(tempo_precompiles::nonce::slots::NONCES);
         }
         e.nonce_outer_slot
@@ -285,6 +403,7 @@ impl TempoEvmExt {
             has_two_hop_intermediate: false,
             fee_slot_cache: FeeSlotCache::default(),
             sender_slot_cache: SenderSlotCache::default(),
+            tx_transient_seeds: TxTransientSeeds::default(),
         }
     }
 }
@@ -316,6 +435,27 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
     #[inline]
     fn cached_token_transfer_policy_slot(&mut self, token: Address) -> U256 {
         self.fee_slot_cache.token_transfer_policy_slot(token)
+    }
+
+    #[inline]
+    fn cached_balance_and_receive_policy_slots(&mut self, addr: Address) -> (U256, U256) {
+        self.sender_slot_cache
+            .balance_and_receive_policy_slots(addr)
+    }
+
+    #[inline]
+    fn maybe_has_transaction_key(&self) -> bool {
+        self.tx_transient_seeds.has_transaction_key
+    }
+
+    #[inline]
+    fn transient_seed(&self, address: Address, key: U256) -> Option<U256> {
+        self.tx_transient_seeds.get(address, key)
+    }
+
+    #[inline]
+    fn on_tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.tx_transient_seeds.on_tstore(address, key, value);
     }
 }
 
@@ -435,6 +575,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         }
         let mut result = finalize_gas(host, gas)?;
         if !host.feature(EvmFeatures::FEE_CHARGE) {
+            host.ext_mut().tx_transient_seeds.clear();
             return Ok(result);
         }
         let actual_spending = calc_gas_balance_spending(result.tx_gas_used(), gas_price);
@@ -444,6 +585,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             .ok_or_else(|| HandlerError::Fatal("actual fee exceeds upfront fee".into()))?;
 
         if collected.is_zero() && !actual_spending.is_zero() {
+            host.ext_mut().tx_transient_seeds.clear();
             return Ok(result);
         }
 
@@ -471,6 +613,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                 beneficiary,
             )?
         };
+        host.ext_mut().tx_transient_seeds.clear();
         result.ext.validator_fee = validator_fee;
         Ok(result)
     }
@@ -500,25 +643,11 @@ impl TempoHandlerHooks {
         let spec = host.config_spec_id();
 
         {
-            use tempo_precompiles::{
-                ACCOUNT_KEYCHAIN_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, account_keychain,
-                tip20_channel_reserve,
-            };
             let origin_word = envelope.evm_tx().signer().to_word();
             let context_hash_word = envelope.channel_open_context_hash().to_word();
-            {
-                let state = host.state_mut();
-                state.tstore(
-                    &ACCOUNT_KEYCHAIN_ADDRESS,
-                    &account_keychain::slots::TX_ORIGIN,
-                    &origin_word,
-                );
-                state.tstore(
-                    &TIP20_CHANNEL_RESERVE_ADDRESS,
-                    &tip20_channel_reserve::slots::CHANNEL_OPEN_CONTEXT_HASH,
-                    &context_hash_word,
-                );
-            }
+            host.ext_mut()
+                .tx_transient_seeds
+                .seed_base(origin_word, context_hash_word);
             if spec.is_t14() {
                 envelope.seed_upgrade_authority_on_evm(host)?;
             }

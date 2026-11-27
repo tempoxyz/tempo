@@ -1342,7 +1342,9 @@ impl TIP20Token {
                         return Some(err.into_precompile_result());
                     }
                 }
-                let rp_slot = to.mapping_slot(crate::tip403_registry::slots::RECEIVE_POLICIES);
+                let (to_slot, rp_slot) = storage
+                    .evm_ext_mut()
+                    .cached_balance_and_receive_policy_slots(to);
                 let rp_raw = match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, rp_slot) {
                     Ok(v) => v,
                     Err(e) => return Some(e.into_precompile_result()),
@@ -1390,7 +1392,6 @@ impl TIP20Token {
                     .evm_ext()
                     .resolved_fee_balance_slot(caller)
                     .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(caller));
-                let to_slot = to.mapping_slot(slots::BALANCES);
                 if let Err(err) = storage.sdelta_pair(address, from_slot, to_slot, amount) {
                     let mapped: TempoPrecompileError = match err {
                         TempoPrecompileError::StorageDeltaUnderflow(current) => {

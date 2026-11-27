@@ -156,9 +156,7 @@ impl TempoTxEnv {
         &self,
         host: &mut Evm<'_, TempoEvmTypes>,
     ) -> Result<(), TempoPrecompileError> {
-        use tempo_precompiles::{
-            CONFIGURABLE_ACCOUNT_ADDRESS, configurable_account::slots, storage::FromWord as _,
-        };
+        use tempo_precompiles::{configurable_account::slots, storage::FromWord as _};
         let aa = self.as_aa();
         let eligibility = if match aa {
             None => self
@@ -201,17 +199,9 @@ impl TempoTxEnv {
         let packed_word = direct.to_word()
             | (alloy_primitives::U256::from(eligibility as u8)
                 << (slots::UPGRADE_ELIGIBILITY_OFFSET * 8));
-        let state = host.state_mut();
-        state.tstore(
-            &CONFIGURABLE_ACCOUNT_ADDRESS,
-            &slots::TX_ORIGIN,
-            &caller_word,
-        );
-        state.tstore(
-            &CONFIGURABLE_ACCOUNT_ADDRESS,
-            &slots::DIRECTLY_AUTHORIZED_ACCOUNT,
-            &packed_word,
-        );
+        host.ext_mut()
+            .tx_transient_seeds
+            .seed_configurable_account(caller_word, packed_word);
         Ok(())
     }
 

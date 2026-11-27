@@ -181,6 +181,15 @@ where
         key: U256,
     ) -> Result<U256, TempoPrecompileError> {
         self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
+        if address == crate::ACCOUNT_KEYCHAIN_ADDRESS
+            && key == crate::account_keychain::slots::TRANSACTION_KEY
+            && !self.evm.ext().maybe_has_transaction_key()
+        {
+            return Ok(U256::ZERO);
+        }
+        if let Some(val) = self.evm.ext().transient_seed(address, key) {
+            return Ok(val);
+        }
         Ok(self.evm.state_mut().tload(&address, &key))
     }
 
@@ -940,10 +949,14 @@ where
         let call_stipend = self.version.gas_params.get(GasId::CallStipend);
 
         // Peek transient transaction_key without charging gas yet (no warming/actions side effects).
-        let tx_key_word = self.evm.state_mut().tload(
-            &crate::ACCOUNT_KEYCHAIN_ADDRESS,
-            &crate::account_keychain::slots::TRANSACTION_KEY,
-        );
+        let tx_key_word = if !self.evm.ext().maybe_has_transaction_key() {
+            U256::ZERO
+        } else {
+            self.evm.state_mut().tload(
+                &crate::ACCOUNT_KEYCHAIN_ADDRESS,
+                &crate::account_keychain::slots::TRANSACTION_KEY,
+            )
+        };
 
         let skip_cold_acct = if is_t4 {
             self.gas_tracker.deduct_gas(warm_cost)?;
@@ -1479,12 +1492,16 @@ where
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> U256 {
+        if let Some(val) = self.evm.ext().transient_seed(address, key) {
+            return val;
+        }
         self.evm.state_mut().tload(&address, &key)
     }
 
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.ensure_not_static()?;
+        self.evm.ext_mut().on_tstore(address, key, value);
         self.evm.state_mut().tstore(&address, &key, &value);
         Ok(())
     }
@@ -1625,6 +1642,7 @@ where
         self.ensure_not_static()?;
 
         self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
+        self.evm.ext_mut().on_tstore(address, key, value);
         self.evm.state_mut().tstore(&address, &key, &value);
         Ok(())
     }
@@ -1655,8 +1673,7 @@ where
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
-        Ok(self.evm.state_mut().tload(&address, &key))
+        self.tload_direct(address, key)
     }
 
     #[inline]
@@ -1900,6 +1917,28 @@ pub trait EvmStorageExt {
         use crate::storage::StorageKey as _;
         token.mapping_slot(crate::tip403_registry::slots::TOKEN_TRANSFER_POLICIES)
     }
+
+    #[inline]
+    fn cached_balance_and_receive_policy_slots(&mut self, addr: Address) -> (U256, U256) {
+        use crate::storage::StorageKey as _;
+        (
+            self.cached_balance_slot(addr),
+            addr.mapping_slot(crate::tip403_registry::slots::RECEIVE_POLICIES),
+        )
+    }
+
+    #[inline]
+    fn maybe_has_transaction_key(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn transient_seed(&self, _address: Address, _key: U256) -> Option<U256> {
+        None
+    }
+
+    #[inline]
+    fn on_tstore(&mut self, _address: Address, _key: U256, _value: U256) {}
 }
 
 bitflags! {
