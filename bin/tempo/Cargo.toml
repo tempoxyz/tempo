@@ -123,6 +123,7 @@ reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["io"] }
+log.workspace = true
 tracing.workspace = true
 tempfile.workspace = true
 opentelemetry-otlp = { version = "0.32", default-features = false, optional = true }
@@ -256,8 +257,11 @@ min-info-logs = [
 	"reth-ethereum-cli/min-info-logs",
 	"tempo-node/min-info-logs",
 ]
+# Only min-debug-logs sets log/release_max_level_debug because log errors if multiple
+# release_max_level_* features are unified (e.g. --all-features).
 min-debug-logs = [
 	"tracing/release_max_level_debug",
+	"log/release_max_level_debug",
 	"reth-ethereum-cli/min-debug-logs",
 	"tempo-node/min-debug-logs",
 ]
