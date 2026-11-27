@@ -291,13 +291,13 @@ where
                 consensus,
                 &expected,
                 |at| {
-                    let provider = read_only()?;
+                    let provider = state.long_read_consistent_provider()?;
                     let hash = provider
                         .block_hash(at)?
                         .ok_or_else(|| eyre::eyre!("missing historical canonical block {at}"))?;
                     Ok(StateProviderDatabase(
-                        state
-                            .state_provider_from_database(provider, hash)?
+                        provider
+                            .state_by_hash(hash, false)?
                             .into_evm_state_provider(),
                     ))
                 },

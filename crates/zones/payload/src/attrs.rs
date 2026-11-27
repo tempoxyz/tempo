@@ -14,6 +14,7 @@ use reth_node_api::{
 use reth_payload_primitives::PayloadAttributes;
 use reth_primitives_traits::{AlloyBlockHeader, SealedBlock, SealedHeader};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tempo_node::engine::TempoEngineValidator;
 use tempo_payload_types::{TempoBuiltPayload, TempoExecutionData};
 use tempo_primitives::{Block, TempoHeader};
@@ -148,8 +149,8 @@ impl PayloadValidator<ZonePayloadTypes> for TempoEngineValidator {
     fn convert_payload_to_block(
         &self,
         payload: TempoExecutionData,
-    ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
-        Ok(payload.block.into_sealed_block())
+    ) -> Result<Arc<SealedBlock<Self::Block>>, NewPayloadError> {
+        Ok(Arc::new(payload.block.into_sealed_block()))
     }
 
     fn validate_payload_attributes_against_header(
