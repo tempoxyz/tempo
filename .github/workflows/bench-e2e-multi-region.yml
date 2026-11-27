@@ -321,7 +321,7 @@ jobs:
       # Keep in sync with tempoxyz/tempo-multi-region-benchmark's copy of this workflow.
       TEMPO_BUILD_PROFILE: maxperf
       TEMPO_EXTRA_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C target-feature=+aes,+pclmulqdq,+adx -C link-arg=-fuse-ld=mold"
-      BENCH_BUILD_SUFFIX: "-maxperf-v4"
+      BENCH_BUILD_SUFFIX: "-maxperf-v5"
       # Stable paths let sccache reuse Rust compilations across fresh Depot runners.
       TEMPO_BUILD_ROOT: /tmp/tempo-benchmark-build
       TF_IN_AUTOMATION: "1"
