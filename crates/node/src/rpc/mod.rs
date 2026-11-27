@@ -675,7 +675,7 @@ struct LaneCreates {
 
 impl LaneCreates {
     /// Loads the block `block_hash`, its receipts and the state around it. Returns `None` if the
-    /// block is not stored, such as a pending block, or its state was pruned.
+    /// block is not stored, such as a pending block, or its state is pruned or not yet synced.
     fn load<Provider>(provider: &Provider, block_hash: B256) -> Result<Option<Self>, ProviderError>
     where
         Provider: BlockReader<Block = tempo_primitives::Block>
@@ -692,7 +692,9 @@ impl LaneCreates {
         };
         let state = |hash| match provider.state_by_block_hash(hash) {
             Ok(state) => Ok(Some(state)),
-            Err(ProviderError::StateAtBlockPruned(_)) => Ok(None),
+            Err(
+                ProviderError::StateAtBlockPruned(_) | ProviderError::StateUnavailableDuringSync,
+            ) => Ok(None),
             Err(err) => Err(err),
         };
         let (Some(parent_state), Some(state)) =
@@ -715,13 +717,15 @@ impl LaneCreates {
     /// account for the whole change, assigns them consecutive nonces in block order.
     fn address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
         match self.try_address(index, sender) {
-            Err(ProviderError::StateAtBlockPruned(_)) => Ok(None),
+            Err(
+                ProviderError::StateAtBlockPruned(_) | ProviderError::StateUnavailableDuringSync,
+            ) => Ok(None),
             result => result,
         }
     }
 
-    /// [`Self::address`], failing with [`ProviderError::StateAtBlockPruned`] if the history it
-    /// reads was pruned.
+    /// [`Self::address`], failing with [`ProviderError::StateAtBlockPruned`] or
+    /// [`ProviderError::StateUnavailableDuringSync`] if the state it reads is unavailable.
     fn try_address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
         let account_nonce = |state: &StateProviderBox| {
             Ok::<_, ProviderError>(
