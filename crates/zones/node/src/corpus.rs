@@ -283,12 +283,15 @@ mod tests {
     use tempo_contracts::zones::IZoneInbox;
     use tempo_corpus::{
         exec::{capture, replay},
+        fuzz,
         store::{self, CaseRecord, Record},
     };
+    use tempo_fuzz_types::{ChainSpecInput, ErrorClass, TempoHarnessOutcome, TxOutcome};
     use tempo_primitives::{
         BlockBody, TempoHeader, TempoTxEnvelope,
         transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     };
+    use zone_fuzz_harness::{L1Input, ZoneHarnessInput};
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
         test_utils::MockL1Reader,
@@ -402,8 +405,10 @@ mod tests {
                 decryptions: Vec::new(),
                 enabledTokens: Vec::new(),
             };
+            // A valid system transaction: zone consensus checks its chain ID, as the sequencer's.
             let tx = TempoTxEnvelope::Legacy(
                 TxLegacy {
+                    chain_id: Some(chain.chain_spec.chain_id()),
                     to: ZONE_INBOX_ADDRESS.into(),
                     input: advance.abi_encode().into(),
                     ..Default::default()
@@ -595,6 +600,45 @@ mod tests {
                 record.number
             );
             replay::verify(&chain, &consensus, &input, cases, record).unwrap();
+        }
+    }
+
+    #[test]
+    fn captured_zone_blocks_run_in_the_zone_fuzz_harness_on_their_recorded_l1() {
+        let (chain, published) = capture_archive();
+        let chain_spec = ChainSpecInput {
+            chain_id: chain.chain_spec.chain_id(),
+            hardforks: fuzz::listed_hardforks(&chain.chain_spec.display_hardforks().to_string())
+                .unwrap(),
+        };
+        for Published { record, bytes, .. } in &published {
+            let stored = store::decode(bytes, record).unwrap();
+            let l1 = fuzz::recorded_l1(&stored).expect("a zone block reads L1");
+            assert_eq!(
+                l1.blocks.keys().copied().collect::<Vec<_>>(),
+                [record.number],
+                "block {} read L1 outside its Tempo block",
+                record.number
+            );
+            let input = fuzz::harness_input(&stored, chain_spec.clone()).unwrap();
+            let (outcome, rejection) = zone_fuzz_harness::run(ZoneHarnessInput {
+                l1: L1Input::Recorded(l1),
+                input,
+            });
+            let TempoHarnessOutcome::Blockchain(outcome) = outcome else {
+                panic!("a corpus block is a blockchain input");
+            };
+            assert_eq!(rejection, None, "block {}", record.number);
+            assert_eq!(outcome.error, ErrorClass::None, "block {}", record.number);
+            assert!(
+                outcome.invariant_failures.is_empty(),
+                "block {}: {:#?}",
+                record.number,
+                outcome.invariant_failures
+            );
+            // The block's own advanceTempo replays, as the node executed it.
+            let outcomes: Vec<_> = outcome.receipts.iter().map(|r| r.outcome.clone()).collect();
+            assert_eq!(outcomes, [TxOutcome::Success], "block {}", record.number);
         }
     }
 

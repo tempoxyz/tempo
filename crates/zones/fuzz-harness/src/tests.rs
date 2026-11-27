@@ -27,7 +27,7 @@ use test_case::test_case;
 use zone_precompiles::tempo_state::TEMPO_BLOCK_NUMBER_SLOT;
 use zone_primitives::constants::{TEMPO_STATE_ADDRESS, zone_chain_id};
 
-use crate::{L1Input, L1StateInput, Zone, ZoneHarnessInput, engine::GENESIS, run};
+use crate::{L1Input, L1RecordedInput, L1StateInput, Zone, ZoneHarnessInput, engine::GENESIS, run};
 
 const ZONE_ID: u32 = 1;
 const SENDER: Address = address!("00000000000000000000000000000000000000a1");
@@ -160,11 +160,13 @@ fn execute(
     l1: L1StateInput,
     blocks: Vec<Vec<Bytes>>,
 ) -> TempoExecutionOutcome {
+    execute_on(fork, L1Input::State(l1), blocks)
+}
+
+fn execute_on(fork: TempoHardfork, l1: L1Input, blocks: Vec<Vec<Bytes>>) -> TempoExecutionOutcome {
     let input = TempoHarnessInput::Blockchain(blockchain(fork, blocks));
-    let (TempoHarnessOutcome::Blockchain(outcome), rejection) = run(ZoneHarnessInput {
-        l1: L1Input::State(l1),
-        input,
-    }) else {
+    let (TempoHarnessOutcome::Blockchain(outcome), rejection) = run(ZoneHarnessInput { l1, input })
+    else {
         panic!("a blockchain input has a blockchain outcome");
     };
     assert_eq!(rejection, None);
@@ -243,6 +245,35 @@ fn t15_transfers_follow_the_portal_opt_in() {
         let reverted = [ADVANCED, (TxIndex::Input(0), TxOutcome::Revert)];
         assert_eq!(receipts(&outcome), reverted, "{fork:?} enabled={enabled}");
     }
+}
+
+#[test]
+fn a_recorded_l1_is_read_at_the_tempo_block_each_zone_block_imports() {
+    // Each built block imports the next Tempo block: the portal opted in to transfers at block 1
+    // and out at block 2. Block 3 recorded nothing, which reads as zero, so pathUSD is not enabled
+    // there and the sequencer leaves the transfer out.
+    let l1 = L1RecordedInput {
+        blocks: BTreeMap::from([(1, l1(true)), (2, l1(false))]),
+    };
+    let outcome = execute_on(
+        TempoHardfork::T15,
+        L1Input::Recorded(l1),
+        vec![
+            vec![transfer(0, RECIPIENT, 100)],
+            vec![transfer(1, RECIPIENT, 100)],
+            vec![transfer(1, RECIPIENT, 100)],
+        ],
+    );
+    assert_eq!(
+        receipts(&outcome),
+        [
+            ADVANCED,
+            (TxIndex::Input(0), TxOutcome::Success),
+            ADVANCED,
+            (TxIndex::Input(0), TxOutcome::Revert),
+            ADVANCED,
+        ]
+    );
 }
 
 #[test]

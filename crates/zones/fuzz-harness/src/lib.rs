@@ -22,7 +22,7 @@ use tempo_fuzz_types::{PreState, TempoHarnessInput, TempoHarnessOutcome};
 
 pub use consensus::ZoneConsensus;
 pub use engine::{L1, L1Chain, Zone};
-pub use types::{L1Input, L1StateInput, ZoneHarnessInput};
+pub use types::{L1Input, L1RecordedInput, L1StateInput, ZoneHarnessInput};
 
 /// Executes `input` on a zone that reads its L1 state. Returns the outcome and, unless its error
 /// is `None`, why it stopped short.
@@ -33,6 +33,10 @@ pub fn run(input: ZoneHarnessInput) -> (TempoHarnessOutcome, Option<Rejection>) 
             tempo_fuzz_engine::run(&Zone::new(L1::state(l1), watched), input.input)
         }
         L1Input::Chain(tempo) => chain::run(&tempo, input.input),
+        L1Input::Recorded(l1) => {
+            let watched = watched(&input.input);
+            tempo_fuzz_engine::run(&Zone::new(L1::recorded(l1), watched), input.input)
+        }
     }
 }
 

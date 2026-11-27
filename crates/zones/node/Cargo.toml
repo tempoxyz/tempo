@@ -108,6 +108,8 @@ sha2 = { workspace = true, optional = true }
 [dev-dependencies]
 zone-chainspec = { workspace = true, features = ["test-utils"] }
 zone-node = { path = ".", features = ["test-utils"] }
+zone-fuzz-harness = { path = "../fuzz-harness" }
+tempo-fuzz-types.workspace = true
 
 alloy = { workspace = true, features = ["full", "genesis", "providers", "rpc-types", "signer-local", "signer-mnemonic-all-languages", "signers"] }
 alloy-contract.workspace = true

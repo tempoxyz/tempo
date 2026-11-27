@@ -1,6 +1,7 @@
 //! Corpus blocks as fuzz harness inputs. Each block, on the exact pre-state it read, becomes a
-//! [`TempoHarnessInput::Blockchain`] on the corpus's chain. A block list file names a subset of a
-//! corpus, such as the blocks a minimizer kept.
+//! [`TempoHarnessInput::Blockchain`] on the corpus's chain. A zone corpus's block also brings the
+//! Tempo L1 state it read, as an [`L1RecordedInput`] for the zone harness. A block list file names a
+//! subset of a corpus, such as the blocks a minimizer kept.
 
 use crate::{
     code,
@@ -20,7 +21,7 @@ use tempo_chainspec::{
 };
 use tempo_fuzz_types::{
     AccountInput, BlockHeaderInput, ChainSpecInput, NonEmpty, PreState, StateInput, TempoBlock,
-    TempoBlockchainInput, TempoHarnessInput,
+    TempoBlockchainInput, TempoHarnessInput, zone::L1RecordedInput,
 };
 use tempo_primitives::Block;
 use tokio::{runtime::Runtime, sync::mpsc};
@@ -102,14 +103,30 @@ impl Corpus {
         Ok(())
     }
 
+    /// Whether this is a zone corpus, whose blocks come with the Tempo L1 state they read.
+    pub fn is_zone(&self) -> bool {
+        self.catalog.context.portal.is_some()
+    }
+
     /// `block`'s harness input.
     pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
+        Ok(self.input_with_l1(block)?.0)
+    }
+
+    /// `block`'s harness input, with the Tempo L1 state it read if it is a zone block.
+    pub fn input_with_l1(
+        &self,
+        block: u64,
+    ) -> eyre::Result<(TempoHarnessInput, Option<L1RecordedInput>)> {
         self.ensure_leased()?;
         let stored = self
             .runtime
             .block_on(store::published(&self.reader, block))?
             .1;
-        harness_input(&stored, self.chain_spec.clone())
+        Ok((
+            harness_input(&stored, self.chain_spec.clone())?,
+            recorded_l1(&stored),
+        ))
     }
 
     /// Each of `blocks` with its harness input, in the order given.
@@ -165,6 +182,7 @@ impl Corpus {
                                     block,
                                     size: record.block_bytes,
                                     input: harness_input(&stored, chain_spec)?,
+                                    l1: recorded_l1(&stored),
                                 })
                             }))
                         })
@@ -215,6 +233,8 @@ pub struct BlockInput {
     pub size: usize,
     /// Its harness input.
     pub input: TempoHarnessInput,
+    /// The Tempo L1 state it read, for a zone block.
+    pub l1: Option<L1RecordedInput>,
 }
 
 /// Windows of a [Corpus]'s blocks, from [Corpus::windows]. Dropping it stops the reads running.
@@ -268,8 +288,16 @@ fn window_len(blocks: &[u64], target_len: usize, window: u64) -> usize {
 
 /// The harness chain of `catalog`'s corpus, taken from the known chain whose forks agree with it
 /// up to its `tip` timestamp ([`store::forks_agree`]). Forks that never activate get `u64::MAX`.
+/// A zone corpus's chain comes from its own genesis, which no known chain describes, so its forks
+/// are read from the listing it was captured with ([`listed_hardforks`]).
 fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput> {
     let context = &catalog.context;
+    if context.portal.is_some() {
+        return Ok(ChainSpecInput {
+            chain_id: context.chain_id,
+            hardforks: listed_hardforks(&context.forks)?,
+        });
+    }
     let spec: &TempoChainSpec = [&**PRESTO, &**MODERATO]
         .into_iter()
         .find(|spec| {
@@ -292,9 +320,65 @@ fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput>
     })
 }
 
+/// The Tempo hardfork activations a [`display_hardforks`] listing schedules by timestamp. Forks
+/// it does not list get `u64::MAX`; one it lists without a timestamp fails.
+///
+/// [`display_hardforks`]: reth_chainspec::EthChainSpec::display_hardforks
+pub fn listed_hardforks(listing: &str) -> eyre::Result<BTreeMap<TempoHardfork, u64>> {
+    let mut hardforks: BTreeMap<_, _> = TempoHardfork::VARIANTS
+        .iter()
+        .map(|&fork| (fork, u64::MAX))
+        .collect();
+    for fork in listing
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+    {
+        let (name, at) = fork.rsplit_once('@').map_or((fork, None), |(name, at)| {
+            (name, at.trim().parse::<u64>().ok())
+        });
+        let Ok(fork) = name.trim().parse::<TempoHardfork>() else {
+            // Ethereum's forks, which every Tempo chain activates at genesis.
+            continue;
+        };
+        let at = at
+            .ok_or_else(|| eyre::eyre!("{fork:?} activates by something other than a timestamp"))?;
+        hardforks.insert(fork, at);
+    }
+    Ok(hardforks)
+}
+
+/// The Tempo L1 state `stored`'s zone block read, at each L1 block it read; `None` for a Tempo L1
+/// block, which reads none.
+pub fn recorded_l1(stored: &Input) -> Option<L1RecordedInput> {
+    if stored.l1.0.is_empty() {
+        return None;
+    }
+    let mut l1 = L1RecordedInput::default();
+    for (read, value) in &stored.l1.0 {
+        let state = l1.blocks.entry(read.block).or_default();
+        let account = Address::from(read.account);
+        match read.slot {
+            Some(slot) => {
+                state
+                    .storage
+                    .entry(account)
+                    .or_default()
+                    .insert(U256::from_be_bytes(slot), U256::from_be_bytes(*value));
+            }
+            None => {
+                state.commitments.insert(account, B256::from(*value));
+            }
+        }
+    }
+    Some(l1)
+}
+
 /// `stored`'s block on the exact pre-state it read. Its code must be resolved
 /// ([`store::resolve_code`]).
-fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<TempoHarnessInput> {
+pub fn harness_input(
+    stored: &Input,
+    chain_spec: ChainSpecInput,
+) -> eyre::Result<TempoHarnessInput> {
     let mut accounts = stored
         .accounts
         .iter()
@@ -401,6 +485,22 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listed_hardforks_reads_timestamp_activations() {
+        let listing = "Hard forks (block based):
+- Frontier                         @0
+Post-merge hard forks (timestamp based):
+- Shanghai                         @0
+- T0                               @0
+- T13                              @100";
+        let hardforks = listed_hardforks(listing).unwrap();
+        assert_eq!(hardforks[&TempoHardfork::T0], 0);
+        assert_eq!(hardforks[&TempoHardfork::T13], 100);
+        // A fork the listing does not schedule never activates.
+        assert_eq!(hardforks[&TempoHardfork::T14], u64::MAX);
+        assert!(listed_hardforks("- T13 @block 5").is_err());
+    }
 
     #[test]
     fn window_len_cuts() {
