@@ -265,6 +265,8 @@ pub struct ZoneNode {
     allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
+    /// Whether pool admission requires the sender to hold an enabled zone token.
+    require_enabled_token_balance: bool,
 }
 
 impl ZoneNode {
@@ -315,7 +317,14 @@ impl ZoneNode {
             deposit_allowlist_admin: None,
             allowlist_mirror: AllowlistMirror::default(),
             external_deposit_consumer: false,
+            require_enabled_token_balance: false,
         }
+    }
+
+    /// Reject pool transactions whose sender holds no balance of any token enabled for the zone.
+    pub fn with_enabled_token_balance_admission(mut self) -> Self {
+        self.require_enabled_token_balance = true;
+        self
     }
 
     /// On an RPC-only node, serve the `zoneAdmin` allowlist methods and relay writes signed by
@@ -1792,6 +1801,9 @@ where
             executor_builder.enabled_tokens.clone(),
             self.l1_state_cache.clone(),
         );
+        if self.require_enabled_token_balance {
+            pool_builder = pool_builder.with_enabled_token_balance_check();
+        }
         if let Some(allowlist) = self
             .sequencer_config
             .as_ref()
@@ -1975,6 +1987,8 @@ pub struct ZonePoolBuilder {
     l1_state_cache: L1StateCache,
     /// Allowlist that transfer calls must satisfy. `None` admits every transfer.
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
+    /// Whether senders must hold a nonzero balance of an enabled zone token.
+    require_enabled_token_balance: bool,
 }
 
 impl ZonePoolBuilder {
@@ -1985,7 +1999,14 @@ impl ZonePoolBuilder {
             enabled_tokens,
             l1_state_cache,
             transfer_allowlist: None,
+            require_enabled_token_balance: false,
         }
+    }
+
+    /// Reject transactions whose sender holds no balance of any token enabled for the zone.
+    pub(crate) fn with_enabled_token_balance_check(mut self) -> Self {
+        self.require_enabled_token_balance = true;
+        self
     }
 
     /// Reject transactions whose calls move funds to or from accounts `allowlist` does not
@@ -2061,12 +2082,16 @@ where
         let provider = ctx.provider().clone();
         let enabled_tokens = self.enabled_tokens;
         let transfer_allowlist = self.transfer_allowlist;
+        let require_enabled_token_balance = self.require_enabled_token_balance;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
             // The in-memory allowlist check runs before the balance check, which reads state.
             if let Some(allowlist) = &transfer_allowlist {
                 validate_transfer_calls(allowlist.as_ref(), tx)?;
             }
-            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
+            if require_enabled_token_balance {
+                validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())?;
+            }
+            Ok(())
         });
 
         let validator =

@@ -8,8 +8,9 @@
 //! - Method tier enforcement (restricted/disabled/unknown methods)
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, TIP20_TX_GAS, l1_dev_signer, now_secs, start_zone_with_redacted_rpc,
-    start_zone_with_redacted_rpc_l1, start_zone_with_redacted_rpc_l1_with_encryption,
+    DEFAULT_TIMEOUT, TIP20_TX_GAS, ZoneLaunch, l1_dev_signer, now_secs,
+    start_zone_with_redacted_rpc, start_zone_with_redacted_rpc_l1,
+    start_zone_with_redacted_rpc_l1_with_encryption, start_zone_with_redacted_rpc_launch,
 };
 use alloy::{
     primitives::{Address, B256, TxKind, U256, address, hex},
@@ -263,12 +264,17 @@ async fn test_auth_rejection() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Pool admission requires the transaction sender to hold an enabled zone token.
+/// With `--txpool.require-enabled-token-balance`, pool admission requires the transaction sender
+/// to hold an enabled zone token.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_send_raw_transaction_requires_enabled_token_balance() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut ctx = start_zone_with_redacted_rpc().await?;
+    let mut ctx = start_zone_with_redacted_rpc_launch(ZoneLaunch {
+        require_enabled_token_balance: true,
+        ..Default::default()
+    })
+    .await?;
     let user_signer = PrivateKeySigner::random();
     let fee_payer = PrivateKeySigner::random();
     ctx.inject_deposit(
@@ -308,6 +314,34 @@ async fn test_send_raw_transaction_requires_enabled_token_balance() -> eyre::Res
     assert!(
         response["result"].as_str().is_some(),
         "funded sender transaction should be accepted: {response}",
+    );
+
+    Ok(())
+}
+
+/// By default, pool admission accepts a sponsored transaction from a sender without balance.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_send_raw_transaction_accepts_unfunded_sender_by_default() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut ctx = start_zone_with_redacted_rpc().await?;
+    let user_signer = PrivateKeySigner::random();
+    let fee_payer = PrivateKeySigner::random();
+    ctx.inject_deposit(
+        PATH_USD_ADDRESS,
+        fee_payer.address(),
+        fee_payer.address(),
+        1_000_000,
+    )
+    .await?;
+    let raw = signed_sponsored_raw_transaction(&user_signer, &fee_payer, ctx.config.chain_id)?;
+
+    let response = ctx
+        .call_as_user("eth_sendRawTransaction", json!([raw]), &user_signer)
+        .await?;
+    assert!(
+        response["result"].as_str().is_some(),
+        "unfunded sender transaction should be accepted: {response}",
     );
 
     Ok(())
