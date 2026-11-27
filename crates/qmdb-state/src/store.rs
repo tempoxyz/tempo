@@ -102,9 +102,10 @@ static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| 
         .unwrap_or(0)
 });
 /// Whether staging hashes the grafted leaves its writes are predicted to change ahead of
-/// merkleize; set `TEMPO_QMDB_GRAFT_SPECULATION=0` to stop it.
+/// merkleize; off unless `TEMPO_QMDB_GRAFT_SPECULATION=1`: it mispredicted about half the
+/// chunks and slowed the walk more than it saved.
 static GRAFT_SPECULATION: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    std::env::var("TEMPO_QMDB_GRAFT_SPECULATION").map_or(true, |v| v != "0")
+    std::env::var("TEMPO_QMDB_GRAFT_SPECULATION").is_ok_and(|v| v == "1")
 });
 /// Staged keys a speculation waits for before extending the previous one: at least this many,
 /// and at least an eighth more than it covered.
