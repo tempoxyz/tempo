@@ -21,9 +21,13 @@ use commonware_codec::{
 use commonware_cryptography::{Hasher as _, Sha256, sha256};
 use commonware_storage::{
     merkle::mmr,
-    qmdb::{any::ordered, current::proof::constant::OperationProof, value::VariableEncoding},
+    qmdb::{
+        any::ordered,
+        current::{ordered::proof::constant::ExclusionProof, proof::constant::OperationProof},
+        value::VariableEncoding,
+    },
 };
-use commonware_utils::{range::contains_cyclic, sequence::FixedBytes};
+use commonware_utils::sequence::FixedBytes;
 use thiserror::Error;
 
 const HASH_PREFIX: usize = 8;
@@ -48,98 +52,8 @@ const PRESENT: u8 = 1;
 
 pub(crate) type StateKey = FixedBytes<KEY_LENGTH>;
 type Encoding = VariableEncoding<StateValue>;
+type Operation = ordered::Operation<mmr::Family, StateKey, Encoding>;
 type Update = ordered::Update<StateKey, Encoding>;
-
-// Hankie's pinned commonware-storage revision (2026.10.0) tags QMDB operations with
-// 0xD1/0xD2/0xD3, whereas Tempo's workspace commonware-storage (2026.11.0) uses 0/1/2.
-// Encoding the operation leaf with hankie's tags lets us verify hankie's proofs directly
-// with Tempo's workspace OperationProof without duplicating Commonware in the lockfile.
-const HANKIE_UPDATE_CONTEXT: u8 = 0xD2;
-const HANKIE_COMMIT_CONTEXT: u8 = 0xD3;
-const EXCLUSION_KEY_VALUE: u8 = 0;
-const EXCLUSION_COMMIT: u8 = 1;
-
-#[derive(Clone, Debug)]
-enum HankieOperation {
-    Update(Update),
-    Commit(Option<StateValue>, mmr::Location),
-}
-
-impl Write for HankieOperation {
-    fn write(&self, buf: &mut impl BufMut) {
-        match self {
-            Self::Update(update) => {
-                HANKIE_UPDATE_CONTEXT.write(buf);
-                update.write(buf);
-            }
-            Self::Commit(metadata, floor) => {
-                HANKIE_COMMIT_CONTEXT.write(buf);
-                metadata.write(buf);
-                floor.write(buf);
-            }
-        }
-    }
-}
-
-impl EncodeSize for HankieOperation {
-    fn encode_size(&self) -> usize {
-        1 + match self {
-            Self::Update(update) => update.encode_size(),
-            Self::Commit(metadata, floor) => metadata.encode_size() + floor.encode_size(),
-        }
-    }
-}
-
-impl HankieOperation {
-    fn read_update(buf: &mut impl Buf) -> Result<Update, CodecError> {
-        match u8::read(buf)? {
-            HANKIE_UPDATE_CONTEXT => Update::read_cfg(buf, &((), ())),
-            tag => Err(CodecError::InvalidEnum(tag)),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-enum HankieExclusionProof {
-    KeyValue(OperationProof<mmr::Family, sha256::Digest, CHUNK>, Update),
-    Commit(
-        OperationProof<mmr::Family, sha256::Digest, CHUNK>,
-        Option<StateValue>,
-    ),
-}
-
-impl HankieExclusionProof {
-    fn read_cfg(buf: &mut impl Buf, max_digests: usize) -> Result<Self, CodecError> {
-        match u8::read(buf)? {
-            EXCLUSION_KEY_VALUE => {
-                let proof = OperationProof::read_cfg(buf, &max_digests)?;
-                let update = Update::read_cfg(buf, &((), ()))?;
-                Ok(Self::KeyValue(proof, update))
-            }
-            EXCLUSION_COMMIT => {
-                let proof = OperationProof::read_cfg(buf, &max_digests)?;
-                let metadata = Option::<StateValue>::read_cfg(buf, &())?;
-                Ok(Self::Commit(proof, metadata))
-            }
-            tag => Err(CodecError::InvalidEnum(tag)),
-        }
-    }
-
-    fn verify(&self, key: &StateKey, root: &sha256::Digest) -> bool {
-        let (proof, op) = match self {
-            Self::KeyValue(proof, update) => {
-                if update.key == *key || !contains_cyclic(&update.key..&update.next_key, key) {
-                    return false;
-                }
-                (proof, HankieOperation::Update(update.clone()))
-            }
-            Self::Commit(proof, metadata) => {
-                (proof, HankieOperation::Commit(metadata.clone(), proof.loc))
-            }
-        };
-        proof.verify::<Sha256, _>(op, root)
-    }
-}
 
 /// Errors returned while decoding or verifying hankie QMDB state proofs.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -257,7 +171,7 @@ enum StateProof {
     },
     Absent {
         key: StateKey,
-        proof: HankieExclusionProof,
+        proof: ExclusionProof<mmr::Family, StateKey, Encoding, sha256::Digest, CHUNK>,
     },
 }
 
@@ -273,11 +187,13 @@ impl StateProof {
         match self {
             Self::Present { update, proof }
                 if update.key == *key
-                    && proof.verify::<Sha256, _>(HankieOperation::Update(update.clone()), root) =>
+                    && proof.verify::<Sha256, _>(Operation::Update(update.clone()), root) =>
             {
                 Ok(Some(&update.value))
             }
-            Self::Absent { key: absent, proof } if absent == key && proof.verify(key, root) => {
+            Self::Absent { key: absent, proof }
+                if absent == key && proof.verify::<Sha256>(key, root) =>
+            {
                 Ok(None)
             }
             _ => Err(()),
@@ -288,13 +204,18 @@ impl StateProof {
         let max_digests = bytes.len() / 32 + 1;
         let mut buf = Copying(bytes);
         let proof = match u8::read(&mut buf)? {
-            PRESENT => Self::Present {
-                update: HankieOperation::read_update(&mut buf)?,
-                proof: OperationProof::read_cfg(&mut buf, &max_digests)?,
-            },
+            PRESENT => {
+                let Operation::Update(update) = Operation::read_cfg(&mut buf, &((), ()))? else {
+                    return Err(CodecError::Invalid("StateProof", "not an update"));
+                };
+                Self::Present {
+                    update,
+                    proof: OperationProof::read_cfg(&mut buf, &max_digests)?,
+                }
+            }
             ABSENT => Self::Absent {
                 key: StateKey::read(&mut buf)?,
-                proof: HankieExclusionProof::read_cfg(&mut buf, max_digests)?,
+                proof: ExclusionProof::read_cfg(&mut buf, &(max_digests, ((), ()), ()))?,
             },
             tag => return Err(CodecError::InvalidEnum(tag)),
         };
@@ -448,52 +369,54 @@ mod tests {
         assert_eq!(err, QmdbWitnessError::InvalidProofEncoding);
     }
 
+    /// Proofs that `cloakroom` served with `eth_getMultiProof` at block 5 of a one-validator
+    /// network on Tempo's dev genesis: pathUSD's account, its slot 4 and absent slot 0, and an
+    /// absent account. `other_root` is block 4's state root.
     #[test]
     fn verifies_real_hankie_state_proofs() {
         use alloy_primitives::{address, b256, bytes};
 
-        let root = b256!("7367f03684b0ae41b8b46869f9bedd7da614e244580f3c7ce517d3f1446dd661");
-        let other_root = b256!("4a058918ef757c156a7806fcc63df3296d948d33e258674a7bc1794c152ce58a");
-        let store = address!("00000000000000000000000000000000000c0de1");
+        let root = b256!("aec15fdd9878f3c77936e6605f982c11fd3a9f1a7a799c3383b08362d36b1339");
+        let other_root = b256!("c93945162fc295b4c44551df7e404e9538aaec0edeaedb28c840b9d00b74ad09");
+        let token = address!("20c0000000000000000000000000000000000000");
         let absent = address!("9999999999999999999999999999999999999999");
 
-        let store_acc = bytes!(
-            "01d260239be8720015190000000000000000000000000000000000000c0de100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b17a1253a236070c4043bdcfe23ea952c49feb94c277f3d475e463d8667198df008f4d1fccbd2c1e10007e5f4552091a69125d5dfcb7b8c2659029395bdf0000000000000000000000000000000000000000000000000000000000000000140000d1f1fb0f00000000000000000000000000000000000000000000000000002c0006102e881b182b03f588dd0499dbf822bebdcade04dc6d2d1e7fd6eda40b6d90681f7ca739f347062fedf196dd3d9396f23034727f54ea56d4677235f7a205fcc05d210a32320a4c121ef657d52d94df77a60c37c6800dc0291f760dfe6e16d0ec375fb46159067654c89d4ffc26aa85b96ece1ab912a7ef89c8a3d64ca11e7b05c480ab89b2b78fc8f20b141ab4cf5190d765709d8c65f72b4a164ef666a14185dc2d64c0b18d6182ed0dd2d64b80e52584483f4c1e7df27efe6a180df39520200105c6aa539a1dae324a75501c69352f6ef8c5281de8eaceb51fe1f1557ec5264fe7b1c261c23fda0df191855954f47c0b348d82431be5072fcb86fc09a4b0d96b"
+        let token_acc = bytes!(
+            "01013f5f94b35c4d8fe30020c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a30040c232ea97c388d40120c0000000000000000000000000000000000002c39d774f18115b85b81494d65e588b565d73abc969333d1da7b0a0eb0729accd2600f8fffffbffffffffffff7fffffdffffffdffff7aef7d000000000000000000b70100084fe0b146ec453f3ec4c48de285b57833ee6e32df39fe296f352d88a3bfe075a6d8b500bf90beed9f0d07df1a11816648c2d3542243851dd960cef15ebb3935af5e99e50775b15ec18101760bda9eedbf1bb132e588329d90f9c01568ed89eb5496bb50399d8862d3d0cbb092b663481e1701b7c639176f1e196717d73528c4e7a40e552de38af06fe9f71974b772dcb85d16eeb5e44431e48503558166f3bafa40c83ee88c33778b97b31cdf7eae096e7bdcfae0237cd53fff0166dac9150531bd85cad562fcec7fd382beee270b72b7ba282c70186486e3582da9c3a68081b367b19d838aaa7de94c3cdb6f5ea849ec13199aab36cfaa2e2047eb1fa164ac8901dfb4b892ee11fae008818c90833677d3b372eb2bd070fbf7c266360092911dd48f078d495935334830273c79c19dd9f62f07da5ca2a9a49ec2d231963e363cef"
+        );
+        let slot4 = bytes!(
+            "01010b37b795cb49b4aa0120c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040155534400000000000000000000000000000000000000000000000000000000060f0bc72407a443620120c0000000000000000000000000000000000000aab8bf5bafd4a7defe9190a92a4e6a1a5617d64b78425566059df2cc35285f64a10100f8fffffbffffffffffff7fffffdffffffdffff7aef7d000000000000000000b7010007d77877ebfacf9261a1fce75da73c5891a4157b7ebb13ede7c66263ba82f0bf4f758915a5c5ec9429476d4ac5a6c6cefcb3ef17f29b57d0de8c5021ddf145945c26c2bcbd21268c7885e3b1d7618623352267279feaa26c7297252a4fbe510019cddd87124f6095dc053e927ec91cdd7cab5294c8fad935f24fd500b3b37b2740117f1b63efa10dcb0c2daddea6183fc8f8909b6a1dd963b118cc1443239275527fe0481987079fd4f4318d2c844fdc8531512e96e5a43325b9c367e2203c2b5e2f0741b9fe19cc6c3535e1c9aa823db3b404c686c88feba7484180b905d97e4401dfb4b892ee11fae008818c90833677d3b372eb2bd070fbf7c266360092911dd48f078d495935334830273c79c19dd9f62f07da5ca2a9a49ec2d231963e363cef"
         );
         let slot0 = bytes!(
-            "01d2b98557de0bc6ee2d0100000000000000000000000000000000000c0de10000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000005d56e5b946e5a2e9b0051653000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000240000d1f1fb0f00000000000000000000000000000000000000000000000000002c000546ed3cb1193a8c2d257a657ec8f825877e0f579c370ea5ceb688064aa9b5dc6668dd09cb04de752334cfc27552aaf6c5dfc26cb9c57c75b53f575c9c432936e48f003ec5caee44bb482a182e2898c9db62ea7ea2c99a4a3aa9bfce11ba766f5abaf9b7ad6c7d104e36a36ad0eb86f5f754e2c747c5d47f0ef5e92e0ff78f6e60f1180cc83a0a172cec92c52526a4ee7a9fa993f9441e0f670595d12cb1ee6e700105c6aa539a1dae324a75501c69352f6ef8c5281de8eaceb51fe1f1557ec5264fe7b1c261c23fda0df191855954f47c0b348d82431be5072fcb86fc09a4b0d96b"
-        );
-        let slot1 = bytes!(
-            "008b20ea115724a4370100000000000000000000000000000000000c0de1000000000000000000000000000000000000000000000000000000000000000100140000d1f1fb0f00000000000000000000000000000000000000000000000000002c0006102e881b182b03f588dd0499dbf822bebdcade04dc6d2d1e7fd6eda40b6d90681f7ca739f347062fedf196dd3d9396f23034727f54ea56d4677235f7a205fcc05d210a32320a4c121ef657d52d94df77a60c37c6800dc0291f760dfe6e16d0ec375fb46159067654c89d4ffc26aa85b96ece1ab912a7ef89c8a3d64ca11e7b05c480ab89b2b78fc8f20b141ab4cf5190d765709d8c65f72b4a164ef666a14185dc2d64c0b18d6182ed0dd2d64b80e52584483f4c1e7df27efe6a180df39520200105c6aa539a1dae324a75501c69352f6ef8c5281de8eaceb51fe1f1557ec5264fe7b1c261c23fda0df191855954f47c0b348d82431be5072fcb86fc09a4b0d96b60239be8720015190000000000000000000000000000000000000c0de100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b17a1253a236070c4043bdcfe23ea952c49feb94c277f3d475e463d8667198df008f4d1fccbd2c1e10007e5f4552091a69125d5dfcb7b8c2659029395bdf0000000000000000000000000000000000000000000000000000000000000000"
+            "005f55da4360c0d2d40120c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003900f8fffffbffffffffffff7fffffdffffffdffff7aef7d000000000000000000b70100084fe0b146ec453f3ec4c48de285b57833ee6e32df39fe296f352d88a3bfe075a6d8b500bf90beed9f0d07df1a11816648c2d3542243851dd960cef15ebb3935af22832b9e39d0a71c01c66f1da37b7bd0c5ae57bf0a98adafc68fe35dae4b945a00d0fd33a97f09f81248f4f975b515d1ece1daf69fcc8661afb352b4963271148518c95aae1495ef636ea95afd3f2c9438e1e09c1e42ff59c363023264b3e4896e04ff5a4caa30e0222d2bd4210b5944610f30880aa8bc1d72c0350b4e1ecec702bbbd7f85652bf88c2c2506ec34c8a28b92a2385191ff8f9dd2bdb45fc60e0e67b19d838aaa7de94c3cdb6f5ea849ec13199aab36cfaa2e2047eb1fa164ac8901dfb4b892ee11fae008818c90833677d3b372eb2bd070fbf7c266360092911dd48f078d495935334830273c79c19dd9f62f07da5ca2a9a49ec2d231963e363cef5f184dc3b90f14010120c00000000000000000000000000000000000034aa7d878ced99e38cd20114097b6da04259057b1b890f87340f95f3cd79c3c55010000000000000000000000000000000000000000000000000000000000000001604ab3a65f9952e70120c0000000000000000000000000000000000001194520786657be1e093e5b2bc8663299ed491a0ac2a74bc3154a37ff1287fd7b"
         );
         let absent_acc = bytes!(
-            "001e213cccbc1d2cb40099999999999999999999999999999999999999990000000000000000000000000000000000000000000000000000000000000000002a0000d1f1fb0f00000000000000000000000000000000000000000000000000002c000446ed3cb1193a8c2d257a657ec8f825877e0f579c370ea5ceb688064aa9b5dc66bc50ecc21593206f8b372bba9bac97279134fbde77b6ad828cb39ce5985a1323a8105844362cc38b3f7fe54ba4d6d8f538b45342c832b07713e3ae4966e2194be8c4a67d68ab16e3d984e9cf033b9cf6327590bd699c1139730ae3d1611bfdca0105c6aa539a1dae324a75501c69352f6ef8c5281de8eaceb51fe1f1557ec5264fe7b1c261c23fda0df191855954f47c0b348d82431be5072fcb86fc09a4b0d96bfffc101c41d3ef1b004d5050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3001e877ea3eb79c1a5005a4d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "001e213cccbc1d2cb4009999999999999999999999999999999999999999000000000000000000000000000000000000000000000000000000000000000000b40100f8fffffbffffffffffff7fffffdffffffdffff7aef7d000000000000000000b7010006d77877ebfacf9261a1fce75da73c5891a4157b7ebb13ede7c66263ba82f0bf4f758915a5c5ec9429476d4ac5a6c6cefcb3ef17f29b57d0de8c5021ddf145945c6acf645cb048534bd128988a7fa54c81c8192ddeb756a315ec19a813e6e03f1311162cbfe32f52760495356b4110bd77a283d57573c5f4493a25d080c6f121f3c3ba03335dc9be259507a4cb086a3a4a00b3ab202679788364dfff5e34bf094bf1479031751d75cdbae7e380d6ebdba169895e413e454df42cf4f68775e9961301dfb4b892ee11fae008818c90833677d3b372eb2bd070fbf7c266360092911dd48f078d495935334830273c79c19dd9f62f07da5ca2a9a49ec2d231963e363cef1718f2bd411473da0020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3001e877ea3eb79c1a5005a4d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
         );
 
-        let pool = QmdbWitnessPool::decode(&[store_acc, slot0, slot1, absent_acc]).unwrap();
+        let pool = QmdbWitnessPool::decode(&[token_acc, slot4, slot0, absent_acc]).unwrap();
 
-        let acc = pool.account(root, store).unwrap().expect("store account");
+        let acc = pool.account(root, token).unwrap().expect("pathUSD account");
         assert_ne!(acc.code_hash, B256::ZERO);
         assert_eq!(
-            pool.storage(root, store, U256::ZERO).unwrap(),
-            U256::from(5)
+            pool.storage(root, token, U256::from(4)).unwrap(),
+            U256::from_be_bytes(
+                b256!("5553440000000000000000000000000000000000000000000000000000000006").0
+            )
         );
-        assert_eq!(
-            pool.storage(root, store, U256::from(1)).unwrap(),
-            U256::ZERO
-        );
+        assert_eq!(pool.storage(root, token, U256::ZERO).unwrap(), U256::ZERO);
         assert!(pool.account(root, absent).unwrap().is_none());
 
         assert_eq!(
-            pool.account(other_root, store).unwrap_err(),
+            pool.account(other_root, token).unwrap_err(),
             QmdbWitnessError::InvalidProof {
                 state_root: other_root
             }
         );
         assert_eq!(
-            pool.storage(root, store, U256::from(2)).unwrap_err(),
+            pool.storage(root, token, U256::from(2)).unwrap_err(),
             QmdbWitnessError::MissingStorageProof {
-                address: store,
+                address: token,
                 slot: U256::from(2),
             }
         );
