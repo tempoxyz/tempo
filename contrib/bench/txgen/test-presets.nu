@@ -253,8 +253,8 @@ assert equal ($multi_weights | columns | where { |key| $key starts-with "payroll
 # Only instances with delegated-key spend get keychain setup, over their own slice.
 let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map({id, pool: .keychain_authorize_pool.accounts.pool, keys: .keychain_authorize_pool.access_keys.range, depends_on})' $multi_path | from json)
 assert equal ($keychain | get id) [authorize_keychain_full authorize_keychain_card_heavy]
-# Each waits for the prepare_user that funds its slice's last user (one ordered nonce lane).
-assert equal ($keychain.1.depends_on) [$"prepare_user_($multi.accounts.users_card_heavy.range.1 - 1)"]
+# Each waits for every prepare_user step in its slice (parallel 2D nonce lanes).
+assert equal ($keychain.1.depends_on) (($multi.accounts.users_card_heavy.range.0)..<($multi.accounts.users_card_heavy.range.1) | each { |i| $"prepare_user_($i)" })
 assert ($keychain | get depends_on | flatten | all { |id| $id in ($multi.setup.steps | get id) })
 assert equal ($keychain.1.keys) ($multi.accounts.users_card_heavy.range | each { |user| $user + $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START })
 assert equal ($multi.setup.steps | where id =~ "^dex_wall_" | length) 6

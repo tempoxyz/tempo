@@ -309,7 +309,7 @@ jobs:
       id-token: write
       packages: read
     name: bench-e2e-multi-region
-    runs-on: depot-ubuntu-latest-8
+    runs-on: depot-ubuntu-latest-32
     timeout-minutes: 360
 
     env:
@@ -320,7 +320,7 @@ jobs:
       # apart from cached builds of other flags; change it whenever the flags change.
       # Keep in sync with tempoxyz/tempo-multi-region-benchmark's copy of this workflow.
       TEMPO_BUILD_PROFILE: maxperf
-      TEMPO_EXTRA_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C target-feature=+aes,+pclmulqdq,+adx"
+      TEMPO_EXTRA_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C target-feature=+aes,+pclmulqdq,+adx -C link-arg=-fuse-ld=mold"
       BENCH_BUILD_SUFFIX: "-maxperf-v3"
       # Stable paths let sccache reuse Rust compilations across fresh Depot runners.
       TEMPO_BUILD_ROOT: /tmp/tempo-benchmark-build
@@ -553,6 +553,9 @@ jobs:
       - name: Require Depot remote cache
         run: |
           : "${SCCACHE_WEBDAV_ENDPOINT:?Enable automatic Depot Cache integration for this organization}"
+
+      - name: Setup mold linker
+        uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Setup sccache
         uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
