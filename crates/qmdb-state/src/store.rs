@@ -93,13 +93,13 @@ type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
 static WARM_PREDECESSORS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var("TEMPO_QMDB_WARM_PREDECESSORS").map_or(true, |v| v != "0")
 });
-/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 0 by
+/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 1 by
 /// default); 0 reads none.
 static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
     std::env::var("TEMPO_QMDB_FLOOR_PREFETCH")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(1)
 });
 /// Whether staging hashes the grafted leaves its writes are predicted to change ahead of
 /// merkleize; off unless `TEMPO_QMDB_GRAFT_SPECULATION=1`: it mispredicted about half the
@@ -1322,12 +1322,16 @@ impl Actor {
             else {
                 return reply(Err(Error::Stopped));
             };
+            let mut floor = (Vec::new(), Vec::new());
             if let Some((staged_accounts, staged_slots)) = stage.reads.take() {
                 match try_join!(
                     stage_db(accounts_db, staged_accounts, &accounts),
                     stage_db(slots_db, staged_slots, &slots),
                 ) {
-                    Ok(reads) => stage.reads = Some(reads),
+                    Ok(((accounts, accounts_floor), (slots, slots_floor))) => {
+                        stage.reads = Some((accounts, slots));
+                        floor = (accounts_floor, slots_floor);
+                    }
                     Err(err) => debug!(%err, "failed staging QMDB reads"),
                 }
             }
@@ -1339,6 +1343,13 @@ impl Actor {
                 )
                 .map(|_| ()),
             );
+            // Read the floor walk's candidates after replying, so execution never waits on them.
+            if let Err(err) = try_join!(
+                accounts_db.prefetch_ops(&floor.0),
+                slots_db.prefetch_ops(&floor.1),
+            ) {
+                debug!(%err, "failed reading QMDB floor candidates ahead");
+            }
         });
     }
 
@@ -1743,7 +1754,7 @@ async fn stage_db<const N: usize, const P: usize>(
     db: &Db<N, P>,
     staged: StagedDb<N>,
     keys: &[Key],
-) -> Result<StagedDb<N>, Error> {
+) -> Result<(StagedDb<N>, Vec<u64>), Error> {
     let StagedDb {
         staged,
         mut index,
@@ -1759,13 +1770,16 @@ async fn stage_db<const N: usize, const P: usize>(
         }
     }
     if new.is_empty() {
-        return Ok(StagedDb {
-            staged,
-            index,
-            floor_read,
-            speculation,
-            speculated,
-        });
+        return Ok((
+            StagedDb {
+                staged,
+                index,
+                floor_read,
+                speculation,
+                speculated,
+            },
+            Vec::new(),
+        ));
     }
     let (staged, range, values) = staged.expand(&new, db).await?;
     // Creating a key rewrites its predecessor, whose operation merkleize then reads: read it now,
@@ -1783,10 +1797,13 @@ async fn stage_db<const N: usize, const P: usize>(
     }
     // The floor walk moves about one active operation per key the block writes: read the
     // candidates for every staged key now, only those past what earlier reads covered.
+    // The floor walk moves about one active operation per key the block writes: find the
+    // candidates for every staged key now, past what earlier calls found, for the caller to read
+    // once it has replied.
     let floor_target = index.len().saturating_mul(*FLOOR_PREFETCH);
+    let mut floor = Vec::new();
     if floor_target > floor_read {
-        db.prefetch_floor(floor_read, floor_target - floor_read)
-            .await?;
+        floor = staged.floor_candidates(floor_read, floor_target - floor_read);
         floor_read = floor_target;
     }
     // Hash the grafted leaves the staged writes will change while the block still executes,
@@ -1805,13 +1822,16 @@ async fn stage_db<const N: usize, const P: usize>(
             speculated = index.len();
         }
     }
-    Ok(StagedDb {
-        staged,
-        index,
-        floor_read,
-        speculation,
-        speculated,
-    })
+    Ok((
+        StagedDb {
+            staged,
+            index,
+            floor_read,
+            speculation,
+            speculated,
+        },
+        floor,
+    ))
 }
 
 /// Applies `batch` to `db` and commits it, which also flushes its Merkle nodes out of memory.
