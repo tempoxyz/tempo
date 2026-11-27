@@ -1128,6 +1128,7 @@ impl ZoneTestNode {
             deposit_allowlist,
             deposit_allowlist_relay,
             virtual_address_keys,
+            require_enabled_token_balance,
         } = config;
         let tasks = Runtime::test();
         let is_local_dummy_l1 = matches!(l1, ZoneL1::Stub(_));
@@ -1203,6 +1204,9 @@ impl ZoneTestNode {
                     .map(|(key, version)| (version, zone_payload::VirtualAddressKey::new(key)))
                     .collect(),
             );
+        }
+        if require_enabled_token_balance {
+            zone_node = zone_node.with_enabled_token_balance_admission();
         }
         if is_local_dummy_l1 {
             zone_node = zone_node
@@ -1424,6 +1428,8 @@ pub(crate) struct ZoneLaunch {
     pub(crate) deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
     /// TIP-1094 address keys in version order, which the sequencer initializes once T15 is active.
     pub(crate) virtual_address_keys: Vec<B256>,
+    /// Rejects pool transactions whose sender holds no enabled zone token.
+    pub(crate) require_enabled_token_balance: bool,
 }
 
 impl ZoneLaunch {
@@ -1456,6 +1462,7 @@ impl Default for ZoneLaunch {
             deposit_allowlist: None,
             deposit_allowlist_relay: None,
             virtual_address_keys: Vec::new(),
+            require_enabled_token_balance: false,
         }
     }
 }
@@ -3677,6 +3684,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         deposit_allowlist: deposit_allowlists[index].clone(),
                         deposit_allowlist_relay: None,
                         virtual_address_keys: Vec::new(),
+                        require_enabled_token_balance: false,
                     })
                 },
             )),
@@ -3704,6 +3712,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         .is_some_and(|setup| setup.rpc_relays_writes)
                         .then_some(allowlist_admin),
                     virtual_address_keys: Vec::new(),
+                    require_enabled_token_balance: false,
                 })
                 .await
                 .map(Some)
@@ -4353,10 +4362,17 @@ fn build_redacted_rpc_ctx(
 /// - A redacted RPC server on a random port
 /// - Sequencer credentials for testing access control
 pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTestCtx> {
+    start_zone_with_redacted_rpc_launch(ZoneLaunch::default()).await
+}
+
+/// [`start_zone_with_redacted_rpc`] with the zone launched from `launch`.
+pub(crate) async fn start_zone_with_redacted_rpc_launch(
+    launch: ZoneLaunch,
+) -> eyre::Result<RedactedRpcTestCtx> {
     let sequencer_signer = alloy_signer_local::PrivateKeySigner::random();
     let sequencer_address = sequencer_signer.address();
 
-    let zone = ZoneTestNode::start_local().await?;
+    let zone = ZoneTestNode::launch(launch).await?;
     let fixture = L1Fixture::new();
 
     fixture.seed_l1_cache(

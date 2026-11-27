@@ -234,6 +234,9 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         if !additional_decryption_keys.is_empty() {
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
         }
+        if args.require_enabled_token_balance {
+            node = node.with_enabled_token_balance_admission();
+        }
 
         let data_dir = builder.config().datadir().data_dir().to_path_buf();
         let zone_chain_id = builder.config().chain.chain_id();
@@ -803,6 +806,13 @@ pub struct ZoneArgs {
         value_name = "ADDRESS"
     )]
     pub deposit_allowlist_admin: Option<Address>,
+
+    /// Reject pool transactions whose sender holds no balance of any token enabled for the zone.
+    #[arg(
+        long = "txpool.require-enabled-token-balance",
+        env = "TXPOOL_REQUIRE_ENABLED_TOKEN_BALANCE"
+    )]
+    pub require_enabled_token_balance: bool,
 }
 
 fn prepend_log_filter(filter: &mut String, directives: &str) {
