@@ -240,13 +240,13 @@ async fn test_auth_rejection() -> eyre::Result<()> {
 
     // No auth header → 401
     let (status, _) = ctx
-        .call_no_auth("eth_blockNumber", serde_json::json!([]))
+        .post("eth_blockNumber", serde_json::json!([]), None)
         .await?;
     assert_eq!(status.as_u16(), 401, "missing auth should return 401");
 
     // Garbage token → 401 or 403
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), "deadbeef")
+        .post("eth_blockNumber", serde_json::json!([]), Some("deadbeef"))
         .await?;
     assert!(
         status.as_u16() == 401 || status.as_u16() == 403,
@@ -256,7 +256,7 @@ async fn test_auth_rejection() -> eyre::Result<()> {
     // Valid signature but wrong chain ID → 403
     let bad_token = ctx.build_bad_token(&ctx.sequencer_signer, 1, ctx.config.chain_id + 1);
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &bad_token)
+        .post("eth_blockNumber", serde_json::json!([]), Some(&bad_token))
         .await?;
     assert_eq!(status.as_u16(), 403, "wrong chain ID should return 403");
 
@@ -375,13 +375,17 @@ async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
 
     let bad_p256 = corrupt_token_hex(&ctx.p256_token(&p256_signer));
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &bad_p256)
+        .post("eth_blockNumber", serde_json::json!([]), Some(&bad_p256))
         .await?;
     assert_eq!(status.as_u16(), 403, "invalid P256 token should return 403");
 
     let bad_webauthn = ctx.webauthn_token_with_challenge(&webauthn_signer, B256::repeat_byte(0x77));
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &bad_webauthn)
+        .post(
+            "eth_blockNumber",
+            serde_json::json!([]),
+            Some(&bad_webauthn),
+        )
         .await?;
     assert_eq!(
         status.as_u16(),
@@ -453,7 +457,11 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
     let missing_access = P256SigningKey::random(&mut OsRng);
     let (missing_token, _) = ctx.keychain_p256_token(missing_root.address(), &missing_access, 0x04);
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &missing_token)
+        .post(
+            "eth_blockNumber",
+            serde_json::json!([]),
+            Some(&missing_token),
+        )
         .await?;
     assert_eq!(
         status.as_u16(),
@@ -482,7 +490,11 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
     ctx.revoke_keychain_key(&revoked_root, revoked_key_id)
         .await?;
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &revoked_token)
+        .post(
+            "eth_blockNumber",
+            serde_json::json!([]),
+            Some(&revoked_token),
+        )
         .await?;
     assert_eq!(status.as_u16(), 403, "revoked key should return 403");
 
@@ -505,7 +517,11 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
     )
     .await?;
     let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &mismatch_token)
+        .post(
+            "eth_blockNumber",
+            serde_json::json!([]),
+            Some(&mismatch_token),
+        )
         .await?;
     assert_eq!(
         status.as_u16(),

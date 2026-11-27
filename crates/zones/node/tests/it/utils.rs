@@ -3973,10 +3973,9 @@ fn build_keychain_auth_token(
 
 /// A redacted RPC server running in front of a zone, with a JSON-RPC client for it.
 pub(crate) struct RedactedRpc {
-    /// URL of the redacted RPC server (not the zone's direct HTTP endpoint).
     pub redacted_rpc_url: url::Url,
-    /// Redacted RPC server configuration.
     pub config: zone_node::rpc::RedactedRpcConfig,
+    client: reqwest::Client,
 }
 
 impl RedactedRpc {
@@ -4000,6 +3999,7 @@ impl RedactedRpc {
         Ok(Self {
             redacted_rpc_url: format!("http://{local_addr}").parse()?,
             config,
+            client: reqwest::Client::new(),
         })
     }
 
@@ -4022,22 +4022,23 @@ impl RedactedRpc {
         Ok(serde_json::from_str(&text)?)
     }
 
-    /// POST a JSON-RPC request to the redacted RPC server, with the auth header when
-    /// `auth_token` is set, returning HTTP status + body.
-    async fn post(
+    /// POST a JSON-RPC request, with the auth header when `auth_token` is set, returning HTTP
+    /// status + body.
+    pub(crate) async fn post(
         &self,
         method: &str,
         params: serde_json::Value,
         auth_token: Option<&str>,
     ) -> eyre::Result<(reqwest::StatusCode, String)> {
-        let mut request = reqwest::Client::new()
-            .post(self.redacted_rpc_url.as_str())
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-                "id": 1
-            }));
+        let mut request =
+            self.client
+                .post(self.redacted_rpc_url.as_str())
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": params,
+                    "id": 1
+                }));
         if let Some(auth_token) = auth_token {
             request = request.header("x-authorization-token", auth_token);
         }
@@ -4051,13 +4052,10 @@ impl RedactedRpc {
 /// Wraps a zone node with a running redacted RPC server in front, providing
 /// helpers for authenticated and unauthenticated request testing.
 pub(crate) struct RedactedRpcTestCtx {
-    /// The underlying zone test node.
     pub zone: ZoneTestNode,
-    /// The redacted RPC server in front of the zone.
     pub rpc: RedactedRpc,
-    /// The sequencer signer (gets full access on the redacted RPC).
+    /// Gets full access on the redacted RPC.
     pub sequencer_signer: alloy_signer_local::PrivateKeySigner,
-    /// L1 fixture for injecting deposits.
     pub fixture: L1Fixture,
 }
 
@@ -4211,25 +4209,6 @@ impl RedactedRpcTestCtx {
     ) -> eyre::Result<serde_json::Value> {
         let token = self.user_token(signer);
         self.call(method, params, &token).await
-    }
-
-    /// Send a JSON-RPC call with a raw auth token string, returning HTTP status + body.
-    pub(crate) async fn call_raw(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-        auth_token: &str,
-    ) -> eyre::Result<(reqwest::StatusCode, String)> {
-        self.post(method, params, Some(auth_token)).await
-    }
-
-    /// Send a JSON-RPC call with no auth header, returning HTTP status + body.
-    pub(crate) async fn call_no_auth(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> eyre::Result<(reqwest::StatusCode, String)> {
-        self.post(method, params, None).await
     }
 
     /// Build an auth token with custom zone_id and chain_id (for negative testing).

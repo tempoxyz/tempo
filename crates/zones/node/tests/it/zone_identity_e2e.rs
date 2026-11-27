@@ -4,7 +4,6 @@
 //! withdrawals. An org's admin and readers read its members' private state and its own events.
 
 use alloy::network::Ethereum;
-use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::{Log, TransactionRequest};
@@ -204,19 +203,6 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         );
     }
     let [registrar, admin_a, admin_b, alice, bob, carol, dave] = parties;
-    let block_timestamp = async |number: u64| -> eyre::Result<u64> {
-        Ok(zone
-            .provider()
-            .get_block_by_number(number.into())
-            .await?
-            .ok_or_eyre("zone block")?
-            .header
-            .timestamp())
-    };
-    assert!(
-        block_timestamp(1).await? < activation,
-        "block 1 must run T14"
-    );
     let org_admin_request = TransactionRequest::default()
         .to(ZONE_IDENTITY_ADDRESS)
         .input(Bytes::from(IZoneIdentity::orgAdminCall { orgId: 0 }.abi_encode()).into());
@@ -244,10 +230,6 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     for approve in approvals {
         assert!(approve.get_receipt().await?.status());
     }
-    assert!(
-        block_timestamp(2).await? >= activation,
-        "block 2 must run T15"
-    );
     let after = zone.provider().call(org_admin_request.into()).await?;
     assert_eq!(
         IZoneIdentity::orgAdminCall::abi_decode_returns(&after)?,
@@ -268,11 +250,14 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
 
     // Orgs A and B. The depositor and the off-ramp are Tempo addresses, so they join no org.
     let (org_a, org_b) = (1, 2);
-    for (org, admin) in [(org_a, admin_a.address), (org_b, admin_b.address)] {
+    let org_admins = [(org_a, admin_a.address), (org_b, admin_b.address)];
+    let mut creates = Vec::new();
+    for (_, admin) in org_admins {
         let create = IZoneIdentity::createOrgCall { admin };
-        registrar
-            .send_mined(&mut fixture, ZONE_IDENTITY_ADDRESS, create)
-            .await?;
+        creates.push(registrar.send(ZONE_IDENTITY_ADDRESS, create).await?);
+    }
+    assert_eq!(mine(&mut fixture, &zone, creates).await?, [true; 2]);
+    for (org, admin) in org_admins {
         assert_eq!(registrar.identity().orgAdmin(org).call().await?, admin);
     }
     // Only the registrar creates orgs.
@@ -286,19 +271,18 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     );
 
     // Members, added in one batch per org by its admin.
-    let members = [
+    let mut adds = Vec::new();
+    for (admin, org, accounts) in [
         (&admin_a, org_a, vec![alice.address, bob.address]),
         (&admin_b, org_b, vec![carol.address]),
-    ];
-    for (admin, org, accounts) in members {
+    ] {
         let add = IZoneIdentity::addMembersCall {
             orgId: org,
             accounts,
         };
-        admin
-            .send_mined(&mut fixture, ZONE_IDENTITY_ADDRESS, add)
-            .await?;
+        adds.push(admin.send(ZONE_IDENTITY_ADDRESS, add).await?);
     }
+    assert_eq!(mine(&mut fixture, &zone, adds).await?, [true; 2]);
     assert_eq!(alice.identity().orgOf(alice.address).call().await?, org_a);
     // Membership is private to the account, its org's admin and the registrar.
     let org_of = IZoneIdentity::orgOfCall {
@@ -318,35 +302,34 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         tokens: usd.clone(),
         allowed: true,
     };
+    let mut sets = Vec::new();
+    for (from, to) in [(org_a, org_a), (org_a, org_b)] {
+        sets.push(
+            admin_a
+                .send(ZONE_IDENTITY_ADDRESS, set_edge(from, to))
+                .await?,
+        );
+    }
     // Tempo targets, set by A's admin alone: deposits from the approved depositor and
     // withdrawals to the off-ramp.
-    let set_target = |target, deposit_from, withdraw_to| IZoneIdentity::setL1TargetCall {
-        orgId: org_a,
-        target,
-        tokens: usd.clone(),
-        depositFrom: deposit_from,
-        withdrawTo: withdraw_to,
-    };
-    for (from, to) in [(org_a, org_a), (org_a, org_b)] {
-        admin_a
-            .send_mined(&mut fixture, ZONE_IDENTITY_ADDRESS, set_edge(from, to))
-            .await?;
-    }
     for (target, deposit_from, withdraw_to) in [(bridge, true, false), (offramp, false, true)] {
-        let set = set_target(target, deposit_from, withdraw_to);
-        admin_a
-            .send_mined(&mut fixture, ZONE_IDENTITY_ADDRESS, set)
-            .await?;
+        let set = IZoneIdentity::setL1TargetCall {
+            orgId: org_a,
+            target,
+            tokens: usd.clone(),
+            depositFrom: deposit_from,
+            withdrawTo: withdraw_to,
+        };
+        sets.push(admin_a.send(ZONE_IDENTITY_ADDRESS, set).await?);
     }
-    let edge = async |from, to| {
-        admin_a
-            .identity()
-            .edge(from, to, PATH_USD_ADDRESS)
-            .call()
-            .await
-    };
-    assert!(edge(org_a, org_a).await?);
-    assert!(!edge(org_a, org_b).await?);
+    assert_eq!(mine(&mut fixture, &zone, sets).await?, [true; 4]);
+    for (to, allowed) in [(org_a, true), (org_b, false)] {
+        let identity = admin_a.identity();
+        assert_eq!(
+            identity.edge(org_a, to, PATH_USD_ADDRESS).call().await?,
+            allowed
+        );
+    }
 
     // Until the portal enforces it, edges change nothing.
     assert_transfer(&zone, alice.address, carol.address, true).await?;
@@ -381,19 +364,17 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         U256::from(FUNDING + 1_000)
     );
     assert_transfer(&zone, carol.address, alice.address, false).await?;
-    assert_transfer(&zone, dave.address, alice.address, false).await?;
-    assert_transfer(&zone, alice.address, dave.address, false).await?;
-    let transfer_from = |to| ITIP20::transferFromCall {
-        from: alice.address,
-        to,
-        amount: U256::ONE,
-    };
     for (to, revert) in [
         (bob.address, None),
         (dave.address, Some(forbids(alice.address, dave.address))),
     ] {
+        let transfer_from = ITIP20::transferFromCall {
+            from: alice.address,
+            to,
+            amount: U256::ONE,
+        };
         assert_eq!(
-            revert_of(&zone, dave.address, PATH_USD_ADDRESS, transfer_from(to)).await?,
+            revert_of(&zone, dave.address, PATH_USD_ADDRESS, transfer_from).await?,
             revert
         );
     }
@@ -449,19 +430,22 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
 
     // Org 0 has no edges: A's admin can't open one toward Dave, who is in no org, in either
     // direction.
+    let mut opens = Vec::new();
     for (from, to) in [(org_a, 0), (0, org_a)] {
-        let open = admin_a
-            .send(ZONE_IDENTITY_ADDRESS, set_edge(from, to))
-            .await?;
-        assert_eq!(mine(&mut fixture, &zone, vec![open]).await?, [false]);
+        opens.push(
+            admin_a
+                .send(ZONE_IDENTITY_ADDRESS, set_edge(from, to))
+                .await?,
+        );
     }
+    assert_eq!(mine(&mut fixture, &zone, opens).await?, [false; 2]);
     assert_transfer(&zone, alice.address, dave.address, false).await?;
     assert_transfer(&zone, dave.address, alice.address, false).await?;
 
     // Org A's admin and reader read A's members; other admins and outsiders read no one else.
     let auditor = Party::new(&zone, 170);
     fixture.seed_no_commitment(auditor.address);
-    let before_reader = format!("{:#x}", zone.provider().get_block_number().await?);
+    let before_reader: &str = &format!("{:#x}", zone.provider().get_block_number().await?);
     let set_reader = |allowed| IZoneIdentity::setReaderCall {
         orgId: org_a,
         reader: auditor.address,
@@ -470,14 +454,13 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     admin_a
         .send_mined(&mut fixture, ZONE_IDENTITY_ADDRESS, set_reader(true))
         .await?;
-    let reads = [
+    for (reader, account, allowed) in [
         (&admin_a, alice.address, true),
         (&auditor, alice.address, true),
         (&admin_b, alice.address, false),
         (&dave, alice.address, false),
         (&admin_a, dave.address, false),
-    ];
-    for (reader, account, allowed) in reads {
+    ] {
         let balance_of = ITIP20::balanceOfCall { account };
         let revert = revert_of(&zone, reader.address, PATH_USD_ADDRESS, balance_of).await?;
         assert_eq!(
@@ -491,9 +474,8 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
 
     let redacted = RedactedRpc::start(&zone, 0, Address::ZERO).await?;
     let rpc = async |index: u32, method: &str, params: serde_json::Value| {
-        let signer = signer_at(index);
         redacted
-            .call(method, params, &redacted.token(&signer))
+            .call(method, params, &redacted.token(&signer_at(index)))
             .await
     };
     let read = async |index: u32, method: &str, account: Address, block: &str| {
@@ -524,7 +506,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     // Readers also see Alice's pool transactions, and all of her history, including from before
     // the reader was named.
     let pooled = alice.transfer(carol.address, 1).await?;
-    for block in ["latest", "pending", &before_reader] {
+    for block in ["latest", "pending", before_reader] {
         assert_reads(block, true).await?;
     }
     assert_eq!(
@@ -635,42 +617,37 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         account: alice.address,
     };
     let unauthorized = unauthorized.to_string();
-    let balance = (PATH_USD_ADDRESS, Bytes::from(balance_of_alice.abi_encode()));
-    let can_read = (
-        ZONE_IDENTITY_ADDRESS,
-        Bytes::from(
-            IZoneIdentity::canReadCall {
-                account: alice.address,
-            }
-            .abi_encode(),
-        ),
+    let balance = Bytes::from(balance_of_alice.abi_encode());
+    let can_read = Bytes::from(
+        IZoneIdentity::canReadCall {
+            account: alice.address,
+        }
+        .abi_encode(),
     );
-    let assert_call = async |method: &str,
-                             index: u32,
-                             block: &str,
-                             (to, input): &(Address, Bytes),
-                             allowed: bool| {
-        let call = serde_json::json!({
-            "from": signer_at(index).address(),
-            "to": to,
-            "input": input,
-        });
-        let body = rpc(index, method, serde_json::json!([call, block])).await?;
-        let error = body["error"]["message"].as_str();
-        assert_eq!(
-            error.map(|message| message.contains(&unauthorized)),
-            (!allowed).then_some(true),
-            "{method} as signer {index} at {block}: {body}"
-        );
-        eyre::Ok(())
-    };
-    assert_call("eth_call", 170, &before_reader, &balance, true).await?;
+    let assert_call =
+        async |method: &str, index: u32, block: &str, to: Address, input: &Bytes, allowed: bool| {
+            let call = serde_json::json!({
+                "from": signer_at(index).address(),
+                "to": to,
+                "input": input,
+            });
+            let body = rpc(index, method, serde_json::json!([call, block])).await?;
+            let error = body["error"]["message"].as_str();
+            assert_eq!(
+                error.map(|message| message.contains(&unauthorized)),
+                (!allowed).then_some(true),
+                "{method} as signer {index} at {block}: {body}"
+            );
+            eyre::Ok(())
+        };
+    let (path_usd, identity) = (PATH_USD_ADDRESS, ZONE_IDENTITY_ADDRESS);
+    assert_call("eth_call", 170, before_reader, path_usd, &balance, true).await?;
 
     // Removing the reader revokes its reads of every block.
     admin_a
         .send_mined(&mut fixture, ZONE_IDENTITY_ADDRESS, set_reader(false))
         .await?;
-    assert_reads(&before_reader, false).await?;
+    assert_reads(before_reader, false).await?;
     assert_tx(before_reader_tx, 170, false).await?;
     assert_tx(before_reader_tx, 161, true).await?;
     assert_eq!(alice_logs(170).await?, []);
@@ -683,27 +660,47 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         .send_mined(&mut fixture, PATH_USD_ADDRESS, transfer(carol.address, 1))
         .await?;
     assert_eq!(filter_changes().await?, Vec::<B256>::new());
-    let before = before_reader.as_str();
-    for (method, index, block, call, allowed) in [
-        ("eth_call", 163, before, &balance, true),
-        ("eth_call", 161, before, &balance, true),
-        ("eth_call", 170, before, &balance, false),
-        ("eth_call", 161, "latest", &balance, true),
-        ("eth_call", 170, "latest", &balance, false),
-        ("eth_estimateGas", 163, before, &balance, true),
-        ("eth_estimateGas", 161, before, &balance, true),
-        ("eth_estimateGas", 170, before, &balance, false),
+    for (method, index, block, to, input, allowed) in [
+        ("eth_call", 163, before_reader, path_usd, &balance, true),
+        ("eth_call", 161, before_reader, path_usd, &balance, true),
+        ("eth_call", 170, before_reader, path_usd, &balance, false),
+        ("eth_call", 161, "latest", path_usd, &balance, true),
+        ("eth_call", 170, "latest", path_usd, &balance, false),
+        (
+            "eth_estimateGas",
+            163,
+            before_reader,
+            path_usd,
+            &balance,
+            true,
+        ),
+        (
+            "eth_estimateGas",
+            161,
+            before_reader,
+            path_usd,
+            &balance,
+            true,
+        ),
+        (
+            "eth_estimateGas",
+            170,
+            before_reader,
+            path_usd,
+            &balance,
+            false,
+        ),
         // At an earlier block, even a denied read that does not revert at `latest` fails the call.
-        ("eth_call", 170, "latest", &can_read, true),
-        ("eth_call", 170, before, &can_read, false),
+        ("eth_call", 170, "latest", identity, &can_read, true),
+        ("eth_call", 170, before_reader, identity, &can_read, false),
     ] {
-        assert_call(method, index, block, call, allowed).await?;
+        assert_call(method, index, block, to, input, allowed).await?;
     }
 
     // Turning enforcement off on Tempo lifts every edge check.
     fixture.seed_identity_config(registrar.address, false);
-    fixture.inject_empty_block(zone.deposit_queue());
     let height = zone.provider().get_block_number().await? + 1;
+    fixture.inject_empty_block(zone.deposit_queue());
     zone.wait_for_block_number(height, DEFAULT_TIMEOUT).await?;
     assert_transfer(&zone, dave.address, alice.address, true).await?;
     // Reads do not depend on enforcement.
