@@ -32,6 +32,16 @@ library Secp256k1Lib {
         return uint256(bytes32(result)) == 1;
     }
 
+    /// @notice Validate a secp256k1 point given both coordinates and its compressed parity prefix.
+    /// @dev Checking a supplied y costs a few mulmods; recovering it from x needs a MODEXP.
+    function isValidPoint(bytes32 x, bytes32 y, uint8 yParity) internal pure returns (bool) {
+        uint256 px = uint256(x);
+        uint256 py = uint256(y);
+        if (px == 0 || px >= SECP256K1_P || py >= SECP256K1_P) return false;
+        if (py & 1 != yParity & 1) return false;
+        return mulmod(py, py, SECP256K1_P) == _curveRhs(px);
+    }
+
     /// @notice Return true for compressed secp256k1 public key y-parity prefixes.
     function isCompressedYParity(uint8 yParity) internal pure returns (bool) {
         return yParity == 0x02 || yParity == 0x03;

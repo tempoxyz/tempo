@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import { Secp256k1Lib } from "../../src/runtime/libraries/Secp256k1Lib.sol";
 import { Test } from "forge-std/Test.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 contract Secp256k1LibHarness {
 
@@ -12,6 +13,10 @@ contract Secp256k1LibHarness {
 
     function isCompressedYParity(uint8 yParity) external pure returns (bool) {
         return Secp256k1Lib.isCompressedYParity(yParity);
+    }
+
+    function isValidPoint(bytes32 x, bytes32 y, uint8 yParity) external pure returns (bool) {
+        return Secp256k1Lib.isValidPoint(x, y, yParity);
     }
 
     function deriveAddress(bytes32 x, uint8 yParity) external view returns (address) {
@@ -88,6 +93,43 @@ contract Secp256k1LibTest is Test {
     /// @notice Verifies only compressed y-parity prefixes pass for any byte value.
     function testFuzz_isCompressedYParity(uint8 yParity) public view {
         assertEq(harness.isCompressedYParity(yParity), yParity == 0x02 || yParity == 0x03);
+    }
+
+    bytes32 internal constant GENERATOR_Y =
+        0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8;
+
+    function test_isValidPoint_acceptsGenerator() public view {
+        assertTrue(harness.isValidPoint(GENERATOR_X, GENERATOR_Y, 0x02));
+    }
+
+    function test_isValidPoint_rejectsWrongParity() public view {
+        assertFalse(harness.isValidPoint(GENERATOR_X, GENERATOR_Y, 0x03));
+        assertTrue(
+            harness.isValidPoint(GENERATOR_X, bytes32(SECP256K1_P - uint256(GENERATOR_Y)), 0x03)
+        );
+    }
+
+    function test_isValidPoint_rejectsOffCurveAndOutOfRange() public view {
+        assertFalse(harness.isValidPoint(GENERATOR_X, bytes32(uint256(GENERATOR_Y) + 2), 0x02));
+        assertFalse(harness.isValidPoint(bytes32(0), GENERATOR_Y, 0x02));
+        assertFalse(harness.isValidPoint(bytes32(SECP256K1_P), GENERATOR_Y, 0x02));
+        assertFalse(harness.isValidPoint(GENERATOR_X, bytes32(SECP256K1_P), 0x03));
+    }
+
+    /// @notice A point with its y accepts exactly when the MODEXP path accepts its x.
+    function testFuzz_isValidPoint_matchesIsValidX(uint256 privateKey) public {
+        privateKey = bound(privateKey, 1, 2 ** 255);
+        Vm.Wallet memory w = vm.createWallet(privateKey);
+        uint8 parity = w.publicKeyY % 2 == 0 ? 0x02 : 0x03;
+        bytes32 x = bytes32(w.publicKeyX);
+        assertTrue(harness.isValidX(x));
+        assertTrue(harness.isValidPoint(x, bytes32(w.publicKeyY), parity));
+        assertFalse(harness.isValidPoint(x, bytes32(w.publicKeyY), parity ^ 1));
+    }
+
+    function testFuzz_isValidPoint_impliesIsValidX(bytes32 x, bytes32 y, bool odd) public view {
+        uint8 parity = odd ? 0x03 : 0x02;
+        if (harness.isValidPoint(x, y, parity)) assertTrue(harness.isValidX(x));
     }
 
 }

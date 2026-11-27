@@ -62,7 +62,7 @@ templates:
       - to: {var: setup.portal.address}
         abi: ZonePortal
         function: deposit
-        # Valid point and payload length; no zone decrypts this synthetic ciphertext.
+        # Valid point (with its y) and payload length; no zone decrypts this synthetic ciphertext.
         args:
           - "0x20c0000000000000000000000000000000000000"
           - 1
@@ -70,6 +70,8 @@ templates:
           - ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 2,
              "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
              "0x111111111111111111111111", "0x11111111111111111111111111111111"]
+          # Generator y: the portal checks the point with mulmods instead of a MODEXP.
+          - "0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
           - null
       - to: {var: setup.settlement.address}
         abi: SettlementFixture

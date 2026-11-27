@@ -1143,6 +1143,7 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         returns (bytes32 newCurrentDepositQueueHash)
     {
+        _checkEphemeralPubkey(encrypted);
         return _deposit(
             _token, amount, keyIndex, encrypted, tempoRefundRecipient, _operationalDepositFee()
         );
@@ -1161,6 +1162,7 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         returns (bytes32 newCurrentDepositQueueHash)
     {
+        _checkEphemeralPubkey(encrypted);
         return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient, maxFee);
     }
 
@@ -1185,6 +1187,7 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         returns (bytes32 newCurrentDepositQueueHash)
     {
+        _checkEphemeralPubkey(encrypted);
         return _deposit(
             _token, amount, keyIndex, encrypted, tempoRefundRecipient, _operationalDepositFee()
         );
@@ -1203,6 +1206,44 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         returns (bytes32 newCurrentDepositQueueHash)
     {
+        _checkEphemeralPubkey(encrypted);
+        return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient, maxFee);
+    }
+
+    /// @inheritdoc IZonePortal
+    function deposit(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        bytes32 ephemeralPubkeyY,
+        address tempoRefundRecipient
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        _checkEphemeralPubkey(encrypted, ephemeralPubkeyY);
+        return _deposit(
+            _token, amount, keyIndex, encrypted, tempoRefundRecipient, _operationalDepositFee()
+        );
+    }
+
+    /// @inheritdoc IZonePortal
+    function deposit(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        bytes32 ephemeralPubkeyY,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        _checkEphemeralPubkey(encrypted, ephemeralPubkeyY);
         return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient, maxFee);
     }
 
@@ -1281,6 +1322,35 @@ contract ZonePortal is IZonePortal {
         );
     }
 
+    /// @dev Validates that the ephemeral public key is a secp256k1 point. Invalid points make
+    ///      Chaum-Pedersen proofs impossible, which would block chain progress on the zone side.
+    function _checkEphemeralPubkey(DepositPayload calldata encrypted) internal view {
+        if (!Secp256k1Lib.isCompressedYParity(encrypted.ephemeralPubkeyYParity)) {
+            revert InvalidEphemeralPubkey();
+        }
+        if (!Secp256k1Lib.isValidX(encrypted.ephemeralPubkeyX)) {
+            revert InvalidEphemeralPubkey();
+        }
+    }
+
+    /// @dev Same check with the caller supplying y, so no MODEXP is needed.
+    function _checkEphemeralPubkey(
+        DepositPayload calldata encrypted,
+        bytes32 ephemeralPubkeyY
+    )
+        internal
+        pure
+    {
+        if (
+            !Secp256k1Lib.isCompressedYParity(encrypted.ephemeralPubkeyYParity)
+                || !Secp256k1Lib.isValidPoint(
+                    encrypted.ephemeralPubkeyX, ephemeralPubkeyY, encrypted.ephemeralPubkeyYParity
+                )
+        ) {
+            revert InvalidEphemeralPubkey();
+        }
+    }
+
     function _deposit(
         address _token,
         uint128 amount,
@@ -1310,16 +1380,6 @@ contract ZonePortal is IZonePortal {
         uint64 policyId = ITIP20(_token).transferPolicyId();
         if (!TIP403_REGISTRY.isAuthorizedRecipient(policyId, tempoRefundRecipient)) {
             revert ITIP20.PolicyForbids();
-        }
-
-        // Validate ephemeral public key is a valid secp256k1 point
-        // Prevents griefing: invalid points make Chaum-Pedersen proofs impossible,
-        // which would block chain progress on the zone side.
-        if (!Secp256k1Lib.isCompressedYParity(encrypted.ephemeralPubkeyYParity)) {
-            revert InvalidEphemeralPubkey();
-        }
-        if (!Secp256k1Lib.isValidX(encrypted.ephemeralPubkeyX)) {
-            revert InvalidEphemeralPubkey();
         }
 
         // Validate ciphertext length — GCM ciphertext == plaintext length (tag is separate)

@@ -444,6 +444,25 @@ crate::sol! {
             uint128 maxFee
         ) external returns (bytes32 newCurrentDepositQueueHash);
 
+        function deposit(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            bytes32 ephemeralPubkeyY,
+            address tempoRefundRecipient
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
+        function deposit(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            bytes32 ephemeralPubkeyY,
+            address tempoRefundRecipient,
+            uint128 maxFee
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
         function depositEncrypted(
             address token,
             uint128 amount,
