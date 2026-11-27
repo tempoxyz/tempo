@@ -123,6 +123,7 @@ reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["io"] }
+log.workspace = true
 tracing.workspace = true
 tempfile.workspace = true
 opentelemetry-otlp = { version = "0.32", default-features = false, optional = true }
@@ -239,25 +240,31 @@ tracy-allocator = [
 
 min-error-logs = [
 	"tracing/release_max_level_error",
+	"log/release_max_level_error",
 	"reth-ethereum-cli/min-error-logs",
 	"tempo-node/min-error-logs",
 ]
 min-warn-logs = [
 	"tracing/release_max_level_warn",
+	"log/release_max_level_warn",
 	"reth-ethereum-cli/min-warn-logs",
 	"tempo-node/min-warn-logs",
 ]
 min-info-logs = [
 	"tracing/release_max_level_info",
+	"log/release_max_level_info",
 	"reth-ethereum-cli/min-info-logs",
 	"tempo-node/min-info-logs",
 ]
 min-debug-logs = [
 	"tracing/release_max_level_debug",
+	"log/release_max_level_debug",
 	"reth-ethereum-cli/min-debug-logs",
 	"tempo-node/min-debug-logs",
 ]
 min-trace-logs = [
+	"tracing/release_max_level_trace",
+	"log/release_max_level_trace",
 	"reth-ethereum-cli/min-trace-logs",
 	"tempo-node/min-trace-logs",
 ]
