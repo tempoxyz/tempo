@@ -1,14 +1,15 @@
 //! Classify independent boundary differences before formatting bounded samples.
 
 use super::{
-    Boundary, Evidence, ExecError, ReplayOutcome,
+    Arms, Boundary, Evidence, ExecError, ReplayOutcome, TxEvidence,
     expectations::{Context, Expectation},
     fees::fee_wrote,
 };
+use crate::{exec::db::View, types::Delta};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
+use evm2::evm::AccountInfo;
 use reth_primitives_traits::RecoveredBlock;
-use reth_trie_common::bundle_state::{TransitionAccount, TransitionState};
 use std::{collections::BTreeMap, fmt::Debug};
 use tempo_primitives::Block;
 
@@ -27,10 +28,10 @@ pub(super) struct Report {
 }
 
 impl Report {
-    pub(super) fn outcome(&self, shadow: &Evidence) -> ReplayOutcome {
+    pub(super) fn outcome(&self, evidence: &Evidence) -> ReplayOutcome {
         // A shadow arm that read uncaptured state was not compared, which is not a finding.
         if self.unexplained > 0
-            || shadow
+            || evidence
                 .failure
                 .as_ref()
                 .is_some_and(|failure| matches!(failure.error, ExecError::Failed(_)))
@@ -45,9 +46,10 @@ impl Report {
         }
     }
 
+    /// Compares `evidence` boundary by boundary. Every boundary of `block` that was not compared
+    /// counts as not evaluated.
     pub(super) fn analyze(
-        real: &Evidence,
-        shadow: &Evidence,
+        evidence: &Evidence,
         rules: &[&Expectation],
         block: &RecoveredBlock<Block>,
     ) -> Self {
@@ -55,38 +57,35 @@ impl Report {
         let base_fee = block.header().base_fee_per_gas();
         let context = |boundary| Context {
             boundary,
-            real,
-            shadow,
+            evidence,
             base_fee,
             tx: match boundary {
                 Boundary::Transaction(index) => block.body().transactions.get(index),
                 _ => None,
             },
         };
-        if let Some((real, shadow)) = real.pre_block.as_ref().zip(shadow.pre_block.as_ref()) {
+        if let Some(Arms { real, shadow }) = &evidence.pre_block {
             report.record_state_diffs(&context(Boundary::PreBlock), real, shadow, rules);
             report.boundaries_evaluated += 1;
         }
-        for index in 0..real.txs.len().min(shadow.txs.len()) {
+        for (index, tx) in evidence.txs.iter().enumerate() {
             let ctx = context(Boundary::Transaction(index));
-            let (Ok(real), shadow) = (&ctx.real.txs[index], &ctx.shadow.txs[index]) else {
-                // A control failure terminates execution and is handled by `Evidence::failure`.
-                break;
-            };
-            match shadow {
-                Ok(shadow) => {
+            match tx {
+                TxEvidence::Same => {}
+                TxEvidence::Differs(arms) => {
+                    let Arms { real, shadow } = &**arms;
                     let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
-                    diff.record("outcome", |tx| tx.outcome);
+                    diff.record("outcome", |tx| tx.outcome.clone());
                     diff.record("output", |tx| tx.output_hash);
                     // Keep all logs, in order; mask only a verified gas-derived fee amount.
                     let (real_logs, shadow_logs) = ctx
                         .verified_fee_log_hashes()
                         .unwrap_or((real.receipt_logs_hash, shadow.receipt_logs_hash));
                     diff.record_values("receipt_logs", real_logs, shadow_logs);
-                    report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
+                    report.record_state_diffs(&ctx, &real.changes, &shadow.changes, rules);
                 }
-                Err(ExecError::Uncaptured(_)) => continue,
-                Err(ExecError::Failed(error)) => report.record(
+                TxEvidence::Failed(ExecError::Uncaptured(_)) => continue,
+                TxEvidence::Failed(ExecError::Failed(error)) => report.record(
                     &ctx,
                     Field {
                         name: "execution",
@@ -101,14 +100,12 @@ impl Report {
             }
             report.boundaries_evaluated += 1;
         }
-        if let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref()) {
+        if let Some(Arms { real, shadow }) = &evidence.post_block {
             report.record_state_diffs(&context(Boundary::PostBlock), real, shadow, rules);
             report.boundaries_evaluated += 1;
         }
-        // Include a rejected transaction and its unexecuted suffix in missing coverage.
-        let total = usize::from(real.pre_block.is_some())
-            + real.txs.len()
-            + usize::from(real.post_block.is_some());
+        // Every transaction plus the pre- and post-block boundaries.
+        let total = block.body().transactions.len() + 2;
         report.boundaries_not_evaluated = total - report.boundaries_evaluated;
         report
     }
@@ -126,13 +123,10 @@ impl Report {
         }
         if let (Boundary::Transaction(index), Some(address), Some(slot)) =
             (ctx.boundary, field.address, field.slot)
+            && let Some(TxEvidence::Differs(arms)) = ctx.evidence.txs.get(index)
         {
-            field.fee_associated = ctx.real.txs[index]
-                .as_ref()
-                .is_ok_and(|tx| fee_wrote(&tx.actions, address, slot))
-                || ctx.shadow.txs[index]
-                    .as_ref()
-                    .is_ok_and(|tx| fee_wrote(&tx.actions, address, slot));
+            field.fee_associated = fee_wrote(&arms.real.actions, address, slot)
+                || fee_wrote(&arms.shadow.actions, address, slot);
         }
         let accepted = rules
             .iter()
@@ -167,26 +161,24 @@ impl Report {
     fn record_state_diffs(
         &mut self,
         ctx: &Context<'_>,
-        real: &TransitionState,
-        shadow: &TransitionState,
+        real: &StepChanges,
+        shadow: &StepChanges,
         rules: &[&Expectation],
     ) {
-        for &address in real.transitions.keys().chain(
+        for &address in real.0.keys().chain(
             shadow
-                .transitions
+                .0
                 .keys()
-                .filter(|address| !real.transitions.contains_key(*address)),
+                .filter(|address| !real.0.contains_key(*address)),
         ) {
-            let real = AccountDelta(real.transitions.get(&address));
-            let shadow = AccountDelta(shadow.transitions.get(&address));
+            let real = real.account(address);
+            let shadow = shadow.account(address);
             let mut diff = Comparison::new(self, ctx, rules, Some(address), &real, &shadow);
             diff.record("existence", |a| a.existence());
             diff.record("balance", |a| a.info(|info| info.balance));
             diff.record("nonce", |a| a.info(|info| info.nonce));
             diff.record("code", |a| a.info(|info| info.code_hash));
-            diff.record("storage_reset", |a| {
-                a.0.is_some_and(|a| a.storage_was_destroyed)
-            });
+            diff.record("storage_reset", |a| a.0.is_some_and(|a| a.storage_reset));
             for &slot in real.slots().chain(shadow.slots().filter(|slot| {
                 real.0
                     .is_none_or(|account| !account.storage.contains_key(*slot))
@@ -267,28 +259,80 @@ impl<'a, T> Comparison<'a, T> {
     }
 }
 
+/// What one arm changed at a boundary, by account.
+#[derive(Debug, Default)]
+pub(super) struct StepChanges(pub(super) BTreeMap<Address, AccountChange>);
+
+/// One account's state before and after a boundary.
+#[derive(Debug, Default)]
+pub(super) struct AccountChange {
+    pub before: Option<AccountInfo>,
+    pub after: Option<AccountInfo>,
+    /// Whether the boundary cleared the account's storage by creating or destroying it.
+    pub storage_reset: bool,
+    /// Each slot the boundary wrote, before and after it. A slot of an account whose storage
+    /// was reset counts as zero before.
+    pub storage: BTreeMap<U256, (U256, U256)>,
+}
+
+impl StepChanges {
+    /// What `delta` changes when applied to `before`.
+    pub(super) fn new(before: &View<'_>, delta: &Delta) -> eyre::Result<Self> {
+        let mut after = before.child();
+        after.apply(delta)?;
+        let mut changes = BTreeMap::<Address, AccountChange>::new();
+        for (address, change) in delta.0.iter().flatten() {
+            let account = changes.entry(Address::from(*address)).or_default();
+            account.storage_reset |= change.created || change.info.is_none();
+            for key in change.storage.keys() {
+                account
+                    .storage
+                    .insert(U256::from_be_bytes(*key), Default::default());
+            }
+        }
+        // The executor loaded every account and slot it changed, so `before` holds them all.
+        for (address, account) in &mut changes {
+            account.before = before.account(address)?;
+            account.after = after.account(address)?;
+            for (slot, values) in &mut account.storage {
+                let previous = if account.storage_reset {
+                    U256::ZERO
+                } else {
+                    before.storage(address, slot)?
+                };
+                *values = (previous, after.storage(address, slot)?);
+            }
+        }
+        Ok(Self(changes))
+    }
+
+    pub(super) fn account(&self, address: Address) -> AccountDelta<'_> {
+        AccountDelta(self.0.get(&address))
+    }
+}
+
 #[derive(Clone, Copy)]
-pub(super) struct AccountDelta<'a>(pub(super) Option<&'a TransitionAccount>);
+pub(super) struct AccountDelta<'a>(pub(super) Option<&'a AccountChange>);
 
 impl<'a> AccountDelta<'a> {
-    pub(super) fn info<T: Eq>(self, get: impl Fn(&evm2::evm::AccountInfo) -> T) -> Option<(T, T)> {
+    pub(super) fn info<T: Eq>(self, get: impl Fn(&AccountInfo) -> T) -> Option<(T, T)> {
         let account = self.0?;
         // Also compare initial values on creation and final values on destruction.
-        let default = evm2::evm::AccountInfo::default();
+        let default = AccountInfo::default();
         Self::changed(
-            get(account.previous_info.as_ref().unwrap_or(&default)),
-            get(account.info.as_ref().unwrap_or(&default)),
+            get(account.before.as_ref().unwrap_or(&default)),
+            get(account.after.as_ref().unwrap_or(&default)),
         )
     }
 
     fn existence(self) -> Option<(bool, bool)> {
         let account = self.0?;
-        Self::changed(account.previous_info.is_some(), account.info.is_some())
+        Self::changed(account.before.is_some(), account.after.is_some())
     }
 
     pub(super) fn storage(self, slot: U256) -> Option<(U256, U256)> {
-        let value = self.0?.storage.get(&slot)?;
-        Self::changed(value.original_value(), value.present_value())
+        let (before, after) = *self.0?.storage.get(&slot)?;
+        Self::changed(before, after)
     }
 
     fn slots(self) -> impl Iterator<Item = &'a U256> {
@@ -299,5 +343,80 @@ impl<'a> AccountDelta<'a> {
 
     fn changed<T: Eq>(before: T, after: T) -> Option<(T, T)> {
         (before != after).then_some((before, after))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        exec::db::tests::{change, commit, input},
+        types::{Change, CodeChange, InfoChange},
+    };
+    use reth_primitives_traits::Account;
+
+    #[test]
+    fn step_changes_pair_each_written_value_with_its_previous_one() {
+        let (changed, created, destroyed) = (
+            Address::repeat_byte(1),
+            Address::repeat_byte(2),
+            Address::repeat_byte(3),
+        );
+        let account = Account {
+            nonce: 1,
+            balance: U256::from(10),
+            ..Default::default()
+        };
+        let slot = U256::from(4);
+        let before = View::new(input(
+            &[
+                (changed, Some(account.clone())),
+                (created, None),
+                (destroyed, Some(account)),
+            ],
+            &[(changed, slot, U256::from(5))],
+        ));
+        let balance = InfoChange {
+            nonce: None,
+            balance: Some(U256::from(7).to_be_bytes()),
+            code: CodeChange::Keep,
+        };
+        let mut delta = commit(changed, change(balance, &[(slot, U256::from(9))]));
+        let mut creation = change(
+            InfoChange {
+                nonce: Some(1),
+                balance: None,
+                code: CodeChange::Keep,
+            },
+            &[(slot, U256::from(3))],
+        );
+        creation.created = true;
+        let destruction = Change {
+            info: None,
+            created: false,
+            storage: BTreeMap::new(),
+            code: None,
+        };
+        delta.0[0].insert(created.into_array(), creation);
+        delta.0.push([(destroyed.into_array(), destruction)].into());
+
+        let changes = StepChanges::new(&before, &delta).unwrap();
+
+        let account = changes.account(changed);
+        assert_eq!(
+            account.info(|info| info.balance),
+            Some((U256::from(10), U256::from(7)))
+        );
+        assert_eq!(account.info(|info| info.nonce), None);
+        assert_eq!(account.storage(slot), Some((U256::from(5), U256::from(9))));
+        assert!(!changes.0[&changed].storage_reset);
+        // A created account's slots start from zero, whatever the corpus captured.
+        let account = changes.account(created);
+        assert_eq!(account.existence(), Some((false, true)));
+        assert_eq!(account.storage(slot), Some((U256::ZERO, U256::from(3))));
+        assert!(changes.0[&created].storage_reset);
+        assert_eq!(changes.account(destroyed).existence(), Some((true, false)));
+        assert!(changes.0[&destroyed].storage_reset);
+        assert!(changes.account(Address::ZERO).0.is_none());
     }
 }

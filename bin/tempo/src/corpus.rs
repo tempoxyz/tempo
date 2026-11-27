@@ -21,6 +21,7 @@ use tempo_chainspec::{
 };
 use tempo_corpus::{
     exec::{
+        block::Executed,
         fill, replay,
         shadow::{ReplayOutcome, ShadowReplayer},
     },
@@ -218,11 +219,12 @@ impl ReplayCommand {
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
-            let on_block = |input: &Arc<Input>, block: &RecoveredBlock<Block>| {
-                shadow
-                    .as_ref()
-                    .map_or(Ok(()), |shadow| shadow.check(input, block))
-            };
+            let on_block =
+                |input: &Arc<Input>, block: &RecoveredBlock<Block>, executed: &Executed| {
+                    shadow
+                        .as_ref()
+                        .map_or(Ok(()), |shadow| shadow.check(input, block, executed))
+                };
             match blocks {
                 Some(blocks) => replay::run_blocks(
                     store, catalog, &blocks, config, consensus, workers, on_block,
@@ -267,17 +269,23 @@ impl Shadow {
         }
     }
 
-    fn check(&self, input: &Arc<Input>, block: &RecoveredBlock<Block>) -> eyre::Result<()> {
-        let counter =
-            match self.replayer.replay(input, block).map_err(|err| {
-                eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
-            })? {
-                None => &self.skipped,
-                Some(ReplayOutcome::Match) => &self.matched,
-                Some(ReplayOutcome::Expected) => &self.expected,
-                Some(ReplayOutcome::Inconclusive) => &self.inconclusive,
-                Some(ReplayOutcome::Findings) => &self.findings,
-            };
+    fn check(
+        &self,
+        input: &Arc<Input>,
+        block: &RecoveredBlock<Block>,
+        executed: &Executed,
+    ) -> eyre::Result<()> {
+        let counter = match self
+            .replayer
+            .replay(input, block, executed)
+            .map_err(|err| eyre::eyre!("shadow replay failed at block {}: {err}", block.number()))?
+        {
+            None => &self.skipped,
+            Some(ReplayOutcome::Match) => &self.matched,
+            Some(ReplayOutcome::Expected) => &self.expected,
+            Some(ReplayOutcome::Inconclusive) => &self.inconclusive,
+            Some(ReplayOutcome::Findings) => &self.findings,
+        };
         counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

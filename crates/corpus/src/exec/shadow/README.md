@@ -7,46 +7,44 @@ differences, and incomplete execution coverage. It does not decide consensus val
 the canonical chain.
 
 Run it with `tempo corpus replay --shadow HARDFORK` (built with the `corpus` feature) over a
-captured corpus range. Each block is first verified against its corpus record, then both arms
-execute on the pre-state the corpus recorded. Blocks where the candidate hardfork is already
-canonical are skipped. The corpus holds only what the canonical execution read, so a candidate
-that reads anything else, such as a precompile account its pre-block setup deploys, fails at that
-boundary with an `uncaptured` error. That boundary is not compared, so the block is
-`Inconclusive` rather than a finding.
+captured corpus range. Each block is first verified against its corpus record, then replayed on the
+pre-state the corpus recorded. Blocks where the candidate hardfork is already canonical are
+skipped. The corpus holds only what the canonical execution read, so a candidate that reads
+anything else, such as a precompile account its pre-block setup deploys, fails at that boundary
+with an `uncaptured` error. That boundary is not compared, so the block is `Inconclusive` rather
+than a finding.
 
 ## Execution model
 
-For each selected canonical block, replay creates two executors over the pre-state the corpus
-recorded:
+The canonical side of every comparison is the block's verified corpus record: its pre- and
+post-block changes and each transaction's outcome, receipt and changes. The candidate side runs
+under the selected candidate hardfork and its schedule, which activates all predecessor forks so
+their required pre-block setup is included.
 
-- the **control** uses the hardfork active for the canonical block.
-- the **shadow** uses the selected candidate hardfork and its hardfork schedule.
+Replay keeps two views of the state: the canonical one and the candidate one, which starts with
+the candidate's pre-block changes instead of the canonical ones. Each transaction executes alone
+on the candidate view, from the canonical executor state before it. Then the transaction's
+canonical changes are applied to both views. Changes apply field by field, so candidate pre-block
+setup survives unless a canonical transaction writes the same field, and no candidate transaction
+result carries into a later transaction. The candidate's post-block changes run on the candidate
+view from the executor state the last transaction left.
 
-Transactions execute in canonical order under both rule sets. Within a block, a control thread
-and a shadow worker pipeline results through a one-entry queue. Replay records both results but
-commits the control result into both executors. Every shadow transaction receives the canonical prefix
-plus candidate pre-block setup, without inheriting earlier candidate transaction results; an early
-candidate transaction difference cannot cause derivative mismatches later. Pre-block changes are
-preserved across control commits, but canonical transaction writes to the same fields take precedence.
-Candidate post-block behavior runs against this isolated prefix, not a fully committed candidate
-block. The candidate schedule activates all predecessor forks so their required pre-block setup
-is included.
+Nothing is persisted, and every block starts from its own recorded pre-state. Replay executes
+only canonical transactions; it does not generate candidate-only transactions.
 
-All execution uses isolated in-memory overlays. State is never persisted or carried into the next
-block. Every block starts independently from its own canonical parent. Replay executes only canonical transactions; it does
-not generate candidate-only transactions.
-
-Corpus verification has already checked the block's receipts and changesets before the control
-runs. A control failure is an error because an unverified baseline cannot be attributed to the
-candidate rules. A rejected shadow transaction is recorded as a finding; replay still commits the
-control result and executes later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
-that could not execute are reported as incomplete coverage.
+The canonical pre- and post-block changes run again on the canonical view, and so does every
+transaction whose candidate result differs, to record its fee hook actions. Each must reproduce its
+verified record; otherwise the baseline cannot be trusted and replay fails. A rejected candidate
+transaction is recorded as a finding, and later transactions still execute. A failed candidate
+pre- or post-block boundary is retained as a finding, and boundaries that could not execute are
+reported as incomplete coverage.
 
 ## Comparison model
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
-changes in order. Transaction comparisons cover the full success/revert/halt outcome, output,
-ordered receipt logs, and net account and storage transitions. Gas-only differences are not findings, although gas is still
+changes in order. A transaction whose candidate record equals its canonical one matches.
+Otherwise the comparison covers its success and stop reason, output, ordered receipt logs, and the
+net account and storage changes it makes to the view it ran on. Gas-only differences are not findings, although gas is still
 used to validate fee-derived effects. This compares
 observable effects at completed boundaries, not opcode traces or internal write history.
 
@@ -63,7 +61,7 @@ other state differences still require fork expectations.
 
 `expectations.rs` always enables the fee-state check and registers feature-specific checks at
 their introducing hardfork. For each block, replay selects the baseline check followed by those in
-`(canonical fork, candidate fork]` after validating the control.
+`(canonical fork, candidate fork]`.
 
 A check receives existing execution evidence and a changed field descriptor. It returns `None` when
 it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns

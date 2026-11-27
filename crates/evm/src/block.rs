@@ -385,8 +385,9 @@ impl<'a> TempoBlockExecutor<'a> {
 
     /// Restores [`Self::executor_state`] into a fresh executor over the matching prestate.
     ///
-    /// Do not apply pre-execution changes again or finalize this executor. Storage-action
-    /// replay memoization is reset: an isolated transaction always executes normally.
+    /// Do not apply pre-execution changes again; finishing applies the block's post-execution
+    /// changes from the restored state. Storage-action replay memoization is reset: an isolated
+    /// transaction always executes normally.
     #[doc(hidden)]
     pub fn with_executor_state(&mut self, state: ExecutorState) {
         self.section = state.section;
