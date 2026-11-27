@@ -93,13 +93,13 @@ type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
 static WARM_PREDECESSORS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var("TEMPO_QMDB_WARM_PREDECESSORS").map_or(true, |v| v != "0")
 });
-/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 0 by
+/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 1 by
 /// default); 0 reads none.
 static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
     std::env::var("TEMPO_QMDB_FLOOR_PREFETCH")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(1)
 });
 /// Lowest Merkle node height kept in memory: the bitmap grafts at height 8 (256-bit chunks), so
 /// nodes below it are only rebuilt for proofs. `TEMPO_QMDB_RESIDENT_HEIGHT` overrides it.
