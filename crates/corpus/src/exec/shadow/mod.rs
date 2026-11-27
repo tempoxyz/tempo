@@ -30,10 +30,10 @@ use alloy_primitives::{B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::{Report, StepChanges};
-use evm2::{DatabaseError, registry::HandlerError};
+use evm2::AnyError;
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
-use reth_evm::BlockExecutionError;
+use reth_evm::{BlockExecutionError, InternalBlockExecutionError};
 use reth_primitives_traits::RecoveredBlock;
 use std::sync::Arc;
 use tempo_chainspec::{
@@ -323,16 +323,24 @@ impl Evidence {
 /// Whether execution failed because it read state the corpus did not capture, so the boundary
 /// cannot be compared.
 fn uncaptured(error: &eyre::Report) -> bool {
-    // Transactions report database failures as `HandlerError::Database`, pre- and post-block
-    // system calls as the `DatabaseError` itself.
-    error
+    // A transaction's EVM error is not exposed as a source, so walk down from the executor's
+    // payload. Wrappers such as `HandlerError` and `TempoPrecompileError` sit in between.
+    let Some(
+        InternalBlockExecutionError::EVM { error, .. } | InternalBlockExecutionError::Other(error),
+    ) = error
         .downcast_ref::<BlockExecutionError>()
         .and_then(BlockExecutionError::as_internal)
-        .and_then(|error| match error.downcast_evm::<HandlerError>() {
-            Some(HandlerError::Database(error)) => Some(error),
-            _ => error.downcast_other::<DatabaseError>(),
-        })
-        .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
+    else {
+        return false;
+    };
+    std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+        error.source()
+    })
+    .any(|error| {
+        error
+            .downcast_ref::<AnyError>()
+            .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
+    })
 }
 
 /// Only the post-fee hook's expected TIP-20 transfer amount can be normalized. Every other
@@ -385,8 +393,8 @@ fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChai
 mod tests {
     use super::*;
     use alloy_primitives::{Address, B256};
-    use reth_evm::InternalBlockExecutionError;
-    use tempo_precompiles::storage::FeeHook;
+    use evm2::{DatabaseError, registry::HandlerError};
+    use tempo_precompiles::{error::TempoPrecompileError, storage::FeeHook};
 
     /// A system call's error from reading an account the corpus did not capture.
     pub(super) fn missing_account() -> eyre::Report {
@@ -402,7 +410,7 @@ mod tests {
         let error = HandlerError::Database(DatabaseError::new(database_error, true));
         BlockExecutionError::from(InternalBlockExecutionError::EVM {
             hash: B256::ZERO,
-            error: evm2::AnyError::new(error),
+            error: AnyError::new(error),
         })
         .into()
     }
@@ -412,6 +420,8 @@ mod tests {
         assert!(uncaptured(&missing_account()));
         assert!(uncaptured(&transaction(missing())));
         assert!(!uncaptured(&transaction(std::fmt::Error)));
+        let precompile = TempoPrecompileError::Database(DatabaseError::new(missing(), true));
+        assert!(uncaptured(&BlockExecutionError::other(precompile).into()));
         let other = BlockExecutionError::other(DatabaseError::new(std::fmt::Error, true));
         assert!(!uncaptured(&other.into()));
         assert!(!uncaptured(&eyre::eyre!("uncaptured account 0x00")));
