@@ -87,6 +87,41 @@ where
             .unwrap();
     }
 
+    /// Returns the next transaction from the inner iterator, or the transaction it skipped because
+    /// its fee payer can no longer cover the fee.
+    ///
+    /// Unlike [`Iterator::next`], this returns after each skip, so a payload builder can check its
+    /// deadline and evict the skipped transaction. A skipped transaction is already marked invalid
+    /// on the inner iterator.
+    pub fn next_or_insolvent(&mut self) -> Option<StateAwareNext<I::Item>> {
+        loop {
+            let tx = self.inner.next()?;
+            let best_tx = tx.best_transaction();
+
+            let Some(key) = best_tx.transaction.fee_balance_slot() else {
+                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+                continue;
+            };
+
+            let fee = best_tx.transaction.fee_token_cost();
+            if let Some(&balance) = self.decreased_balances.get(&key)
+                && balance < fee
+                && !self.may_use_other_fallback_token(best_tx, key, fee)
+            {
+                let best_tx = Arc::clone(best_tx);
+                self.inner.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds((balance, fee).into()),
+                    ),
+                );
+                return Some(StateAwareNext::Insolvent(best_tx));
+            }
+
+            return Some(StateAwareNext::Ready(tx));
+        }
+    }
+
     /// Returns whether execution may pay the fee with another fallback token.
     ///
     /// Untracked balances may have grown during the block, so they count as sufficient.
@@ -117,29 +152,9 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let tx = self.inner.next()?;
-            let best_tx = tx.best_transaction();
-
-            let Some(key) = best_tx.transaction.fee_balance_slot() else {
-                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
-                continue;
-            };
-
-            let fee = best_tx.transaction.fee_token_cost();
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < fee
-                && !self.may_use_other_fallback_token(best_tx, key, fee)
-            {
-                self.inner.mark_invalid(
-                    &tx,
-                    InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds((balance, fee).into()),
-                    ),
-                );
-                continue;
+            if let StateAwareNext::Ready(tx) = self.next_or_insolvent()? {
+                return Some(tx);
             }
-
-            return Some(tx);
         }
     }
 }
@@ -160,6 +175,16 @@ where
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.inner.set_skip_blobs(skip_blobs);
     }
+}
+
+/// Result of [`StateAwareBestTransactions::next_or_insolvent`].
+#[derive(Debug)]
+pub enum StateAwareNext<T> {
+    /// A transaction whose fee payer can still cover its fee, as far as the iterator knows.
+    Ready(T),
+    /// A transaction skipped because a transaction earlier in the block left its fee payer unable
+    /// to cover its fee.
+    Insolvent(BestTransaction),
 }
 
 /// [`StateAwareBestTransactions`] iterator item.
@@ -202,6 +227,48 @@ mod tests {
                 .insert((token, slot), fee - U256::ONE);
         }
         best.next().is_some()
+    }
+
+    #[test]
+    fn next_or_insolvent_returns_each_skip() {
+        // Independent lanes of one sender share its fee balance slot.
+        let sender = Address::random();
+        let mut pool = AA2dPool::default();
+        let txs: Vec<BestTransaction> = (1..=2)
+            .map(|nonce_key| {
+                let tx = TxBuilder::aa(sender)
+                    .nonce_key(U256::from(nonce_key))
+                    .build();
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
+            })
+            .collect();
+        for tx in &txs {
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+        }
+        let key = txs[0].transaction.fee_balance_slot().unwrap();
+        assert_eq!(txs[1].transaction.fee_balance_slot(), Some(key));
+        let drained = |pool: &AA2dPool| {
+            let mut best = StateAwareBestTransactions::new(pool.best_transactions(), &[]);
+            best.decreased_balances.insert(key, U256::ZERO);
+            best
+        };
+
+        let mut best = drained(&pool);
+        let mut skipped = Vec::new();
+        while let Some(next) = best.next_or_insolvent() {
+            let StateAwareNext::Insolvent(tx) = next else {
+                panic!("drained fee payer must not yield");
+            };
+            skipped.push(*tx.hash());
+        }
+        let mut expected: Vec<_> = txs.iter().map(|tx| *tx.hash()).collect();
+        skipped.sort();
+        expected.sort();
+        assert_eq!(skipped, expected);
+
+        // As an iterator it keeps skipping without returning.
+        assert!(drained(&pool).next().is_none());
     }
 
     #[test]

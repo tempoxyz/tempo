@@ -5,7 +5,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, Bytes, U64, U256, address, hex};
+use alloy_primitives::{Address, B256, Bytes, U64, U256, address, hex};
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
 use reth_ethereum::{pool::TransactionPool, primitives::SignerRecoverable};
@@ -27,6 +27,8 @@ use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
+use tempo_transaction_pool::transaction::MAX_FAILED_INCLUSIONS;
+use test_case::test_matrix;
 
 use crate::utils::TestNodeBuilder;
 
@@ -761,6 +763,140 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     // Whitelisted transaction should still be in the pool
     node1.wait_for_pooled([whitelisted_hash]).await?;
+
+    Ok(())
+}
+
+/// Signs `tx` as `sender`, sponsored by `fee_payer` if given.
+fn sign_tempo_tx(
+    mut tx: TempoTransaction,
+    sender: &PrivateKeySigner,
+    fee_payer: Option<&PrivateKeySigner>,
+) -> eyre::Result<TempoTxEnvelope> {
+    if let Some(fee_payer) = fee_payer {
+        crate::tempo_transaction::helpers::sign_fee_payer(&mut tx, sender.address(), fee_payer)?;
+    }
+    let signature = sender.sign_hash_sync(&tx.signature_hash())?;
+    Ok(tx.into_signed(signature.into()).into())
+}
+
+/// Transactions whose fee payer can't cover them when the builder reaches them, but can again by
+/// the end of the block, pass pool maintenance. The builder evicts them after repeated skips.
+#[test_matrix([false, true], [false, true])]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_evict_txs_repeatedly_skipped_for_fee_payer_balance(
+    expiring: bool,
+    prewarming: bool,
+) -> eyre::Result<()> {
+    const SPONSORED_GAS: u64 = 1_000_000;
+    const SPEND_GAS: u64 = 300_000;
+    const BASE: u128 = TEMPO_T1_BASE_FEE as u128;
+
+    reth_tracing::init_test_tracing();
+    let mut builder = TestNodeBuilder::new();
+    if !prewarming {
+        builder = builder.without_prewarming();
+    }
+    let mut setup = builder.build_with_node_access().await?;
+    let node = &mut setup.node;
+
+    // Spends, sponsored transactions and top-ups are ordered by tip. 2D nonce keys are kept clear of the subblock
+    // prefix.
+    let tx = |tip: u128, gas_limit: u64, nonce_key: U256, calls: Vec<Call>| TempoTransaction {
+        chain_id: 1337,
+        max_priority_fee_per_gas: tip,
+        max_fee_per_gas: BASE + tip,
+        gas_limit,
+        calls,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        nonce_key,
+        ..Default::default()
+    };
+    let nonce_key = || U256::from_be_slice(&B256::random()[24..]);
+    let transfer = |to: Address, amount: U256| {
+        Call::new(
+            DEFAULT_FEE_TOKEN,
+            ITIP20::transferCall { to, amount }.abi_encode(),
+        )
+    };
+
+    let recipient = test_signer(1);
+    let payers = [PrivateKeySigner::random(), PrivateKeySigner::random()];
+    let sponsored_fee = calc_gas_balance_spending(SPONSORED_GAS, 3 * BASE);
+    let spend_fee = calc_gas_balance_spending(SPEND_GAS, 4 * BASE);
+
+    // Each payer covers one sponsored transaction plus its own spend. After the spend only the spend's
+    // gas refund is left, which is below the sponsored fee.
+    let funding = payers
+        .iter()
+        .map(|payer| transfer(payer.address(), sponsored_fee + spend_fee))
+        .collect();
+    let funding = sign_tempo_tx(
+        tx(BASE, 5_000_000, nonce_key(), funding),
+        &test_signer(0),
+        None,
+    )?;
+    let (_, payload) = node
+        .inject_and_advance(funding.encoded_2718().into())
+        .await?;
+    let valid_before = NonZeroU64::new(payload.block().header().inner.timestamp + 30);
+
+    let mut sponsored = Vec::new();
+    for payer in &payers {
+        for _ in 0..3 {
+            let mut sponsored_tx = tx(
+                2 * BASE,
+                SPONSORED_GAS,
+                U256::ZERO,
+                vec![Call::new(Address::ZERO, Bytes::new())],
+            );
+            if expiring {
+                sponsored_tx.nonce_key = U256::MAX;
+                sponsored_tx.valid_before = valid_before;
+            }
+            let sponsored_tx =
+                sign_tempo_tx(sponsored_tx, &PrivateKeySigner::random(), Some(payer))?;
+            sponsored.push(node.inject_tx(sponsored_tx.encoded_2718().into()).await?);
+        }
+    }
+
+    for _ in 0..MAX_FAILED_INCLUSIONS {
+        let mut block_txs = Vec::new();
+        for payer in &payers {
+            let spend = tx(
+                3 * BASE,
+                SPEND_GAS,
+                nonce_key(),
+                vec![transfer(recipient.address(), sponsored_fee)],
+            );
+            block_txs.push(sign_tempo_tx(spend, payer, None)?);
+        }
+        let top_up = payers
+            .iter()
+            .map(|payer| transfer(payer.address(), sponsored_fee + spend_fee))
+            .collect();
+        block_txs.push(sign_tempo_tx(
+            tx(BASE, 5_000_000, nonce_key(), top_up),
+            &recipient,
+            None,
+        )?);
+
+        let mut hashes = Vec::new();
+        for tx in block_txs {
+            hashes.push(node.inject_tx(tx.encoded_2718().into()).await?);
+        }
+        let payload = node.advance_block().await?;
+        let included: Vec<_> = payload
+            .block()
+            .body()
+            .transactions()
+            .map(|tx| *tx.tx_hash())
+            .collect();
+        assert!(hashes.iter().all(|hash| included.contains(hash)));
+        assert!(!sponsored.iter().any(|hash| included.contains(hash)));
+    }
+
+    node.wait_for_pool_removal(sponsored).await?;
 
     Ok(())
 }

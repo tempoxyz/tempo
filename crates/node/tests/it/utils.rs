@@ -301,7 +301,10 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
-use tempo_node::{node::TempoNode, rpc::error::TempoEthApiError};
+use tempo_node::{
+    node::{TempoNode, TempoNodeArgs},
+    rpc::error::TempoEthApiError,
+};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
@@ -538,6 +541,7 @@ pub(crate) struct TestNodeBuilder {
     external_rpc: Option<Url>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
+    prewarming: bool,
 }
 
 impl TestNodeBuilder {
@@ -552,7 +556,14 @@ impl TestNodeBuilder {
             external_rpc: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
+            prewarming: true,
         }
+    }
+
+    /// Builds payloads without prewarming transactions.
+    pub(crate) fn without_prewarming(mut self) -> Self {
+        self.prewarming = false;
+        self
     }
 
     /// Set the fork schedule (Devnet, Testnet, or Mainnet)
@@ -622,10 +633,15 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec))
-            .with_dev_mode(true)
-            .build_single()
-            .await?;
+        let mut setup = tempo_test_setup(1, Arc::new(chain_spec)).with_dev_mode(true);
+        if !self.prewarming {
+            let args = TempoNodeArgs {
+                builder_disable_prewarming: true,
+                ..Default::default()
+            };
+            setup = setup.with_node(move |_| TempoNode::new(&args, None));
+        }
+        let (node, _wallet) = setup.build_single().await?;
 
         Ok(SingleNodeSetup {
             node: node.into(),

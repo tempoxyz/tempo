@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -66,7 +66,7 @@ use tempo_payload_types::{
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    StateAwareBestTransactions, StateAwareNext, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -87,12 +87,21 @@ enum PayloadTransactions {
 }
 
 impl PayloadTransactions {
-    /// Returns the next transaction, if available.
-    fn next(&mut self) -> Option<PrewarmedTransaction> {
+    /// Returns the next transaction, or one skipped because its fee payer can no longer cover
+    /// its fee.
+    ///
+    /// [`Self::Parallel`] never skips, as it doesn't use the [`StateAwareBestTransactions`]
+    /// iterator.
+    fn next(&mut self) -> Option<StateAwareNext<PrewarmedTransaction>> {
         match self {
-            Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next(),
-            Self::Parallel(planner) => planner.next(),
+            Self::Sequential(txs) => txs.next_or_insolvent().map(|next| match next {
+                StateAwareNext::Ready(tx) => {
+                    StateAwareNext::Ready(PrewarmedTransaction::without_replay(tx))
+                }
+                StateAwareNext::Insolvent(tx) => StateAwareNext::Insolvent(tx),
+            }),
+            Self::Prewarming(txs) => txs.next_or_insolvent(),
+            Self::Parallel(planner) => planner.next().map(StateAwareNext::Ready),
         }
     }
 
@@ -497,6 +506,8 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        // Transactions skipped by too many builds, evicted once the fill loop ends.
+        let mut evicted = Vec::new();
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
@@ -546,20 +557,34 @@ where
                 break BlockBuildStopReason::TransactionCountLimit;
             }
 
-            let Some(mut pool_tx) = best_txs.next() else {
-                if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+            let mut pool_tx = match best_txs.next() {
+                Some(StateAwareNext::Ready(pool_tx)) => pool_tx,
+                // Return to the top of the loop after each skip, so a run of skips still checks
+                // for cancellation and the build budget.
+                Some(StateAwareNext::Insolvent(tx)) => {
+                    self.metrics.inc_pool_tx_skipped("insolvent_fee_payer");
+                    // Pool maintenance only checks fee payer balances at the end of a block, so
+                    // a transaction can be skipped by every build without being removed.
+                    if tx.transaction.record_failed_inclusion() {
+                        evicted.push(*tx.hash());
+                    }
                     continue;
                 }
-                let stop_reason = if cumulative_gas_used >= block_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
-                } else {
-                    BlockBuildStopReason::TxPoolEmpty
-                };
-                break stop_reason;
+                None => {
+                    if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
+                        std::thread::sleep(Duration::from_millis(1));
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        continue;
+                    }
+                    let stop_reason = if cumulative_gas_used >= block_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else if skipped_oversized_block {
+                        BlockBuildStopReason::RlpBlockSizeLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                    break stop_reason;
+                }
             };
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
@@ -750,6 +775,15 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+
+        if !evicted.is_empty() {
+            // Only the skipped transactions: later transactions of a lane may use another payer.
+            let pool = self.pool.clone();
+            self.executor
+                .spawn_blocking_named("builder-evict", move || {
+                    pool.remove_transactions(evicted);
+                });
+        }
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =

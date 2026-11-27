@@ -23,7 +23,10 @@ use reth_transaction_pool::{
 use std::{
     convert::Infallible,
     fmt::Debug,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 use tempo_contracts::precompiles::PaymentSlots;
 use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
@@ -41,6 +44,10 @@ use tempo_primitives::{
     },
 };
 use thiserror::Error;
+
+/// Payload builds that may skip a transaction as not includable before the builder evicts it from
+/// the pool; see [`TempoPooledTransaction::record_failed_inclusion`].
+pub const MAX_FAILED_INCLUSIONS: u32 = 3;
 
 /// Tempo pooled transaction representation.
 ///
@@ -82,6 +89,8 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Payload builds that skipped this transaction as not includable.
+    failed_inclusions: FailedInclusions,
 }
 
 impl TempoPooledTransaction {
@@ -139,6 +148,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            failed_inclusions: FailedInclusions::default(),
         }
     }
 
@@ -441,6 +451,8 @@ impl TempoPooledTransaction {
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
+            // Passing revalidation says nothing about whether builds could include it.
+            failed_inclusions: self.failed_inclusions.clone(),
         }
     }
 
@@ -487,6 +499,16 @@ impl TempoPooledTransaction {
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Records that a payload build skipped this transaction because it could not be included at
+    /// that point in the block, such as when its fee payer spent its balance earlier in the block.
+    ///
+    /// The count is shared by every holder of the pool's `Arc`, so it survives across builds.
+    /// Returns true once the transaction has been skipped [`MAX_FAILED_INCLUSIONS`] times, and on
+    /// every skip after that: the caller should evict it from the pool.
+    pub fn record_failed_inclusion(&self) -> bool {
+        self.failed_inclusions.0.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_FAILED_INCLUSIONS
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -670,6 +692,18 @@ fn warm_payment_keccak_slots<'a>(
 /// These errors can be returned by RPC after transaction submission when the
 /// transaction pool rejects a transaction. Variant docs describe when each
 /// rejection is thrown.
+/// Counter behind [`TempoPooledTransaction::record_failed_inclusion`].
+///
+/// A clone is a separate transaction instance and starts from the current count.
+#[derive(Debug, Default)]
+struct FailedInclusions(AtomicU32);
+
+impl Clone for FailedInclusions {
+    fn clone(&self) -> Self {
+        Self(AtomicU32::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
     /// A non-payment transaction no longer fits in the block's general gas lane.
@@ -2041,5 +2075,23 @@ mod tests {
         // A configurable grant's validity doesn't depend on its key ID's commitment value.
         let configurable = grant(SignatureType::ConfigurableAccount);
         assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
+    }
+
+    #[test]
+    fn failed_inclusions_trigger_eviction_at_the_limit_and_survive_clones() {
+        let tx = TxBuilder::aa(Address::random()).build();
+        for _ in 1..MAX_FAILED_INCLUSIONS {
+            assert!(!tx.record_failed_inclusion());
+        }
+        let revalidated = tx.with_discarded_caches();
+        assert!(tx.record_failed_inclusion());
+        // A build that stopped early before evicting can still evict it later.
+        assert!(tx.record_failed_inclusion());
+        assert!(revalidated.record_failed_inclusion());
+        assert!(
+            !TxBuilder::aa(Address::random())
+                .build()
+                .record_failed_inclusion()
+        );
     }
 }
