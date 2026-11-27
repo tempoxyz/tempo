@@ -18,7 +18,7 @@ pub use tempo_contracts::precompiles::IConfigurableAccount::{
 mod checks;
 pub mod spec;
 
-pub use checks::{LEAF_CHECKS, STEP_CHECKS, VIEW};
+pub use checks::{LEAF_CHECKS, STEP_CHECKS, TX_CHECKS, VIEW};
 
 /// The configuration commitments of the observed accounts.
 #[derive(Debug, Clone, PartialEq, Eq)]

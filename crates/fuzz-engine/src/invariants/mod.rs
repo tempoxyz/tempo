@@ -179,10 +179,13 @@ pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
     let dex = E::DEX
         .into_iter()
         .flat_map(|_| infos(dex::CHECKS).chain(infos(dex::STEP_CHECKS)));
-    let accounts = E::ACCOUNTS
-        .then(|| infos(account::STEP_CHECKS).chain(infos(account::LEAF_CHECKS)))
-        .into_iter()
-        .flatten();
+    // A transaction's own signature checks need no commitments, so every chain runs them.
+    let accounts = infos(account::TX_CHECKS).chain(
+        E::ACCOUNTS
+            .then(|| infos(account::STEP_CHECKS).chain(infos(account::LEAF_CHECKS)))
+            .into_iter()
+            .flatten(),
+    );
     let skipped = [
         E::FEE_AMM.is_none().then_some(fee_amm::VIEW),
         E::DEX.is_none().then_some(dex::VIEW),
@@ -293,11 +296,13 @@ pub(crate) fn check<E: Engine>(
                 selected: &runs,
             },
         );
-        if E::ACCOUNTS
-            && let Some(effects) = &effects
+        if let Some(effects) = &effects
             && let Some(tx) = effects.ran.tx()
         {
-            configurable_account::check(&mut reader, db, effects, tx);
+            reader.run(account::TX_CHECKS, tx);
+            if E::ACCOUNTS {
+                configurable_account::check(&mut reader, db, effects, tx);
+            }
         }
     }
     if let Some(effects) = &effects

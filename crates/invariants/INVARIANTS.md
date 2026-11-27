@@ -19,6 +19,8 @@ Generated from each check's metadata by `the_catalog_lists_every_check`.
 | `TEMPO-AMM-EXIT` |  |  |  |  |  | An LP holder burning its whole position never halts or panics. |
 | `TEMPO-DEX10` |  |  |  |  |  | The DEX holds, of each token, at least its users' internal balances of it plus its live orders' escrow in it. |
 | `TEMPO-DEX10-STEP` |  |  |  |  |  | The DEX's holdings of each token never fall by more than what it owes in it. |
+| `TEMPO-ACCOUNT-SENDER-QUORUM` |  |  |  | TIP-1107 |  | The transaction's own configurable signature names its sender. |
+| `TEMPO-ACCOUNT-GRANT-TYPE` |  | T14 |  | TIP-1111 |  | An access key using a grant made in the same transaction signs as the grant's key type. |
 | `TEMPO-ACCOUNT-COMMITMENT-KEPT` |  |  |  | TIP-1107 |  | A commitment is never cleared. |
 | `TEMPO-ACCOUNT-COMMITMENT-BY-SELF` |  |  |  | TIP-1107 |  | Only registration, the account's own owner update or its migration changes its commitment. |
 | `TEMPO-ACCOUNT-COMMITMENT-EVENT` |  |  |  | TIP-1107 |  | A changed commitment is announced, registration included. |
@@ -26,7 +28,6 @@ Generated from each check's metadata by `the_catalog_lists_every_check`.
 | `TEMPO-ACCOUNT-CONFIG-RULES` |  |  |  | TIP-1107 |  | Every carried or announced configuration passes the configuration rules. |
 | `TEMPO-ACCOUNT-SIGNER-REGISTERED` |  |  |  | TIP-1107 |  | Every configurable signer has a commitment afterwards. |
 | `TEMPO-ACCOUNT-QUORUM-COMMITMENT` |  |  |  | TIP-1107 |  | A quorum matches its account's commitment, or derives its address. |
-| `TEMPO-ACCOUNT-SENDER-QUORUM` |  |  |  | TIP-1107 |  | The transaction's own configurable signature names its sender. |
 | `TEMPO-ACCOUNT-QUORUM-WEIGHT` |  |  |  | TIP-1107 |  | Approvals are ascending owners that reach the threshold and fall below it without any one. |
 | `TEMPO-ACCOUNT-APPROVAL-BOUNDS` |  |  |  | TIP-1107 |  | 1 to 8 approvals, each at most 2,049 bytes. |
 | `TEMPO-ACCOUNT-UPDATE-QUORUM` |  |  |  | TIP-1107 |  | Owner updates are signed directly by the account's quorum. |
@@ -39,7 +40,6 @@ Generated from each check's metadata by `the_catalog_lists_every_check`.
 | `TEMPO-ACCOUNT-FAILED-ROLLBACK` |  |  |  | TIP-1107 |  | A failed transaction keeps no owner update or migration, only registration. |
 | `TEMPO-ACCOUNT-DERIVED-ADDRESS` |  |  |  | TIP-1107 |  | A registering account's address is outside the reserved address spaces. |
 | `TEMPO-ACCOUNT-GRANT-SIGNER` |  | T14 |  | TIP-1111 |  | An inline grant is signed by its parent's own key or quorum, or by an admin key the parent already had that also signs the transaction. |
-| `TEMPO-ACCOUNT-GRANT-TYPE` |  | T14 |  | TIP-1111 |  | An access key using a grant made in the same transaction signs as the grant's key type. |
 | `TEMPO-ACCOUNT-ACCESS-KEY-TYPE` |  | T14 |  | TIP-1111 |  | An access key signs as the key type its grant stores, except that a configurable signature may use an ordinary grant whose key ID already has a commitment. |
 | `TEMPO-ACCOUNT-GRANT-AUTHORITY` |  | T14 |  | TIP-1111 |  | Grants change only in the parent's own transactions, by its key or quorum, and never as an admin key. |
 | `TEMPO-ACCOUNT-MARKER` |  |  |  | TIP-1107 |  | An account with a commitment has the 0xef marker as code. |

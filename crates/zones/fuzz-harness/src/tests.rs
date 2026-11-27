@@ -406,14 +406,19 @@ fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
         "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
         "TEMPO-ZONE-ACCOUNT-VIEW",
         "TEMPO-TIP20-BALANCE-SUM",
+        "TEMPO-ACCOUNT-SENDER-QUORUM",
+        "TEMPO-ACCOUNT-GRANT-TYPE",
     ] {
         assert!(ids.contains(&id), "{id} is in the catalog: {ids:?}");
     }
-    // Zones run no fee AMM or DEX, and keep no configurable account commitments of their own.
+    // Zones run no fee AMM or DEX, and keep no configurable account commitments of their own: of
+    // the account checks only those of a transaction's own signatures run.
+    let signatures = tempo_invariants::configurable_account::TX_CHECKS;
     assert!(
         ids.iter().all(|id| !id.starts_with("TEMPO-FEE-")
             && !id.starts_with("TEMPO-DEX-")
-            && !id.starts_with("TEMPO-ACCOUNT-")),
+            && (!id.starts_with("TEMPO-ACCOUNT-")
+                || signatures.iter().any(|check| check.id == *id))),
         "{ids:?}"
     );
     assert!(

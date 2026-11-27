@@ -1298,6 +1298,14 @@ fn a_chain_without_account_invariants_leaves_them_out_of_its_catalog() {
         assert!(tempo.contains(id), "Tempo's catalog lacks {id}");
         assert!(!watching.contains(id), "a chain without them lists {id}");
     }
+    // A transaction's own signature checks need no commitments, so they stay.
+    for check in account::TX_CHECKS {
+        assert!(
+            watching.contains(check.id),
+            "a chain without commitments lacks {}",
+            check.id
+        );
+    }
     // Only the account invariants are left out.
     assert_eq!(
         tempo.difference(&watching).count(),
