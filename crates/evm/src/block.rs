@@ -1312,7 +1312,7 @@ mod tests {
         let mut db = InMemoryDB::default();
         db.insert_account_info(&caller, evm2::evm::AccountInfo::default().with_nonce(1));
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T15)
+            .with_spec(TempoHardfork::T17)
             .build(db, &chainspec);
         let mut block = *executor.evm().block();
         block.basefee = U256::ZERO;
@@ -1353,7 +1353,7 @@ mod tests {
             general_gas_limit: 30_000_000,
             ..Default::default()
         }
-        .with_spec(TempoHardfork::T15)
+        .with_spec(TempoHardfork::T17)
         .with_epoch_length(100)
         .build(db, &chainspec);
         let mut block = *executor.evm().block();
@@ -1439,7 +1439,7 @@ mod tests {
             general_gas_limit: 30_000_000,
             ..Default::default()
         }
-        .with_spec(TempoHardfork::T15)
+        .with_spec(TempoHardfork::T17)
         .with_epoch_length(100)
         .build(InMemoryDB::default(), &chainspec);
         let previous_regular_gas = 123_000;
@@ -3385,7 +3385,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            for fork in ["t14Time", "t15Time"] {
+            for fork in ["t14Time", "t15Time", "t16Time", "t17Time"] {
                 genesis
                     .config
                     .extra_fields
@@ -3462,10 +3462,12 @@ mod tests {
         expected_runtimes: [Bytes; 3],
     ) {
         let mut genesis = DEV.genesis().clone();
-        genesis
-            .config
-            .extra_fields
-            .insert("t15Time".into(), serde_json::Value::Null);
+        for fork in ["t15Time", "t16Time", "t17Time"] {
+            genesis
+                .config
+                .extra_fields
+                .insert(fork.into(), serde_json::Value::Null);
+        }
         for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
             genesis
                 .config
@@ -3520,6 +3522,12 @@ mod tests {
         expected_runtimes: [Bytes; 3],
     ) {
         let mut genesis = DEV.genesis().clone();
+        for fork in ["t16Time", "t17Time"] {
+            genesis
+                .config
+                .extra_fields
+                .insert(fork.into(), serde_json::Value::Null);
+        }
         for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {
             genesis
                 .config
@@ -3671,7 +3679,7 @@ mod tests {
         }
     }
 
-    /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
+    /// TIP-1016 (T17+): block header `gas_used` = `block_regular_gas_used`.
     /// Receipts track `tx_gas_used` (what the user pays, including state gas).
     /// The difference between receipts total and header gas_used is the state gas
     /// exempted from block capacity.

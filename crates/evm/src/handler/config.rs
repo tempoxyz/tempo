@@ -150,7 +150,7 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
 }
 
 /// Builds an EVM2 execution config for Tempo's ERC-20 fee model, including
-/// TIP-1016's execution/state gas split from T15.
+/// TIP-1016's execution/state gas split from T17.
 pub fn tempo_execution_config(
     tempo_spec: TempoHardfork,
     chain_id: u64,

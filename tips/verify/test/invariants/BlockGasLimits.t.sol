@@ -19,8 +19,8 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 /// TIP-1010 specifies:
 /// - Block gas limit: 500,000,000 (TEMPO-BLOCK1)
 /// - General lane limit: 30,000,000 (TEMPO-BLOCK2)
-/// - Before T15: total transaction gas cap of 30,000,000 (TEMPO-BLOCK3)
-/// - From T15: execution gas cap of 16,777,216, with uncapped total gas (TIP-1016)
+/// - Before T17: total transaction gas cap of 30,000,000 (TEMPO-BLOCK3)
+/// - From T17: execution gas cap of 16,777,216, with uncapped total gas (TIP-1016)
 /// - T1 base fee: 20 gwei (TEMPO-BLOCK4)
 /// - Payment lane minimum: 470,000,000 (TEMPO-BLOCK5)
 /// - Max deployment fits in tx cap (TEMPO-BLOCK6)
@@ -43,10 +43,10 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /// @dev General lane gas limit (30M)
     uint256 internal constant GENERAL_GAS_LIMIT = 30_000_000;
 
-    /// @dev Pre-T15 total transaction gas cap (30M)
+    /// @dev Pre-T17 total transaction gas cap (30M)
     uint256 internal constant TX_GAS_CAP = 30_000_000;
 
-    /// @dev T15 execution gas cap (EIP-7825), excluding the state gas reservoir
+    /// @dev T17 execution gas cap (EIP-7825), excluding the state gas reservoir
     uint256 internal constant TX_EXECUTION_GAS_CAP = 16_777_216;
 
     /// @dev Runtime that returns GAS at entry (GAS itself costs two gas).
@@ -81,8 +81,8 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     uint256 public ghost_txGasCapTests;
     uint256 public ghost_txAtCapSucceeded;
     uint256 public ghost_txOverCapRejected;
-    uint256 public ghost_txOverCapViolations; // Pre-T15 over-cap tx was accepted
-    uint256 public ghost_txOverCapAccepted; // T15 total gas above 30M is valid
+    uint256 public ghost_txOverCapViolations; // Pre-T17 over-cap tx was accepted
+    uint256 public ghost_txOverCapAccepted; // T17 total gas above 30M is valid
 
     /// @dev TEMPO-BLOCK6: Deployment fits in cap
     uint256 public ghost_deploymentTests;
@@ -124,8 +124,8 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /// @notice TEMPO-BLOCK3: Enforce the active fork's transaction gas dimension.
     function _invariantTxGasCap() internal view {
         assertEq(ghost_txAtCapSucceeded, ghost_txGasCapTests, "Tx at cap must succeed");
-        assertEq(ghost_txOverCapViolations, 0, "TEMPO-BLOCK3: Pre-T15 total cap bypassed");
-        if (_isTempoForkOrLater(15)) {
+        assertEq(ghost_txOverCapViolations, 0, "TEMPO-BLOCK3: Pre-T17 total cap bypassed");
+        if (_isTempoForkOrLater(17)) {
             assertEq(
                 ghost_txOverCapAccepted, ghost_txGasCapTests, "TIP-1016: Total gas is not capped"
             );
@@ -154,7 +154,7 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
         uint256 senderIdx = actorSeed % actors.length;
         address sender = actors[senderIdx];
         uint256 privateKey = actorKeys[senderIdx];
-        bool reservoir = _isTempoForkOrLater(15);
+        bool reservoir = _isTempoForkOrLater(17);
 
         bytes memory callData = abi.encodeCall(ITIP20.transfer, (actors[0], 1e6));
         uint64 nonce = uint64(vm.getNonce(sender));
@@ -225,9 +225,9 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
         // Initcode copies and returns targetSize bytes of STOP opcodes.
         bytes memory initcode = _createInitcodeOfSize(targetSize);
 
-        // T15 raises total code deposit pricing to 2,500 gas/byte. State gas is
+        // T17 raises total code deposit pricing to 2,500 gas/byte. State gas is
         // exempt from the execution cap; do not clamp this total budget to 30M.
-        bool reservoir = _isTempoForkOrLater(15);
+        bool reservoir = _isTempoForkOrLater(17);
         uint256 codeDepositPerByte = reservoir ? 2500 : CODE_DEPOSIT_PER_BYTE;
         uint256 requiredGas = 53_000 // CREATE tx base
             + CREATE_BASE_GAS + (initcode.length * codeDepositPerByte) + ACCOUNT_CREATION_GAS
@@ -259,7 +259,7 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
 
     /// @notice Intrinsic execution above the cap is rejected before runtime, not halted by OOG.
     function test_intrinsicExecutionGasOverCapRejected() public {
-        vm.skip(!_isTempoForkOrLater(15));
+        vm.skip(!_isTempoForkOrLater(17));
         vm.setNonce(actors[0], 1);
         // Access-list entries are charged even when duplicated. Empty calldata keeps
         // its floor at 21k, isolating intrinsic execution gas: 21k + 2400 + 9000*1900.
@@ -287,9 +287,9 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
         assertEq(vm.getNonce(actors[0]), 1, "Validation rejection must not consume nonce");
     }
 
-    /// @notice T15 must allow exactly 16,777,216 execution gas, but not one gas more.
+    /// @notice T17 must allow exactly 16,777,216 execution gas, but not one gas more.
     function test_executionGasCapBoundary() public {
-        vm.skip(!_isTempoForkOrLater(15));
+        vm.skip(!_isTempoForkOrLater(17));
         address sender = actors[0];
         // Remove the nonce-zero intrinsic surcharge from this exact boundary fixture.
         vm.setNonce(sender, 1);

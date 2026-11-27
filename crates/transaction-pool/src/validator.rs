@@ -1274,12 +1274,20 @@ mod tests {
     }
 
     #[test]
-    fn block_gas_policy_tracks_t15_without_changing_the_head() {
+    fn block_gas_policy_tracks_t17_without_changing_the_head() {
         let mut spec = (*MODERATO).as_ref().clone();
         for &fork in TempoHardfork::VARIANTS {
             spec.inner.hardforks.insert(
                 fork,
-                reth_chainspec::ForkCondition::Timestamp(if fork.is_t15() { 100 } else { 0 }),
+                reth_chainspec::ForkCondition::Timestamp(if fork.is_t17() {
+                    100
+                } else if fork.is_t16() {
+                    20
+                } else if fork.is_t15() {
+                    10
+                } else {
+                    0
+                }),
             );
         }
         let spec = Arc::new(spec);
@@ -1304,15 +1312,30 @@ mod tests {
         let execution_policy = BlockGasLimitPolicy::ExecutionGas {
             tx_gas_limit_cap: 16_777_216,
         };
-        for (timestamp, policy) in [
-            (99, BlockGasLimitPolicy::TotalGas),
-            (100, execution_policy),
-            (101, execution_policy),
-            (99, BlockGasLimitPolicy::TotalGas),
+        for (timestamp, fork, policy) in [
+            (10, TempoHardfork::T15, BlockGasLimitPolicy::TotalGas),
+            (20, TempoHardfork::T16, BlockGasLimitPolicy::TotalGas),
+            (99, TempoHardfork::T16, BlockGasLimitPolicy::TotalGas),
+            (100, TempoHardfork::T17, execution_policy),
+            (101, TempoHardfork::T17, execution_policy),
+            (99, TempoHardfork::T16, BlockGasLimitPolicy::TotalGas),
         ] {
             let head = create_mock_block(timestamp);
             validator.on_new_head_block(&head);
             assert_eq!(validator.block_gas_limit_policy(), policy);
+            {
+                let env = validator.cached_evm_env.read();
+                assert_eq!(env.spec, fork);
+                assert_eq!(env.version.feature(EvmFeatures::EIP8037), fork.is_t17());
+                assert_eq!(
+                    env.version.tx_gas_limit_cap,
+                    if fork.is_t17() {
+                        16_777_216
+                    } else {
+                        30_000_000
+                    }
+                );
+            }
             assert_eq!(
                 validator.inner.block_gas_limit(),
                 head.header().inner.gas_limit

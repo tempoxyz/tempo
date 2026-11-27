@@ -49,7 +49,7 @@ const PAR_PRICE: u64 = 100_000_000;
 const CALLBACK_GAS_LIMIT: u64 = 10_000_000;
 const REWARD_FUNDING_TX_GAS_LIMIT: u64 = 5_000_000;
 const MIGRATION_TX_GAS_LIMIT: u64 = 10_000_000;
-// T15's 2,500 gas/byte code deposit is paid from the total budget, outside the execution cap.
+// T17's 2,500 gas/byte code deposit is paid from the total budget, outside the execution cap.
 const CONTRACT_DEPLOYMENT_TX_GAS_LIMIT: u64 = 100_000_000;
 const SETUP_CALL_GAS_LIMIT: u64 = 5_000_000;
 const MIN_GAS_HEADROOM_PERCENT: u64 = 15;
