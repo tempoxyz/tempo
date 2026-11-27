@@ -67,8 +67,8 @@ before replay starts.
 
 A rule's `kind` selects a check implemented in Rust, and its other fields configure it, naming
 `tempo-contracts` constants such as `ZONE_PORTAL_IMPL_ADDRESS` or `T14_ZONE_PORTAL_RUNTIME`. Rule
-files are strict: unknown fields, kinds or constant names, duplicate ids, and rules out of fork
-order or after the candidate are errors.
+files are strict: unknown fields, kinds or constant names, duplicate ids, an account listed twice
+in one rule, and rules out of fork order or after the candidate are errors.
 
 A check receives existing execution evidence and a changed field descriptor, and either accepts
 the difference or leaves it unexplained. The first accepting check owns attribution. Fee-slot
@@ -80,8 +80,9 @@ provenance alone never accepts a difference.
    replays blocks from before that fork, with a stable, unique id. Copies of a rule must be
    identical.
 2. If the rule names a new constant, add it to the matching `named_constants!` list.
-3. If no existing `kind` expresses the rule, add one: a `Rule` variant and the check it runs,
-   matching `Field` metadata and reading typed values from `Context`, never diagnostic strings.
+3. If no existing `kind` expresses the rule, add one: a `Rule` variant, a `Check` variant, and its
+   arm in `Expectation::accepts`, matching `Field` metadata and reading typed values from
+   `Context`, never diagnostic strings.
    Leave a difference unexplained when evidence is insufficient.
 4. Test accepted effects, nearby incorrect effects, and unrelated differences at the same boundary.
 

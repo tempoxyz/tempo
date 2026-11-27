@@ -32,7 +32,7 @@ pub(crate) struct Expectation {
 }
 
 impl Expectation {
-    /// Whether this expectation explains the difference in `field`; `None` leaves it
+    /// `Some` if this expectation explains the difference in `field`, `None` if it leaves it
     /// unexplained.
     pub(super) fn accepts(&self, ctx: &Context<'_>, field: &Field) -> Option<()> {
         let upgrades = match &self.check {
@@ -80,9 +80,11 @@ pub(crate) enum Check {
 /// A code change the candidate's pre-block setup makes to `address`.
 #[derive(Debug)]
 pub(crate) struct RuntimeUpgrade {
+    /// The account whose code changes.
     address: Address,
     /// Code hashes the account may have before the change, besides empty code.
     from: Vec<B256>,
+    /// The code hash after the change.
     to: B256,
 }
 
@@ -185,7 +187,7 @@ pub(crate) fn between(
 }
 
 /// The fork rules for replay under `candidate`, each with the fork that introduces it, in fork
-/// order. Errors if `candidate` has no rule file.
+/// order. Errors if `candidate` has no rule file or its file is invalid.
 pub(crate) fn load(candidate: TempoHardfork) -> eyre::Result<Vec<(TempoHardfork, Expectation)>> {
     let json =
         rule_file(candidate).ok_or_eyre(format!("no shadow expectations for {candidate}"))?;
@@ -198,27 +200,6 @@ fn rule_file(candidate: TempoHardfork) -> Option<&'static str> {
         TempoHardfork::T15 => Some(include_str!("t15.json")),
         _ => None,
     }
-}
-
-/// A fork rule as a rule file lists it, naming `tempo-contracts` constants.
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-enum Rule<'a> {
-    RuntimeUpgrade {
-        id: &'a str,
-        fork: TempoHardfork,
-        #[serde(borrow)]
-        accounts: Vec<RuntimeUpgradeNames<'a>>,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeUpgradeNames<'a> {
-    address: &'a str,
-    #[serde(borrow)]
-    from: Vec<&'a str>,
-    to: &'a str,
 }
 
 fn parse(
@@ -263,6 +244,27 @@ fn parse(
             Ok((fork, Expectation { id, check }))
         })
         .collect()
+}
+
+/// A fork rule as a rule file lists it, naming `tempo-contracts` constants.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum Rule<'a> {
+    RuntimeUpgrade {
+        id: &'a str,
+        fork: TempoHardfork,
+        #[serde(borrow)]
+        accounts: Vec<RuntimeUpgradeNames<'a>>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeUpgradeNames<'a> {
+    address: &'a str,
+    #[serde(borrow)]
+    from: Vec<&'a str>,
+    to: &'a str,
 }
 
 /// Defines a lookup from a constant's name to its value, for the constants rule files may name.
