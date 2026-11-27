@@ -64,12 +64,16 @@ pub(crate) enum Check {
     Header,
     SenderCount,
     IncompletePreState,
+    AnchoredChain,
 }
 
 impl Display for Check {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Null => f.write_str("null input"),
+            Self::AnchoredChain => {
+                f.write_str("an anchored chain needs a genesis pre-state and context headers")
+            }
             Self::HarnessInput => f.write_str("harness input does not decode"),
             Self::OutcomeEncoding => f.write_str("outcome does not encode"),
             Self::UnsupportedInput { kind } => write!(f, "{kind:?} inputs are not supported"),

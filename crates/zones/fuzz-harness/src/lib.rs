@@ -9,6 +9,7 @@
 //! runs either.
 
 mod accounts;
+mod chain;
 mod consensus;
 mod engine;
 mod types;
@@ -20,18 +21,23 @@ use tempo_fuzz_engine::{Rejection, ffi};
 use tempo_fuzz_types::{PreState, TempoHarnessInput, TempoHarnessOutcome};
 
 pub use consensus::ZoneConsensus;
-pub use engine::{L1, Zone};
-pub use types::{L1StateInput, ZoneHarnessInput};
+pub use engine::{L1, L1Chain, Zone};
+pub use types::{L1Input, L1StateInput, ZoneHarnessInput};
 
 /// Executes `input` on a zone that reads its L1 state. Returns the outcome and, unless its error
 /// is `None`, why it stopped short.
 pub fn run(input: ZoneHarnessInput) -> (TempoHarnessOutcome, Option<Rejection>) {
-    let watched = watched(&input.input);
-    tempo_fuzz_engine::run(&Zone::new(input.l1, watched), input.input)
+    match input.l1 {
+        L1Input::State(l1) => {
+            let watched = watched(&input.input);
+            tempo_fuzz_engine::run(&Zone::new(L1::state(l1), watched), input.input)
+        }
+        L1Input::Chain(tempo) => chain::run(&tempo, input.input),
+    }
 }
 
 /// The accounts `input` names, which the account checks watch: its pre-state's, then its senders.
-fn watched(input: &TempoHarnessInput) -> Vec<Address> {
+pub(crate) fn watched(input: &TempoHarnessInput) -> Vec<Address> {
     match input {
         // The zone engine rejects transaction inputs before running any check.
         TempoHarnessInput::Transaction(_) => Vec::new(),

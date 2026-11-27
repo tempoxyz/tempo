@@ -7,7 +7,7 @@ use std::{
 };
 
 use alloy_consensus::{
-    BlockHeader as _,
+    BlockHeader as _, Sealable as _,
     proofs::calculate_transaction_root,
     transaction::{Recovered, Transaction as _},
 };
@@ -15,6 +15,7 @@ use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::{block::BlockTransactionResult as _, bytecode::Bytecode};
 use invariants_core::{Effects, Frame, Report};
+use reth_chainspec::EthChainSpec as _;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory as _, BlockValidationError,
@@ -34,11 +35,12 @@ use tempo_fuzz_types::{
     TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::{Ran, Tx};
-use tempo_primitives::{Block, BlockBody, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, BlockBody, TempoHeader, TempoReceipt, TempoTxEnvelope};
 
 use crate::{
+    anchor::Anchor,
     chain,
-    engine::{Chain, Engine},
+    engine::{Chain, Engine, Tempo},
     invariants,
     rejection::{Check, Rejection},
     state::{self, Contracts, Db, Net},
@@ -164,12 +166,60 @@ fn execute<E: Engine>(
     pre_state: &PreState,
     blocks: &[TempoBlock],
 ) -> (TempoExecutionOutcome, Option<Rejection>) {
-    let (chain, blocks, db) = match prepare(engine, kind, chain, pre_state, blocks) {
+    execute_with(engine, kind, chain, pre_state, blocks, None)
+}
+
+/// Executes `blocks` as a Tempo chain from its genesis: they are numbered from 1 and each header's
+/// parent hash links it to the one before, from the genesis header. Returns the outcome, why it
+/// stopped short, and the genesis header with the pre-state and each block that applied with the
+/// state after it, which a chain built on Tempo, such as a zone, reads Tempo at.
+///
+/// The pre-state must be [`PreState::Genesis`] and every header [`BlockHeaderInput::Context`],
+/// whose `block_number` is ignored; otherwise the input is `InvalidInput` and nothing is anchored.
+pub fn execute_anchored(
+    chain: &ChainSpecInput,
+    pre_state: &PreState,
+    blocks: &[TempoBlock],
+) -> (TempoExecutionOutcome, Option<Rejection>, Vec<Anchor>) {
+    let anchorable = matches!(pre_state, PreState::Genesis(_))
+        && blocks
+            .iter()
+            .all(|block| matches!(block.header, BlockHeaderInput::Context(_)));
+    if !anchorable {
+        let rejection = Rejection::new(ErrorClass::InvalidInput, Check::AnchoredChain);
+        return (stopped(rejection.class()), Some(rejection), Vec::new());
+    }
+    let mut anchors = Vec::new();
+    let kind = HarnessInputKind::Blockchain;
+    let (outcome, rejection) =
+        execute_with(&Tempo, kind, chain, pre_state, blocks, Some(&mut anchors));
+    (outcome, rejection, anchors)
+}
+
+/// Executes `blocks`, anchoring them to `anchors` as [`execute_anchored`] describes when given.
+fn execute_with<E: Engine>(
+    engine: &E,
+    kind: HarnessInputKind,
+    chain: &ChainSpecInput,
+    pre_state: &PreState,
+    blocks: &[TempoBlock],
+    mut anchors: Option<&mut Vec<Anchor>>,
+) -> (TempoExecutionOutcome, Option<Rejection>) {
+    let linked = anchors.is_some();
+    let (chain, blocks, db) = match prepare(engine, kind, chain, pre_state, blocks, linked) {
         Ok(prepared) => prepared,
         Err(rejection) => return (stopped(rejection.class()), Some(rejection)),
     };
 
     let pre = db.cache.borrow().clone();
+    let spec = Arc::clone(&chain.spec);
+    let mut anchor = |header: &TempoHeader, db: &Db| {
+        if let Some(anchors) = anchors.as_deref_mut() {
+            let fork = spec.tempo_hardfork_at(header.inner.timestamp);
+            anchors.push(Anchor::new(header.clone(), fork, db.cache.borrow().clone()));
+        }
+    };
+    anchor(spec.genesis_header(), &db);
     let mut outcome = TempoExecutionOutcome::default();
     let (applied, failed_logs, rejection) = execute_blocks(
         engine,
@@ -178,6 +228,7 @@ fn execute<E: Engine>(
         &db,
         &blocks,
         &mut outcome,
+        &mut anchor,
     );
     if !outcome.invariant_failures.is_empty() {
         let invariant_failures = broken_start(
@@ -211,19 +262,22 @@ fn execute<E: Engine>(
 
 /// `engine`'s chain for `chain`, `blocks` ready to execute on it, and `pre_state` seeded, or why
 /// the input, of `kind`, is not executable.
+/// With `linked`, context headers are numbered from 1 and linked from the genesis header.
 fn prepare<E: Engine>(
     engine: &E,
     kind: HarnessInputKind,
     chain: &ChainSpecInput,
     pre_state: &PreState,
     blocks: &[TempoBlock],
+    linked: bool,
 ) -> Result<(Chain<E>, Vec<PreparedBlock>, Db), Rejection> {
     supported::<E>(kind)?;
     let chain = engine.chain(chain)?;
     let spec = chain.spec.as_ref();
+    let mut parent = linked.then(|| spec.genesis_header().clone());
     let blocks = blocks
         .iter()
-        .map(|block| recover_block(spec, block))
+        .map(|block| recover_block(spec, block, parent.as_mut()))
         .collect::<Result<Vec<_>, _>>()?;
     let timestamps = || {
         blocks
@@ -336,10 +390,13 @@ pub(crate) struct PreparedBlock {
     built_header: bool,
 }
 
-/// `block` with its header resolved, its transactions decoded and their senders known.
+/// `block` with its header resolved, its transactions decoded and their senders known. With
+/// `parent`, a context header follows it: it takes the next number and links to its hash, and then
+/// becomes the parent.
 pub(crate) fn recover_block(
     spec: &impl TempoConsensusSpec,
     block: &TempoBlock,
+    parent: Option<&mut TempoHeader>,
 ) -> Result<PreparedBlock, Rejection> {
     let mut header =
         chain::header(spec, &block.header).map_err(|class| Rejection::new(class, Check::Header))?;
@@ -363,6 +420,12 @@ pub(crate) fn recover_block(
     let built_header = matches!(block.header, BlockHeaderInput::Context(_));
     if built_header {
         header.inner.transactions_root = calculate_transaction_root(&txs);
+        if let Some(parent) = parent {
+            // Blocks are numbered from 1, so no input holds enough to overflow.
+            header.inner.number = parent.inner.number + 1;
+            header.inner.parent_hash = parent.hash_slow();
+            *parent = header.clone();
+        }
     }
     let body = BlockBody {
         transactions: txs,
@@ -377,8 +440,9 @@ pub(crate) fn recover_block(
 }
 
 /// Executes `blocks` on `db`, appending each applied block's outputs to `outcome` and setting its
-/// error at the first block that fails. Returns the changes of the blocks that applied, the logs
-/// of the failed block's transactions before it failed, and why it failed.
+/// error at the first block that fails, and calling `applied_block` with each block that applied and
+/// the state after it. Returns the changes of the blocks that applied, the logs of the failed
+/// block's transactions before it failed, and why it failed.
 pub(crate) fn execute_blocks<E: Engine>(
     engine: &E,
     evm_config: &E::EvmConfig,
@@ -386,6 +450,7 @@ pub(crate) fn execute_blocks<E: Engine>(
     db: &Db,
     blocks: &[PreparedBlock],
     outcome: &mut TempoExecutionOutcome,
+    applied_block: &mut dyn FnMut(&TempoHeader, &Db),
 ) -> (Net, Vec<Log>, Option<Rejection>) {
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
@@ -414,6 +479,7 @@ pub(crate) fn execute_blocks<E: Engine>(
                 for update in &updates {
                     applied.apply(update);
                 }
+                applied_block(block.recovered.header(), db);
                 let (receipts, changes) = outputs.report_into(outcome);
                 outcome.receipts.extend(receipts);
                 outcome.state_diff.blocks.push(changes);
@@ -619,8 +685,27 @@ impl<E: Engine> BlockRun<'_, E> {
             let opening = self.engine.open_block(executor.evm_mut(), header)?;
             self.execute_synthesized(executor, opening, basefee)?;
         }
+        let skips = block.built_header && self.engine.skips_invalid_txs();
         for (index, tx) in block.recovered.transactions_recovered().enumerate() {
-            let changes = self.execute_tx(executor, tx, TxIndex::Input(index as u64), basefee)?;
+            // The builder's pool admits no system transaction and no subblock transaction.
+            if skips && (tx.is_system_tx() || tx.has_sub_block_nonce_key_prefix()) {
+                self.outputs.changes.txs.push(StateChanges::default());
+                continue;
+            }
+            let changes = match self.execute_tx(executor, tx, TxIndex::Input(index as u64), basefee)
+            {
+                // An invalid transaction changed nothing, so leaving it out is as if the block
+                // never held it.
+                Err(err) if skips && builder_skips(&err) => {
+                    // Drop whatever the tracer saw of it, so the next transaction's trace starts
+                    // clean.
+                    if let Some(calls) = &self.calls {
+                        let _ = calls.take(0, &TxOutcome::Revert);
+                    }
+                    StateChanges::default()
+                }
+                changes => changes?,
+            };
             self.outputs.changes.txs.push(changes);
         }
         if block.built_header {
@@ -760,6 +845,18 @@ impl<E: Engine> BlockRun<'_, E> {
         self.state_updates.extend(step);
         changes
     }
+}
+
+/// Whether a block builder leaves out a transaction that failed with `err`: invalid at its position,
+/// or needing more gas than the block has left.
+const fn builder_skips(err: &BlockExecutionError) -> bool {
+    matches!(
+        err,
+        BlockExecutionError::Validation(
+            BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+        )
+    )
 }
 
 /// The hardfork and environment `evm` executes the block in.

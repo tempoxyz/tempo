@@ -10,12 +10,23 @@ cargo build -p zone-fuzz-harness --release
 ```
 
 An input is a `ZoneHarnessInput`: a `TempoHarnessInput` whose chain ID is a
-zone chain ID, with the Tempo L1 storage the zone reads (the portal's
-TIP-1160 transfer opt-in and token configuration, TIP-20 pause flags, the
-TIP-1022 address registry, TIP-1108 commitments). Blocks execute with the zone
-node's `ZoneEvmConfig` and block executor, after its consensus checks, from the
-zone dev genesis, on hardforks T13 and later; `Transaction` inputs are not
-supported.
+zone chain ID, with the Tempo L1 the zone reads, one of:
+
+- `State`: fixed L1 storage and TIP-1108 commitments (the portal's TIP-1160
+  transfer opt-in and token configuration, TIP-20 pause flags, the TIP-1022
+  address registry), the same at every L1 block. Each zone block imports a
+  header made up as the child of the last.
+- `Chain`: a Tempo chain from its genesis, which the harness executes first
+  with the Tempo engine. Zone block `i` imports Tempo block `i`'s header and
+  reads Tempo's state after it, as a sequencer anchors each zone block to the
+  next Tempo block, so the zone sees what Tempo transactions did. The zone
+  takes the chain's hardfork schedule and its blocks' timestamps, and may have
+  no more blocks than the chain; what the chain breaks is reported with its
+  subjects prefixed `on Tempo:`.
+
+Blocks execute with the zone node's `ZoneEvmConfig` and block executor, after
+its consensus checks, from the zone dev genesis, on hardforks T13 and later;
+`Transaction` inputs are not supported.
 
 A block whose header the harness builds opens with the `advanceTempo` system
 transaction the sequencer adds, and closes with `finalizeWithdrawalBatch` when
@@ -28,5 +39,6 @@ configurable account commitments rather than keeping its own, so in place of the
 invariants every step from T14 checks TIP-1154 (`TEMPO-ZONE-ACCOUNT-*`, in
 [`tempo-invariants`](../../invariants/src/zone_account)): what the zone shows of its system
 contracts, the input's accounts and those L1 commits to, against L1's commitments at the zone's
-anchor. L1 holds the same state at every block, so the checks cannot see a commitment change from
-one anchor to the next, and they compare the zone with the same commitments its overlay reads.
+anchor. On L1 state given as storage, the same at every block, they cannot see a commitment change
+from one anchor to the next, and they compare the zone with the same commitments its overlay reads;
+on a Tempo chain the harness executes, commitments change as its transactions configure accounts.
