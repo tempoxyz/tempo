@@ -92,12 +92,12 @@ pub(crate) fn store_config(qmdb_dir: &Path) -> Config {
     Config {
         directory: qmdb_dir.join("db"),
         threads: std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-        // 4 KiB pages; `TEMPO_QMDB_PAGE_CACHE_PAGES` overrides the 256 MiB default.
+        // 4 KiB pages; `TEMPO_QMDB_PAGE_CACHE_PAGES` overrides the 2 GiB default.
         page_cache_pages: std::env::var("TEMPO_QMDB_PAGE_CACHE_PAGES")
             .ok()
             .and_then(|pages| pages.parse().ok())
             .and_then(NonZeroUsize::new)
-            .unwrap_or(NonZeroUsize::new(1 << 16).expect("non-zero")),
+            .unwrap_or(NonZeroUsize::new(1 << 19).expect("non-zero")),
         max_pending: NonZeroUsize::new(1024).expect("non-zero"),
     }
 }
