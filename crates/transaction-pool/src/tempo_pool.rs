@@ -14,7 +14,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -190,6 +190,30 @@ where
         &self,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.delayed_pool.write().take_due(self.tip_timestamp())
+    }
+
+    /// Takes every pooled transaction except those in `skip` out of the pool if the hardfork
+    /// active at the validator's tip is not `last_spec`, which is updated to it.
+    ///
+    /// Called by pool maintenance on each new block, which resubmits them so they are validated
+    /// against the new rules. Reads the validator's hardfork, so resubmission is never validated
+    /// against the previous one. Covers reorgs back across an activation as well.
+    pub(crate) fn take_transactions_on_hardfork_change(
+        &self,
+        last_spec: &mut Option<TempoHardfork>,
+        skip: &B256Set,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let spec = self.reth_pool.validator().validator().active_hardfork();
+        if last_spec.replace(spec).is_none_or(|last| last == spec) {
+            return Vec::new();
+        }
+        let hashes = self
+            .all_transactions()
+            .iter()
+            .map(|tx| *tx.hash())
+            .filter(|hash| !skip.contains(hash))
+            .collect();
+        self.remove_transactions(hashes)
     }
 
     /// Updates the 2d nonce pool with the given state changes.
@@ -4204,6 +4228,36 @@ mod tests {
             next_event_for(&mut events, hash),
             Some(FullTransactionEvent::Invalid(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn hardfork_change_revalidates_pooled_transactions() {
+        let sender = Address::random();
+        let t1 = MODERATO
+            .tempo_fork_activation(TempoHardfork::T1)
+            .as_timestamp()
+            .unwrap();
+        let (_provider, pool) = create_validating_pool(sender, t1 - 2, Default::default());
+        // Enough gas until T1 starts charging for the sender's first nonce (TIP-1000).
+        let tx = TxBuilder::aa(sender).gas_limit(100_000).build();
+        let hash = *tx.hash();
+        pool.add_transaction(TransactionOrigin::External, tx)
+            .await
+            .expect("transaction should be valid before T1");
+
+        let mut last_spec = None;
+        for (tip, taken) in [(t1 - 2, vec![]), (t1 - 1, vec![]), (t1, vec![hash])] {
+            set_tip(&pool, tip);
+            let txs =
+                pool.take_transactions_on_hardfork_change(&mut last_spec, &B256Set::default());
+            assert_eq!(tx_hashes(&txs), taken);
+            let txs = txs
+                .into_iter()
+                .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                .collect();
+            pool.add_transactions_with_origins(txs).await;
+            assert_eq!(pool.contains(&hash), tip < t1);
+        }
     }
 
     #[tokio::test]

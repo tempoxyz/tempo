@@ -599,6 +599,9 @@ where
 
     let amm_cache = pool.amm_liquidity_cache();
 
+    // Hardfork the pooled transactions were last validated against.
+    let mut last_spec = None;
+
     let mut revalidation_queue = RevalidationQueue::default();
     // The batch being revalidated. The next one starts once it finishes.
     let mut revalidation = Fuse::terminated();
@@ -844,6 +847,18 @@ where
                 debug!(target: "txpool", count, reason, "Queued transactions for revalidation");
                 revalidate_txs.extend(removed_txs);
             }
+        }
+
+        // A hardfork can change validity rules without touching any state watched above, so the
+        // whole pool is revalidated when the active hardfork changes.
+        let transactions =
+            pool.take_transactions_on_hardfork_change(&mut last_spec, &removed_this_iteration);
+        if !transactions.is_empty() {
+            for tx in &transactions {
+                removed_this_iteration.insert(*tx.hash());
+            }
+            debug!(target: "txpool", count = transactions.len(), ?last_spec, "Hardfork changed, revalidating pooled transactions");
+            revalidate_txs.extend(transactions);
         }
 
         // Delayed transactions that are about to become valid enter the live pool the same way:
