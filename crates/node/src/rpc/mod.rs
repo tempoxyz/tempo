@@ -10,7 +10,7 @@ pub mod token;
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy::consensus::Transaction;
 use alloy_eips::BlockId;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
@@ -43,7 +43,10 @@ use reth_ethereum::tasks::{
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx, RpcNodeCoreFor};
-use reth_provider::{ChainSpecProvider, ProviderBlock, ProviderError, StateProvider as _};
+use reth_provider::{
+    BlockReader, ChainSpecProvider, ProviderBlock, ProviderError, ReceiptProvider,
+    StateProvider as _, StateProviderBox, StateProviderFactory, TransactionVariant,
+};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -541,16 +544,19 @@ where
 /// Converter for Tempo receipts.
 #[derive(Debug, Clone)]
 #[expect(clippy::type_complexity)]
-pub struct TempoReceiptConverter<ChainSpec = TempoChainSpec> {
+pub struct TempoReceiptConverter<Provider, ChainSpec = TempoChainSpec> {
     inner: EthReceiptConverter<
         ChainSpec,
         fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
     >,
+    /// Reads the block and state needed to find the address of a 2D or expiring nonce CREATE.
+    provider: Provider,
 }
 
-impl<ChainSpec> TempoReceiptConverter<ChainSpec> {
-    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
+impl<Provider, ChainSpec> TempoReceiptConverter<Provider, ChainSpec> {
+    pub fn new(chain_spec: Arc<ChainSpec>, provider: Provider) -> Self {
         Self {
+            provider,
             inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
                     let TempoReceipt {
@@ -572,8 +578,14 @@ impl<ChainSpec> TempoReceiptConverter<ChainSpec> {
     }
 }
 
-impl<ChainSpec> ReceiptConverter<TempoPrimitives> for TempoReceiptConverter<ChainSpec>
+impl<Provider, ChainSpec> ReceiptConverter<TempoPrimitives>
+    for TempoReceiptConverter<Provider, ChainSpec>
 where
+    Provider: BlockReader<Block = tempo_primitives::Block>
+        + ReceiptProvider<Receipt = TempoReceipt>
+        + StateProviderFactory
+        + std::fmt::Debug
+        + 'static,
     ChainSpec: EthChainSpec + 'static,
 {
     type RpcReceipt = TempoTransactionReceipt;
@@ -593,12 +605,15 @@ where
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
-        let receipt_context = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
+        let receipt_context = receipts
+            .iter()
+            .map(|r| (r.tx, r.meta, r.receipt.success))
+            .collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
             .zip(receipt_context)
-            .map(|(inner, tx)| {
+            .map(|(inner, (tx, meta, success))| {
                 let mut receipt = TempoTransactionReceipt {
                     inner,
                     fee_token: None,
@@ -607,6 +622,25 @@ where
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
+
+                // The Ethereum converter derives the CREATE address from `tx.nonce()`, which
+                // for a 2D or expiring nonce transaction is its lane nonce. The contract is
+                // deployed at the sender's account nonce instead, so report that address when
+                // it can be determined from the block, and no address otherwise.
+                if receipt.inner.contract_address.is_some()
+                    && tx.nonce_key().is_some_and(|key| !key.is_zero())
+                {
+                    receipt.inner.contract_address = success
+                        .then(|| {
+                            lane_create_address(
+                                &self.provider,
+                                meta.block_hash,
+                                meta.index,
+                                tx.signer(),
+                            )
+                        })
+                        .flatten();
+                }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
                     return Ok(receipt);
@@ -621,6 +655,120 @@ where
             })
             .collect()
     }
+}
+
+/// Returns the address a 2D or expiring nonce CREATE at `index` in block `block_hash` deployed,
+/// or `None` if it cannot be determined.
+///
+/// Reads the sender's account nonce before and after the block and attributes the account nonce
+/// bumps of the sender's transactions in the block, see [`lane_create_nonce`]. The result is
+/// accepted only if the address holds code after the block. Provider errors yield `None`.
+fn lane_create_address<Provider>(
+    provider: &Provider,
+    block_hash: B256,
+    index: u64,
+    sender: Address,
+) -> Option<Address>
+where
+    Provider: BlockReader<Block = tempo_primitives::Block>
+        + ReceiptProvider<Receipt = TempoReceipt>
+        + StateProviderFactory,
+{
+    let block = provider
+        .recovered_block(block_hash.into(), TransactionVariant::NoHash)
+        .ok()??;
+    let account_nonce = |state: &StateProviderBox| {
+        state
+            .basic_account(&sender)
+            .ok()
+            .map(|account| account.map_or(0, |account| account.nonce))
+    };
+    let before = account_nonce(
+        &provider
+            .state_by_block_hash(block.header().inner.parent_hash)
+            .ok()?,
+    )?;
+    let end_state = provider.state_by_block_hash(block_hash).ok()?;
+    let after = account_nonce(&end_state)?;
+
+    let index = usize::try_from(index).ok()?;
+    let mut receipts = None;
+    let mut transactions = Vec::new();
+    for (position, (signer, tx)) in block.transactions_with_sender().enumerate() {
+        if *signer != sender {
+            continue;
+        }
+        let is_lane = tx.nonce_key().is_some_and(|key| !key.is_zero());
+        let transaction = if !is_lane {
+            SenderTransaction::Protocol(tx.nonce())
+        } else if !tx.kind().is_create() {
+            continue;
+        } else if position == index {
+            SenderTransaction::Target
+        } else {
+            // A failed lane CREATE may or may not have used its nonce, depending on the fork.
+            let receipts = receipts.get_or_insert_with(|| {
+                provider.receipts_by_block(block_hash.into()).ok().flatten()
+            });
+            match receipts.as_ref()?.get(position) {
+                Some(receipt) if receipt.success => SenderTransaction::LaneCreate,
+                _ => return None,
+            }
+        };
+        transactions.push(transaction);
+    }
+
+    let address = sender.create(lane_create_nonce(before, after, transactions)?);
+    end_state
+        .basic_account(&address)
+        .ok()??
+        .bytecode_hash
+        .is_some_and(|hash| hash != alloy::consensus::constants::KECCAK_EMPTY)
+        .then_some(address)
+}
+
+/// A transaction from the sender of a lane CREATE, in block order.
+#[derive(Debug, Clone, Copy)]
+enum SenderTransaction {
+    /// A protocol nonce transaction with its nonce. It uses exactly that account nonce.
+    Protocol(u64),
+    /// A successful 2D or expiring nonce CREATE that is not the target. It uses one account nonce.
+    LaneCreate,
+    /// The 2D or expiring nonce CREATE whose address is requested.
+    Target,
+}
+
+/// Returns the account nonce the target CREATE used, given the sender's account nonce `before` and
+/// `after` the block and the sender's transactions that use an account nonce, in block order.
+///
+/// Each of these transactions bumps the account nonce exactly once: a CREATE may only be the first
+/// call of a Tempo transaction, and other lane transactions don't touch the account nonce. Other
+/// bumps, such as an EIP-7702 authorization by the sender or a CREATE from its delegated code, are
+/// not visible here. A protocol nonce transaction pins the nonce exactly, so an unexplained bump
+/// before the last protocol nonce transaction ahead of the target is harmless. Any other one
+/// returns `None`: after the target it shows up as a mismatched protocol nonce, and anywhere else
+/// it makes the final nonce differ from `after`.
+fn lane_create_nonce(
+    before: u64,
+    after: u64,
+    transactions: impl IntoIterator<Item = SenderTransaction>,
+) -> Option<u64> {
+    let mut next = before;
+    let mut target = None;
+    for transaction in transactions {
+        match transaction {
+            SenderTransaction::Protocol(nonce) => {
+                if target.is_some() && nonce != next {
+                    return None;
+                }
+                next = nonce;
+            }
+            SenderTransaction::LaneCreate => {}
+            SenderTransaction::Target => target = Some(next),
+        }
+        next = next.checked_add(1)?;
+    }
+    (next == after).then_some(target).flatten()
 }
 
 #[derive(Debug)]
@@ -653,10 +801,13 @@ where
     type EthApi = TempoEthApi<RpcNodeCoreFor<N>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-        let chain_spec = FullNodeComponents::provider(ctx.components).chain_spec();
+        let provider = FullNodeComponents::provider(ctx.components).clone();
+        let chain_spec = provider.chain_spec();
         let eth_api = ctx
             .eth_api_builder()
-            .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
+            .map_converter(|_| {
+                RpcConverter::new(TempoReceiptConverter::new(chain_spec, provider)).erased()
+            })
             .build();
 
         Ok(TempoEthApi::new(eth_api))
@@ -698,6 +849,36 @@ fn next_lane_nonce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use SenderTransaction::{LaneCreate, Protocol, Target};
+
+    #[test]
+    fn lane_create_nonce_attributes_account_nonce_bumps() {
+        // The only account nonce bump in the block.
+        assert_eq!(lane_create_nonce(5, 6, [Target]), Some(5));
+        // Protocol nonce and lane CREATE transactions around the target.
+        assert_eq!(
+            lane_create_nonce(5, 9, [Protocol(5), LaneCreate, Target, Protocol(8)]),
+            Some(7)
+        );
+        // An unexplained bump before the last protocol nonce ahead of the target is pinned by it.
+        assert_eq!(
+            lane_create_nonce(5, 10, [Protocol(7), Target, LaneCreate]),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn lane_create_nonce_rejects_unexplained_bumps() {
+        // A bump that no transaction explains, before or after the target.
+        assert_eq!(lane_create_nonce(5, 7, [Target]), None);
+        assert_eq!(lane_create_nonce(5, 8, [Protocol(5), Target]), None);
+        // A later protocol nonce that leaves room for a bump between it and the target.
+        assert_eq!(lane_create_nonce(5, 9, [Target, Protocol(8)]), None);
+        // Fewer bumps than the transactions account for.
+        assert_eq!(lane_create_nonce(5, 5, [Target]), None);
+        // The target is not among the transactions.
+        assert_eq!(lane_create_nonce(5, 6, [Protocol(5)]), None);
+    }
 
     #[test]
     fn next_lane_nonce_handles_stale_entries_and_overflow() {
