@@ -1059,9 +1059,13 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     let operation = ($spec_path | path basename | str replace "vault-" "" | str replace ".yml" "")
     let template_path = ([ ($spec_path | path dirname) "vault" $"user-($operation).yml" ] | path join)
     let template = (open $template_path).setup.steps.0
-    let steps = (0..<$accounts | each { |index|
-        $template | update id $"($template.id)_($index)" | update bindings.user.account.select.index $index
-    })
+    let vault_setup = (open ([ ($template_path | path dirname) "setup.yml" ] | path join)).setup.steps
+    let steps = (txgen-after-vault (0..<$accounts | each { |index|
+        $template
+            | update id $"($template.id)_($index)"
+            | update bindings.user.account.select.index $index
+            | upsert tx.nonce_key ($index + 1)
+    }) $vault_setup)
     let base = (open ([ ($template_path | path dirname) "base.yml" ] | path join))
     let workload = ($base.templates | get $"vault_($operation)")
     let templates = (0..<$accounts | each { |index|
@@ -1329,11 +1333,10 @@ def txgen-after-vault [steps: list<any>, vault_setup: list<any>] {
     }
 }
 
-# The prepare_user step that funds users [0, end): it mints each user's pathUSD. All prepare_user
-# steps send from users[0] in one ordered nonce lane, so once the last one lands every earlier one
-# has, and a step that waits for it waits for the whole slice without one dependency per user.
-def txgen-after-user-funding [users: list<any>, end: int] {
-    $users | get ($end - 1) | get id
+# The prepare_user steps that fund users [start, end): each sends on its own 2D nonce lane so they
+# land in parallel, and a step that waits for user funding depends on every prepare_user in its slice.
+def txgen-after-user-funding [users: list<any>, end: int, --start: int = 0] {
+    $users | slice $start..<$end | get id
 }
 
 # A deployment-shapes file passed inline in TXGEN_NEOBANK_SHAPES_GZ_B64 (gzip, then base64), such as
@@ -1447,7 +1450,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
             let keys = ($range | each { |user| $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $user | into string })
             # Authorizing a key reserves its whole gas limit in pathUSD from the user, more than state
             # bloat leaves users past the genesis accounts: wait for prepare_user to mint their balance.
-            let funded = (txgen-after-user-funding $users $range.1)
+            let funded = (txgen-after-user-funding $users $range.1 --start $range.0 | str join ", ")
             [(txgen-neobank-instance-text $keychain_step $instance $index
                 | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_START}' $keys.0
                 | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_END}' $keys.1
@@ -1597,7 +1600,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let keychain_setup = if ($spec.mix | any { |entry| ($entry | get -o template | default "") | str starts-with "keychain_" }) {
         let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join access-key-mix.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
-        $result.stdout | from json | each { |step| $step | upsert depends_on [(txgen-after-user-funding $users $accounts)] }
+        $result.stdout | from json | each { |step| $step | upsert depends_on (txgen-after-user-funding $users $accounts) }
     } else { [] }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup) $vault_setup))},
