@@ -161,7 +161,11 @@ fn quorum(role: Role, signature: &ConfigurableAccountSignature, inner_digest: B2
 }
 
 /// The account at `address` after the step, or before it with `net`; `None` if the pre-state lacks it.
-fn account_at(db: &Db, net: Option<&Net>, address: Address) -> Option<Option<AccountInfo>> {
+pub(crate) fn account_at(
+    db: &Db,
+    net: Option<&Net>,
+    address: Address,
+) -> Option<Option<AccountInfo>> {
     if let Some(change) = net.and_then(|net| net.get(&address)) {
         return Some(change.original().cloned());
     }
@@ -171,7 +175,7 @@ fn account_at(db: &Db, net: Option<&Net>, address: Address) -> Option<Option<Acc
 }
 
 /// The commitment and code hash of `info`, an account at `spec`.
-fn leaf(info: Option<AccountInfo>, spec: TempoHardfork) -> Option<Leaf> {
+pub(crate) fn leaf(info: Option<AccountInfo>, spec: TempoHardfork) -> Option<Leaf> {
     let Some(info) = info else {
         return Some(Leaf::EMPTY);
     };

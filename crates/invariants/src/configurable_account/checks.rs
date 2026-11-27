@@ -16,10 +16,47 @@ use super::{
     LeafChange, Leaves, Quorum, Role,
     spec::{self, CONFIGURABLE_KEY_TYPE, MARKER_CODE_HASH, MAX_APPROVAL_BYTES, MAX_APPROVALS},
 };
-use crate::{Check, Checked, Ran, Step, StepChecked, TempoHardfork, Verdict};
+use crate::{Check, Checked, Ran, Step, StepChecked, TempoHardfork, Tx, Verdict};
 
 /// The configurable account precompile's views answer. Counted by runners, not judged here.
 pub const VIEW: &str = "TEMPO-ACCOUNT-VIEW";
+
+/// Checks of a transaction's signatures alone. They read no account state, so they hold on every
+/// chain that executes Tempo transactions, a zone's included.
+pub const TX_CHECKS: &[Check<Tx>] = &[
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L338>
+    check! {
+        id: "TEMPO-ACCOUNT-SENDER-QUORUM",
+        doc: "The transaction's own configurable signature names its sender.",
+        tip: "TIP-1107",
+        over: |tx: &Tx| tx.authority.quorums.iter().filter(|q| q.role == Role::Sender),
+        judge: |tx, q| {
+            ensure!(q.account == tx.sender, "authorizes a transaction from {}", tx.sender)
+        },
+    },
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L177>
+    check! {
+        id: "TEMPO-ACCOUNT-GRANT-TYPE",
+        doc: "An access key using a grant made in the same transaction signs as the grant's key type.",
+        tip: "TIP-1111",
+        since: TempoHardfork::T14,
+        over: |tx: &Tx| {
+            tx.authority
+                .grant
+                .filter(|grant| tx.authority.access_keys().any(|(key, _)| key == grant.key_id))
+                .map(|grant| grant.key_id)
+        },
+        judge: |tx, _| {
+            let grant = tx.authority.grant?;
+            ensure!(
+                tx.authority.access_key_type == Some(grant.key_type),
+                "signs as key type {:?} under its same-transaction grant of key type {}",
+                tx.authority.access_key_type,
+                grant.key_type
+            )
+        },
+    },
+];
 
 /// Checks of a step against its signatures and events.
 pub const STEP_CHECKS: &[Check<AccountStep>] = &[
@@ -179,17 +216,6 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
                 if listed { " that lists the account as an owner" } else { "" },
                 other.map_or_else(String::new, |post| format!(", storing commitment {post}"))
             )
-        },
-    },
-    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L338>
-    check! {
-        id: "TEMPO-ACCOUNT-SENDER-QUORUM",
-        doc: "The transaction's own configurable signature names its sender.",
-        tip: "TIP-1107",
-        over: |step: &AccountStep| quorums(step).filter(|q| q.role == Role::Sender),
-        judge: |s, q| {
-            let sender = s.ran.tx()?.sender;
-            ensure!(q.account == sender, "authorizes a transaction from {sender}")
         },
     },
     // <https://github.com/tempoxyz/tempo/blob/be1afa64ce7582c8ed7dc9fffa932e141c1b0c3b/tips/tip-1107.md#L519>
@@ -467,35 +493,6 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             (!unknown).then_some(Verdict::Holds)
         },
     },
-    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L177>
-    check! {
-        id: "TEMPO-ACCOUNT-GRANT-TYPE",
-        doc: "An access key using a grant made in the same transaction signs as the grant's key type.",
-        tip: "TIP-1111",
-        since: TempoHardfork::T14,
-        over: |step: &AccountStep| {
-            step.ran
-                .tx()
-                .into_iter()
-                .filter_map(|tx| {
-                    let grant = tx.authority.grant?;
-                    tx.authority
-                        .access_keys()
-                        .any(|(key, _)| key == grant.key_id)
-                        .then_some(grant.key_id)
-                })
-        },
-        judge: |s, _| {
-            let tx = s.ran.tx()?;
-            let grant = tx.authority.grant?;
-            ensure!(
-                tx.authority.access_key_type == Some(grant.key_type),
-                "signs as key type {:?} under its same-transaction grant of key type {}",
-                tx.authority.access_key_type,
-                grant.key_type
-            )
-        },
-    },
     // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L184>
     check! {
         id: "TEMPO-ACCOUNT-ACCESS-KEY-TYPE",
@@ -715,6 +712,10 @@ impl fmt::Display for Upgrade {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "migration of {}", self.0.account)
     }
+}
+
+impl Checked<TempoHardfork> for Tx {
+    const CHECKS: &'static [Check<Self>] = TX_CHECKS;
 }
 
 /// Commitments are judged only across a step.

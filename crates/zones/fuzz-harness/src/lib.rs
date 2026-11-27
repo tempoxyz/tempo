@@ -8,14 +8,16 @@
 //! invariants checked after every step. It exports the Tempo harness's C ABI, so the same loader
 //! runs either.
 
+mod accounts;
 mod consensus;
 mod engine;
 mod types;
 
 use core::ffi::c_int;
 
+use alloy_primitives::Address;
 use tempo_fuzz_engine::{Rejection, ffi};
-use tempo_fuzz_types::TempoHarnessOutcome;
+use tempo_fuzz_types::{PreState, TempoHarnessInput, TempoHarnessOutcome};
 
 pub use consensus::ZoneConsensus;
 pub use engine::{L1, Zone};
@@ -24,7 +26,38 @@ pub use types::{L1StateInput, ZoneHarnessInput};
 /// Executes `input` on a zone that reads its L1 state. Returns the outcome and, unless its error
 /// is `None`, why it stopped short.
 pub fn run(input: ZoneHarnessInput) -> (TempoHarnessOutcome, Option<Rejection>) {
-    tempo_fuzz_engine::run(&Zone::new(input.l1), input.input)
+    let watched = watched(&input.input);
+    tempo_fuzz_engine::run(&Zone::new(input.l1, watched), input.input)
+}
+
+/// The accounts `input` names, which the account checks watch: its pre-state's, then its senders.
+fn watched(input: &TempoHarnessInput) -> Vec<Address> {
+    match input {
+        // The zone engine rejects transaction inputs before running any check.
+        TempoHarnessInput::Transaction(_) => Vec::new(),
+        TempoHarnessInput::State(input) => input
+            .pre_state
+            .accounts
+            .keys()
+            .copied()
+            .chain(input.sender)
+            .collect(),
+        TempoHarnessInput::Blockchain(input) => {
+            let (PreState::Genesis(state) | PreState::Exact { state, .. }) = &input.pre_state;
+            state
+                .accounts
+                .keys()
+                .copied()
+                .chain(
+                    input
+                        .blocks
+                        .as_slice()
+                        .iter()
+                        .flat_map(|block| block.senders.iter().copied()),
+                )
+                .collect()
+        }
+    }
 }
 
 /// Executes a bincode-encoded [`ZoneHarnessInput`] and writes the bincode-encoded

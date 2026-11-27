@@ -24,6 +24,7 @@ pub mod keychain;
 pub mod model;
 pub mod receive_policy;
 pub mod tip20;
+pub mod zone_account;
 
 /// A Tempo check, applying from and until the hardforks its metadata names.
 pub type Check<C> = invariants_core::Check<C, TempoHardfork>;
@@ -84,11 +85,15 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck<TempoHardfork>> {
         .chain(erased(fee_amm::exit::CHECKS))
         .chain(erased(dex::CHECKS))
         .chain(erased(dex::STEP_CHECKS))
+        .chain(erased(configurable_account::TX_CHECKS))
         .chain(erased(configurable_account::STEP_CHECKS))
         .chain(erased(configurable_account::LEAF_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
         .chain(erased(block::CHECKS))
+        .chain(erased(zone_account::CHECKS))
+        .chain(erased(zone_account::STEP_CHECKS))
+        .chain(erased(zone_account::LEAF_CHECKS))
 }
 
 /// `value` as text, `missing` when there is none.

@@ -1,0 +1,222 @@
+//! Configurable accounts on zones (TIP-1154): what a zone shows of each account beside what Tempo
+//! holds for it at the zone's anchor.
+//!
+//! A zone reads Tempo state at a fixed anchor and never stores a commitment, so its checks compare
+//! two chains. A producer observes [`Zone`] through the zone's views, reads [`Tempo`]'s
+//! commitments at the anchor the zone reported, and joins them into a [`Mirror`]. Without Tempo
+//! only the zone's own checks are armed.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
+
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
+use alloy_sol_types::SolCall;
+use invariants_core::{Call, Outcome};
+use tempo_contracts::{
+    precompiles::IConfigurableAccountShim::onERC721ReceivedCall,
+    zones::TempoState::{tempoBlockHashCall, tempoBlockNumberCall},
+};
+
+use crate::{
+    Observe, ObserveError, Ran, Step, Views,
+    configurable_account::{Leaf, read_commitments},
+    view,
+};
+
+mod checks;
+
+pub use checks::{CHECKS, LEAF_CHECKS, STEP_CHECKS, VIEW, VIEW_DOC};
+
+/// The Tempo block a zone reads Tempo at: `TempoState`'s checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    pub number: u64,
+    pub hash: B256,
+}
+
+impl fmt::Display for Anchor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "anchor {} ({})", self.number, self.hash)
+    }
+}
+
+/// What a zone shows of the observed accounts at one state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Zone {
+    /// The `TempoState` predeploy read.
+    tempo_state: Address,
+    /// The configurable account precompile read.
+    precompile: Address,
+    anchor: Anchor,
+    /// Each account's commitment as zone execution reads it; unanswered reads are left out.
+    of: BTreeMap<Address, B256>,
+    /// Whether a call to each eligible account answers as the account marker; unanswered calls are
+    /// left out.
+    marked: BTreeMap<Address, bool>,
+    /// The observed accounts that hold zone code, so never read Tempo.
+    coded: BTreeSet<Address>,
+    /// The observed accounts the zone never reads Tempo for, whatever their code.
+    reserved: BTreeSet<Address>,
+}
+
+impl Zone {
+    /// The Tempo block the zone reads Tempo at.
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
+}
+
+/// The predeploys and the accounts to read; `coded` are those of `accounts` whose code in zone
+/// state is not empty.
+#[derive(Debug, Clone, Copy)]
+pub struct ZoneAt<'a> {
+    pub tempo_state: Address,
+    pub precompile: Address,
+    pub accounts: &'a [Address],
+    pub coded: &'a [Address],
+    /// Those of `accounts` the zone never reads Tempo for whatever their code, as the zone
+    /// decides it at its hardfork: TIP-1154's ineligible addresses (zero, virtual, TIP-20 or
+    /// ZonePortal prefix, a precompile active on the zone, a zone system contract).
+    pub reserved: &'a [Address],
+}
+
+impl Observe for Zone {
+    type At<'a> = ZoneAt<'a>;
+
+    /// Reads the anchor, each account's commitment and, for each eligible account, whether a call
+    /// to it answers as the account marker's ERC-721 receiver hook (an account without code
+    /// answers with empty output). Views must run as zone transactions, where the overlay applies.
+    fn observe<V: Views>(views: &mut V, at: ZoneAt<'_>) -> Result<Self, ObserveError<V::Error>> {
+        let anchor = Anchor {
+            number: view(views, at.tempo_state, tempoBlockNumberCall {})?,
+            hash: view(views, at.tempo_state, tempoBlockHashCall {})?,
+        };
+        let of = read_commitments(views, at.precompile, at.accounts)?;
+        let coded: BTreeSet<Address> = at.coded.iter().copied().collect();
+        let reserved: BTreeSet<Address> = at.reserved.iter().copied().collect();
+        let input: Bytes = onERC721ReceivedCall {
+            operator: Address::ZERO,
+            from: Address::ZERO,
+            tokenId: U256::ZERO,
+            data: Bytes::new(),
+        }
+        .abi_encode()
+        .into();
+        let calls: Vec<Call> = at
+            .accounts
+            .iter()
+            .filter(|&&account| !coded.contains(&account) && !reserved.contains(&account))
+            .map(|&account| Call {
+                from: None,
+                to: account,
+                input: input.clone(),
+            })
+            .collect();
+        let magic = onERC721ReceivedCall::abi_encode_returns(&FixedBytes::from(
+            onERC721ReceivedCall::SELECTOR,
+        ));
+        let mut marked = BTreeMap::new();
+        for (call, answer) in calls
+            .iter()
+            .zip(views.call(&calls).map_err(ObserveError::Views)?)
+        {
+            match answer {
+                None => {}
+                Some(Outcome::Return(output)) if output.is_empty() || output[..] == magic[..] => {
+                    marked.insert(call.to, !output.is_empty());
+                }
+                answer => {
+                    return Err(ObserveError::Unexpected {
+                        call: onERC721ReceivedCall::SIGNATURE,
+                        to: call.to,
+                        answer,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            tempo_state: at.tempo_state,
+            precompile: at.precompile,
+            anchor,
+            of,
+            marked,
+            coded,
+            reserved,
+        })
+    }
+}
+
+/// Tempo's commitments of the observed accounts at the zone's anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tempo {
+    of: BTreeMap<Address, B256>,
+}
+
+impl Tempo {
+    /// Tempo's commitments `of` the accounts at the zone's anchor, as a producer that holds
+    /// Tempo's state itself reads them; an account left out was not read.
+    pub const fn new(of: BTreeMap<Address, B256>) -> Self {
+        Self { of }
+    }
+}
+
+/// A zone state beside Tempo at the zone's anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mirror {
+    zone: Zone,
+    tempo: Option<Tempo>,
+}
+
+impl Mirror {
+    /// `zone` beside `tempo`, read at the zone's anchor; without `tempo` only the zone's own checks
+    /// are armed.
+    pub const fn new(zone: Zone, tempo: Option<Tempo>) -> Self {
+        Self { zone, tempo }
+    }
+
+    /// Why `account` reads nothing from Tempo on this zone, `None` when it is eligible.
+    fn ineligible(&self, account: Address) -> Option<&'static str> {
+        if self.zone.reserved.contains(&account) {
+            Some("an address the zone never reads Tempo for")
+        } else {
+            self.zone
+                .coded
+                .contains(&account)
+                .then_some("an account with zone code")
+        }
+    }
+
+    /// Tempo's commitment of `account` at the anchor; `None` when unread.
+    fn tempo(&self, account: Address) -> Option<B256> {
+        self.tempo.as_ref()?.of.get(&account).copied()
+    }
+}
+
+/// A zone transaction or block: the mirror before and after it, its zone logs, and its
+/// step ran.
+pub type ZoneStep = Step<Mirror, Ran>;
+
+/// One account's leaf in zone state after a step, beside what the zone serves for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneLeaf {
+    /// The leaf the zone's state root commits to. An extension that does not decode leaves the
+    /// commitment zero, and is caught by `extension`.
+    pub stored: Leaf,
+    /// Whether the account stores an extension, which no zone account does.
+    pub extension: bool,
+    /// Whether the zone never reads Tempo for the account, whatever its code.
+    pub reserved: bool,
+    /// The code hash the zone serves: what an account load inside a zone transaction yields, or
+    /// the hash of its operator RPC's `eth_getCode`; `None` when not read.
+    pub served: Option<B256>,
+    /// Tempo's commitment at the zone's anchor after the step; `None` when not read.
+    pub tempo: Option<B256>,
+}
+
+/// Each changed or signing account's zone leaf after a step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZoneLeaves {
+    pub of: BTreeMap<Address, ZoneLeaf>,
+}

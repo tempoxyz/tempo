@@ -14,7 +14,7 @@ use alloy_consensus::{
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::{block::BlockTransactionResult as _, bytecode::Bytecode};
-use invariants_core::{Frame, Report};
+use invariants_core::{Effects, Frame, Report};
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory as _, BlockValidationError,
@@ -42,6 +42,7 @@ use crate::{
     invariants,
     rejection::{Check, Rejection},
     state::{self, Contracts, Db, Net},
+    step::{self, StepState},
     trace::Calls,
 };
 
@@ -285,18 +286,43 @@ fn broken_start<E: Engine>(
         .chain(tempo_invariants::model::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
+    let mut report = Report::default();
     invariants::check(
         engine,
         &start,
         evm_config,
-        env,
+        &env,
         &InvariantScope::Execution,
         |address| listed.accounts.contains_key(address),
         &holders,
         None,
         &invariants::ViewCache::default(),
         &mut failures,
-        &mut Report::default(),
+        &mut report,
+    );
+    // The chain's own checks judge the start too, over every account the pre-state lists, so a
+    // failure the pre-state caused counts against it.
+    let state = StepState {
+        db: &start,
+        evm_config,
+        env: &env,
+        changed: listed.accounts.keys().copied().collect(),
+        start: true,
+        effects: Arc::new(Effects {
+            changes: Vec::new(),
+            logs: Vec::new(),
+            calls: None,
+            ran: Ran::PreBlock,
+        }),
+    };
+    // Checked on its own, the start carries nothing from the run's steps.
+    step::check(
+        engine,
+        &mut E::Checks::default(),
+        &state,
+        &InvariantScope::Execution,
+        &mut failures,
+        &mut report,
     );
     failures
 }
@@ -363,8 +389,18 @@ pub(crate) fn execute_blocks<E: Engine>(
 ) -> (Net, Vec<Log>, Option<Rejection>) {
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
+    // What the chain's own checks carry between the run's steps, fresh for every run.
+    let mut checks = E::Checks::default();
     for (index, block) in blocks.iter().enumerate() {
-        let mut executed = execute_block(engine, evm_config, consensus, db, block, index as u64);
+        let mut executed = execute_block(
+            engine,
+            &mut checks,
+            evm_config,
+            consensus,
+            db,
+            block,
+            index as u64,
+        );
         // A read the pre-state could not answer makes the result meaningless,
         // even when the error was swallowed on its way up.
         if db.pre.missed() {
@@ -445,6 +481,7 @@ impl BlockFailure {
 /// Executes `block` on `db`, returning its state updates and outputs, or why it failed.
 fn execute_block<E: Engine>(
     engine: &E,
+    checks: &mut E::Checks,
     evm_config: &E::EvmConfig,
     consensus: &E::Consensus,
     db: &Db,
@@ -475,6 +512,7 @@ fn execute_block<E: Engine>(
 
     let mut run = BlockRun {
         engine,
+        checks,
         evm_config,
         db,
         hooked_updates: hooked,
@@ -506,22 +544,36 @@ fn execute_block<E: Engine>(
     run.outputs.changes.post_block = state::changes(&net, &contracts);
     drop(cache);
     db.commit(&net, |hash| output.state.contracts.get(hash).cloned());
+    let scope = InvariantScope::PostBlock { block_index };
+    let effects = invariants::StepEffects::new(&net, &[], None, Ran::PostBlock, spec);
+    let shared = effects.shared();
     invariants::check(
         engine,
         db,
         evm_config,
-        env,
-        &InvariantScope::PostBlock { block_index },
+        &env,
+        &scope,
         |_| true,
         &[],
-        Some(invariants::StepEffects::new(
-            &net,
-            &[],
-            None,
-            Ran::PostBlock,
-            spec,
-        )),
+        Some(effects),
         &run.view_cache,
+        &mut run.outputs.invariant_failures,
+        &mut run.outputs.invariant_report,
+    );
+    // The chain's own checks see what `finish` wrote, such as a zone stripping its overlays.
+    let state = StepState {
+        db,
+        evm_config,
+        env: &env,
+        changed: net.addresses().copied().collect(),
+        start: false,
+        effects: shared,
+    };
+    step::check(
+        engine,
+        run.checks,
+        &state,
+        &scope,
         &mut run.outputs.invariant_failures,
         &mut run.outputs.invariant_report,
     );
@@ -532,6 +584,8 @@ fn execute_block<E: Engine>(
 /// One block's execution: what its steps share, and what they produced so far.
 struct BlockRun<'a, E: Engine> {
     engine: &'a E,
+    /// What the chain's own checks carry between the run's steps.
+    checks: &'a mut E::Checks,
     evm_config: &'a E::EvmConfig,
     db: &'a Db,
     block_index: u64,
@@ -672,16 +726,34 @@ impl<E: Engine> BlockRun<'_, E> {
             state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
         };
         let (spec, env) = env(executor.evm());
+        let effects = invariants::StepEffects::new(&net, logs, calls, ran, spec);
+        let shared = effects.shared();
         invariants::check(
             self.engine,
             self.db,
             self.evm_config,
-            env,
+            &env,
             &scope,
             |_| true,
             &[],
-            Some(invariants::StepEffects::new(&net, logs, calls, ran, spec)),
+            Some(effects),
             &self.view_cache,
+            &mut self.outputs.invariant_failures,
+            &mut self.outputs.invariant_report,
+        );
+        let state = StepState {
+            db: self.db,
+            evm_config: self.evm_config,
+            env: &env,
+            changed: net.addresses().copied().collect(),
+            start: false,
+            effects: shared,
+        };
+        step::check(
+            self.engine,
+            self.checks,
+            &state,
+            &scope,
             &mut self.outputs.invariant_failures,
             &mut self.outputs.invariant_report,
         );

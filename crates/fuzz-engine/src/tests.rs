@@ -12,6 +12,7 @@ use alloy_sol_types::SolCall;
 use bincode::Options as _;
 use commonware_codec::Encode as _;
 use evm2::evm::{AccountInfo, Cache, Database as _};
+use invariants_core::{Report, Violation};
 use reth_consensus::HeaderValidator as _;
 use reth_evm::BlockExecutionError;
 use reth_execution_types::{AccountUpdate, StateUpdate};
@@ -934,6 +935,7 @@ impl Engine for Opening {
     type ChainSpec = <Tempo as Engine>::ChainSpec;
     type EvmConfig = <Tempo as Engine>::EvmConfig;
     type Consensus = <Tempo as Engine>::Consensus;
+    type Checks = ();
 
     const IMPLEMENTATION: &'static str = "opening";
     const HARDFORKS: &'static [TempoHardfork] = Tempo::HARDFORKS;
@@ -1196,4 +1198,197 @@ fn each_receipt_after_a_blocks_first_is_judged_for_its_cumulative_gas() {
     let block = t4_block(vec![transfer(0, 7), transfer(1, 7), transfer(2, 7)]);
     let outcome = run(genesis(), vec![block]);
     assert_eq!(counts(&outcome, "TEMPO-BLOCK-GAS-MONOTONIC"), (2, 2, 0));
+}
+
+/// An account no test's pre-state lists.
+const UNLISTED: Address = address!("00000000000000000000000000000000000000bb");
+/// The nonce that makes [`Watching`] flag an account.
+const FLAGGED_NONCE: u64 = 7;
+
+/// Tempo L1 without the account invariants, whose own check reads [`UNLISTED`] after every
+/// step, records what ran and whether the read missed, and flags `flag` while its nonce is
+/// [`FLAGGED_NONCE`].
+#[derive(Default)]
+struct Watching {
+    flag: Option<Address>,
+    seen: std::cell::RefCell<Vec<(tempo_invariants::Ran, bool, bool)>>,
+    /// How many steps of its run each check came after.
+    steps: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Engine for Watching {
+    type ChainSpec = <Tempo as Engine>::ChainSpec;
+    type EvmConfig = <Tempo as Engine>::EvmConfig;
+    type Consensus = <Tempo as Engine>::Consensus;
+    type Checks = usize;
+
+    const IMPLEMENTATION: &'static str = "watching";
+    const HARDFORKS: &'static [TempoHardfork] = Tempo::HARDFORKS;
+    const INPUTS: &'static [HarnessInputKind] = Tempo::INPUTS;
+    const FEE_AMM: Option<Address> = Tempo::FEE_AMM;
+    const DEX: Option<Address> = Tempo::DEX;
+    const ACCOUNTS: bool = false;
+
+    fn chain(&self, input: &ChainSpecInput) -> Result<Chain<Self>, Rejection> {
+        let Chain {
+            spec,
+            evm_config,
+            consensus,
+        } = Tempo.chain(input)?;
+        Ok(Chain {
+            spec,
+            evm_config,
+            consensus,
+        })
+    }
+
+    fn genesis(&self) -> &Cache {
+        Tempo.genesis()
+    }
+
+    fn check_step(
+        &self,
+        steps: &mut usize,
+        state: &crate::StepState<'_, Self::EvmConfig>,
+        report: &mut Report,
+    ) {
+        self.steps.borrow_mut().push(*steps);
+        *steps += 1;
+        state.forget_missed();
+        let _ = state.account(UNLISTED);
+        self.seen
+            .borrow_mut()
+            .push((state.effects().ran.clone(), state.missed(), state.start()));
+        if let Some(flag) = self.flag
+            && let Some(Some(info)) = state.account(flag)
+            && info.nonce == FLAGGED_NONCE
+        {
+            report.violations.push(Violation {
+                id: "TEST-FLAGGED".into(),
+                subject: flag.to_string(),
+                detail: String::new(),
+            });
+        }
+    }
+
+    fn own_invariants() -> Vec<tempo_fuzz_types::InvariantInfo> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn a_chain_without_account_invariants_leaves_them_out_of_its_catalog() {
+    use tempo_invariants::configurable_account as account;
+
+    let ids = |catalog: Vec<tempo_fuzz_types::InvariantInfo>| -> HashSet<String> {
+        catalog.into_iter().map(|info| info.id).collect()
+    };
+    let accounts: Vec<&str> = account::STEP_CHECKS
+        .iter()
+        .map(|check| check.id)
+        .chain(account::LEAF_CHECKS.iter().map(|check| check.id))
+        .chain([account::VIEW])
+        .collect();
+    let (tempo, watching) = (
+        ids(invariants::catalog::<Tempo>()),
+        ids(invariants::catalog::<Watching>()),
+    );
+    for id in accounts {
+        assert!(tempo.contains(id), "Tempo's catalog lacks {id}");
+        assert!(!watching.contains(id), "a chain without them lists {id}");
+    }
+    // A transaction's own signature checks need no commitments, so they stay.
+    for check in account::TX_CHECKS {
+        assert!(
+            watching.contains(check.id),
+            "a chain without commitments lacks {}",
+            check.id
+        );
+    }
+    // Only the account invariants are left out.
+    assert_eq!(
+        tempo.difference(&watching).count(),
+        account::STEP_CHECKS.len() + account::LEAF_CHECKS.len() + 1
+    );
+}
+
+#[test]
+fn the_chains_own_check_missing_an_exact_pre_state_leaves_execution_complete() {
+    let engine = Watching::default();
+    let state = exact_genesis(StateInput::default(), &[transfer_block()]);
+    let (outcome, rejection) = run_on(&engine, input(exact(state), vec![transfer_block()]));
+    assert_eq!((outcome.error, rejection), (ErrorClass::None, None));
+    assert_eq!(outcome.receipts.len(), 1);
+    // Every check's read missed, and none counted against execution.
+    let seen = engine.seen.borrow();
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|(_, missed, _)| *missed), "{seen:?}");
+}
+
+#[test]
+fn the_chains_own_check_sees_the_blocks_post_execution_changes() {
+    let engine = Watching::default();
+    let (outcome, _) = run_on(&engine, input(genesis(), vec![transfer_block()]));
+    assert_eq!(outcome.error, ErrorClass::None);
+    let ran: Vec<_> = engine
+        .seen
+        .borrow()
+        .iter()
+        .map(|(ran, _, start)| {
+            assert!(!start, "only a pre-state checked on its own is a start");
+            ran.clone()
+        })
+        .collect();
+    assert!(
+        matches!(ran.first(), Some(tempo_invariants::Ran::PreBlock)),
+        "{ran:?}"
+    );
+    assert!(
+        matches!(ran.last(), Some(tempo_invariants::Ran::PostBlock)),
+        "{ran:?}"
+    );
+    assert_eq!(ran.iter().filter(|ran| ran.tx().is_some()).count(), 1);
+}
+
+#[test]
+fn each_run_starts_the_chains_own_checks_afresh() {
+    let engine = Watching::default();
+    for _ in 0..2 {
+        let (outcome, _) = run_on(&engine, input(genesis(), vec![transfer_block()]));
+        assert_eq!(outcome.error, ErrorClass::None);
+    }
+    let steps = engine.steps.borrow();
+    let per_run = steps.len() / 2;
+    let expected: Vec<usize> = (0..per_run).chain(0..per_run).collect();
+    assert_eq!(*steps, expected);
+}
+
+#[test]
+fn a_pre_state_breaking_the_chains_own_check_is_broken() {
+    let flag = address!("00000000000000000000000000000000000000cc");
+    let engine = Watching {
+        flag: Some(flag),
+        ..Default::default()
+    };
+    let pre_state = PreState::Genesis(one_account(
+        flag,
+        AccountInput {
+            nonce: FLAGGED_NONCE,
+            ..Default::default()
+        },
+    ));
+    let (outcome, rejection) = run_on(&engine, input(pre_state, vec![transfer_block()]));
+    assert_eq!(outcome.error, ErrorClass::BrokenPreState);
+    assert_eq!(
+        rejection.map(|r| r.class()),
+        Some(ErrorClass::BrokenPreState)
+    );
+    // The pre-state was checked on its own, after the steps that broke the check.
+    assert!(matches!(engine.seen.borrow().last(), Some((_, _, true))));
+    let failures: Vec<_> = outcome
+        .invariant_failures
+        .iter()
+        .map(|failure| (failure.violation.id.as_ref(), failure.scope.clone()))
+        .collect();
+    assert_eq!(failures, [("TEST-FLAGGED", InvariantScope::Execution)]);
 }

@@ -189,6 +189,11 @@ where
         self.inner.chain_spec()
     }
 
+    /// Returns the portal the zone reads Tempo through.
+    pub fn portal_address(&self) -> Address {
+        self.zone_factory.portal_address
+    }
+
     /// Returns the Tempo L1 storage reader.
     pub fn l1_reader(&self) -> &L1 {
         &self.zone_factory.l1_reader

@@ -7,15 +7,16 @@ use std::sync::{Arc, LazyLock};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::Address;
 use evm2::evm::Cache;
+use invariants_core::Report;
 use reth_consensus::{Consensus, HeaderValidator};
 use reth_evm::{BlockExecutionError, BlockExecutorFactory, ConfigureEvm};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TempoConsensusSpec};
 use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus};
-use tempo_fuzz_types::{ChainSpecInput, HarnessInputKind};
+use tempo_fuzz_types::{ChainSpecInput, HarnessInputKind, InvariantInfo};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
-use crate::{Rejection, chain, state};
+use crate::{Rejection, StepState, chain, state};
 
 /// The dev genesis allocation, seeded once per process.
 static GENESIS: LazyLock<Cache> =
@@ -67,6 +68,9 @@ pub trait Engine {
     type EvmConfig: EvmConfig;
     /// The chain's consensus rules.
     type Consensus: BlockConsensus;
+    /// What the chain's own checks carry from one step of a run to the next, such as what the state
+    /// showed after the last step. Every run starts from its default.
+    type Checks: Default;
 
     /// The implementation the harness's capabilities name.
     const IMPLEMENTATION: &'static str;
@@ -78,6 +82,9 @@ pub trait Engine {
     const FEE_AMM: Option<Address>;
     /// The stablecoin DEX, if the chain runs one.
     const DEX: Option<Address>;
+    /// Whether the chain keeps configurable accounts' commitments itself, so the TIP-1107 account
+    /// invariants judge its steps. A zone mirrors Tempo's commitments instead.
+    const ACCOUNTS: bool = true;
 
     /// The chain `input` describes, or why it is not executable.
     fn chain(&self, input: &ChainSpecInput) -> Result<Chain<Self>, Rejection>;
@@ -110,6 +117,23 @@ pub trait Engine {
     ) -> Result<Vec<Recovered<TempoTxEnvelope>>, BlockExecutionError> {
         Ok(Vec::new())
     }
+
+    /// Checks the chain's own invariants on the state after each step, beyond the protocol's,
+    /// recording what they find in `report`, with what the run's earlier steps left in `checks`.
+    /// Runs after the protocol invariants, unless the process turns invariants off. None by
+    /// default.
+    fn check_step(
+        &self,
+        _checks: &mut Self::Checks,
+        _state: &StepState<'_, Self::EvmConfig>,
+        _report: &mut Report,
+    ) {
+    }
+
+    /// The invariants [`Self::check_step`] checks, for the harness's catalog.
+    fn own_invariants() -> Vec<InvariantInfo> {
+        Vec::new()
+    }
 }
 
 /// Tempo L1: the dev chain spec with the input's chain ID and hardforks, Tempo's EVM and consensus.
@@ -120,6 +144,7 @@ impl Engine for Tempo {
     type ChainSpec = TempoChainSpec;
     type EvmConfig = TempoEvmConfig;
     type Consensus = TempoConsensus;
+    type Checks = ();
 
     const IMPLEMENTATION: &'static str = "tempo";
     const HARDFORKS: &'static [TempoHardfork] = TempoHardfork::VARIANTS;

@@ -23,4 +23,10 @@ it left withdrawals pending; their receipts are `TxIndex::Synthesized`. A block
 given as an RLP header executes exactly its own transactions, as the node
 imports it, so a zone block replays with its own `advanceTempo`.
 
-Zones run no fee AMM or stablecoin DEX, so their invariants are skipped.
+Zones run no fee AMM or stablecoin DEX, so their invariants are skipped. A zone mirrors Tempo's
+configurable account commitments rather than keeping its own, so in place of the TIP-1107 account
+invariants every step from T14 checks TIP-1154 (`TEMPO-ZONE-ACCOUNT-*`, in
+[`tempo-invariants`](../../invariants/src/zone_account)): what the zone shows of its system
+contracts, the input's accounts and those L1 commits to, against L1's commitments at the zone's
+anchor. L1 holds the same state at every block, so the checks cannot see a commitment change from
+one anchor to the next, and they compare the zone with the same commitments its overlay reads.

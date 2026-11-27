@@ -8,6 +8,7 @@ use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::SolCall;
 use evm2::evm::{Cache, SystemTx};
+use invariants_core::Report;
 use reth_evm::{BlockExecutionError, BlockValidationError};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::{
@@ -15,8 +16,9 @@ use tempo_contracts::{
     zones::{IZoneInbox, IZoneOutbox, tempo_state::TempoState},
 };
 use tempo_evm::TempoEvm;
-use tempo_fuzz_engine::{Chain, Engine, Rejection, chain_spec_on, genesis_cache};
-use tempo_fuzz_types::{ChainSpecInput, ErrorClass, HarnessInputKind};
+use tempo_fuzz_engine::{Chain, Engine, Rejection, StepState, chain_spec_on, genesis_cache};
+use tempo_fuzz_types::{ChainSpecInput, ErrorClass, HarnessInputKind, InvariantInfo};
+use tempo_invariants::zone_account::Mirror;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STORAGE_CREDITS_ADDRESS,
     tip20::is_tip20_prefix,
@@ -34,7 +36,11 @@ use zone_primitives::constants::{
     TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, decode_zone_chain_id,
 };
 
-use crate::{consensus::ZoneConsensus, types::L1StateInput};
+use crate::{
+    accounts::{self, AccountChecks},
+    consensus::ZoneConsensus,
+    types::L1StateInput,
+};
 
 /// The zone genesis the node ships, which every zone input's chain starts from.
 const GENESIS_JSON: &str = include_str!("../../node/assets/zone-dev-genesis.json");
@@ -53,14 +59,17 @@ static GENESIS_SPEC: LazyLock<TempoChainSpec> =
 #[derive(Debug, Clone)]
 pub struct Zone {
     l1: L1,
+    /// The TIP-1154 account checks, over the zone's system contracts, `watched` and the accounts
+    /// `l1` commits to.
+    accounts: AccountChecks,
 }
 
 impl Zone {
-    /// A zone that reads `l1` at every anchor.
-    pub fn new(l1: L1StateInput) -> Self {
-        Self {
-            l1: L1(Arc::new(l1)),
-        }
+    /// A zone that reads `l1` at every anchor, its account checks watching `watched`.
+    pub fn new(l1: L1StateInput, watched: impl IntoIterator<Item = Address>) -> Self {
+        let l1 = L1(Arc::new(l1));
+        let accounts = AccountChecks::new(l1.committed(), watched);
+        Self { l1, accounts }
     }
 }
 
@@ -68,6 +77,9 @@ impl Engine for Zone {
     type ChainSpec = ZoneChainSpec;
     type EvmConfig = ZoneEvmConfig<L1>;
     type Consensus = ZoneConsensus;
+    /// What the zone showed after the run's last step, which the account checks judge the next
+    /// against.
+    type Checks = Option<Mirror>;
 
     const IMPLEMENTATION: &'static str = "tempo-zone";
     const HARDFORKS: &'static [TempoHardfork] = TempoHardfork::VARIANTS
@@ -77,6 +89,9 @@ impl Engine for Zone {
         &[HarnessInputKind::State, HarnessInputKind::Blockchain];
     const FEE_AMM: Option<Address> = None;
     const DEX: Option<Address> = None;
+    // A zone mirrors Tempo's commitments rather than keeping its own, so the TIP-1154 checks in
+    // [`Self::check_step`] replace the TIP-1107 ones.
+    const ACCOUNTS: bool = false;
 
     fn chain(&self, input: &ChainSpecInput) -> Result<Chain<Self>, Rejection> {
         let (_, zone_id) = decode_zone_chain_id(input.chain_id)
@@ -96,6 +111,19 @@ impl Engine for Zone {
 
     fn genesis(&self) -> &Cache {
         &GENESIS_STATE
+    }
+
+    fn check_step(
+        &self,
+        last: &mut Option<Mirror>,
+        state: &StepState<'_, Self::EvmConfig>,
+        report: &mut Report,
+    ) {
+        self.accounts.check(last, state, report);
+    }
+
+    fn own_invariants() -> Vec<InvariantInfo> {
+        accounts::catalog()
     }
 
     /// First argument of an account-scoped getter, which every one takes as the account it reads.
@@ -202,6 +230,17 @@ impl Engine for Zone {
 #[derive(Debug, Clone)]
 pub struct L1(Arc<L1StateInput>);
 
+impl L1 {
+    /// The accounts L1 holds a nonzero commitment for.
+    pub(crate) fn committed(&self) -> impl Iterator<Item = Address> + '_ {
+        self.0
+            .commitments
+            .iter()
+            .filter(|(_, commitment)| !commitment.is_zero())
+            .map(|(address, _)| *address)
+    }
+}
+
 impl L1StorageReader for L1 {
     fn read_l1_storage(
         &self,
@@ -293,6 +332,6 @@ mod tests {
     #[test_case(PATH_USD_ADDRESS, ITIP20::totalSupplyCall {}.abi_encode() => Address::ZERO)]
     #[test_case(ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain::getKeyCall { account: OWNER, keyId: OTHER }.abi_encode() => OWNER)]
     fn views_run_as_the_account_a_scoped_getter_reads(target: Address, data: Vec<u8>) -> Address {
-        Zone::new(L1StateInput::default()).view_caller(target, &data)
+        Zone::new(L1StateInput::default(), []).view_caller(target, &data)
     }
 }
