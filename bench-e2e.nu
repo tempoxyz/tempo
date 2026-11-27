@@ -44,6 +44,9 @@ const E2E_LOCAL_RETH_ARGS = [
     # Bench presets send many transactions per sender; keep them clear of the node's
     # 16-transaction per-sender default.
     "--txpool.max-account-slots" "150000"
+    # Setup sends thousands of ordered transactions from one sender's nonce lane; keep them clear
+    # of the node's 1,024-transaction per-lane default.
+    "--txpool.max-txs-per-lane" "200000"
 ]
 
 def merge-e2e-features [...features: string] {
