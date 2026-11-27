@@ -25,6 +25,7 @@ pub mod abi {
 }
 
 pub mod attestation;
+mod confirm;
 mod encryption_key;
 mod metrics;
 pub mod monitor;
@@ -37,6 +38,7 @@ pub mod settlement;
 mod settlement_manager;
 pub mod withdrawals;
 
+pub use confirm::send_and_confirm;
 pub use encryption_key::{
     EncryptionKeyProof, encryption_key_identity, prove_encryption_key_possession,
     register_encryption_key,

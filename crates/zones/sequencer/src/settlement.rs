@@ -44,6 +44,7 @@ use crate::{
     },
     prover::SettlementProof,
     prover_config::active_l1_hardfork,
+    send_and_confirm,
 };
 use alloy_consensus::{Transaction, TxReceipt as _, transaction::TxHashRef as _};
 use alloy_eips::{BlockHashOrNumber, eip2935::HISTORY_SERVE_WINDOW};
@@ -562,10 +563,7 @@ impl BatchSubmitter {
                 if anchors_to_current_tip {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                submission
-                    .send_sync()
-                    .timeout(Duration::from_secs(30))
-                    .await
+                tokio::time::timeout(Duration::from_secs(30), send_and_confirm(&submission)).await
             }
             SettlementAbi::T13 => {
                 let mut submission = self
@@ -589,13 +587,10 @@ impl BatchSubmitter {
                 if anchors_to_current_tip {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                submission
-                    .send_sync()
-                    .timeout(Duration::from_secs(30))
-                    .await
+                tokio::time::timeout(Duration::from_secs(30), send_and_confirm(&submission)).await
             }
         }
-        .map_err(|_| eyre::eyre!("submitBatch sync submission timed out after 30 seconds"))?
+        .map_err(|_| eyre::eyre!("submitBatch confirmation timed out after 30 seconds"))?
         .map_err(|error| BatchSubmitError::Other(error.into()))?;
         lease.landed();
 

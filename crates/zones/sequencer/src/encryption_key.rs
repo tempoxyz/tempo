@@ -62,7 +62,8 @@ pub async fn register_encryption_key<P: Provider<TempoNetwork>>(
     signer: &PrivateKeySigner,
 ) -> eyre::Result<B256> {
     let proof = prove_encryption_key_possession(portal, signer)?;
-    let receipt = ZonePortal::new(portal, provider)
+    let portal = ZonePortal::new(portal, provider);
+    let call = portal
         .setSequencerEncryptionKey(
             proof.x,
             proof.y_parity,
@@ -71,9 +72,8 @@ pub async fn register_encryption_key<P: Provider<TempoNetwork>>(
             proof.pop_s,
         )
         .max_fee_per_gas(crate::TEMPO_L1_MAX_FEE_PER_GAS)
-        .max_priority_fee_per_gas(0)
-        .send_sync()
-        .await?;
+        .max_priority_fee_per_gas(0);
+    let receipt = crate::send_and_confirm(&call).await?;
     let tx_hash = receipt.transaction_hash();
     eyre::ensure!(
         receipt.status(),

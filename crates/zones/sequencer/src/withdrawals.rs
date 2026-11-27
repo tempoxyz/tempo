@@ -49,6 +49,7 @@ use crate::{
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::{NonceLane, PROCESS_WITHDRAWAL_NONCE_KEY},
     prover_config::active_l1_hardfork,
+    send_and_confirm,
     settlement::{WithdrawalPage, find_processed_offset},
 };
 use tempo_alloy::rpc::TempoCallBuilderExt;
@@ -805,17 +806,18 @@ impl WithdrawalProcessor {
                     .gas(batch.gas_limit);
 
                 in_flight.push(async move {
-                    let receipt = call
-                        .send_sync()
-                        .timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT)
-                        .await
-                        .map_err(|_| {
-                            eyre::eyre!(
-                                "processWithdrawals sync submission timed out after {} seconds",
-                                PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
-                            )
-                        })
-                        .and_then(|result| result.map_err(Into::into));
+                    let receipt = tokio::time::timeout(
+                        PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT,
+                        send_and_confirm(&call),
+                    )
+                    .await
+                    .map_err(|_| {
+                        eyre::eyre!(
+                            "processWithdrawals confirmation timed out after {} seconds",
+                            PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
+                        )
+                    })
+                    .and_then(|result| result.map_err(Into::into));
                     (batch, lease, remaining_queue, receipt)
                 });
                 submitted += 1;
@@ -1566,9 +1568,11 @@ mod tests {
                 + PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS,
             max_in_flight_batches: 2,
         };
-        l1.push_success(&successful_receipt(1));
-        l1.push_success(&successful_receipt(2));
-        l1.push_success(&successful_receipt(3));
+        // Each transaction is sent, then its receipt is read.
+        for tx_byte in 1..=3 {
+            l1.push_success(&B256::repeat_byte(tx_byte));
+            l1.push_success(&successful_receipt(tx_byte));
+        }
 
         let withdrawals = simple_withdrawals(3);
         let batches =
@@ -1607,8 +1611,8 @@ mod tests {
         );
         assert_eq!(
             l1.read_q().len(),
-            1,
-            "the third response must remain unused because cancellation prevented a refill"
+            2,
+            "the third transaction's responses must remain unused because cancellation prevented a refill"
         );
     }
 

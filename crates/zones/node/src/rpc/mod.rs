@@ -2076,17 +2076,19 @@ async fn set_leader(
 
     let lease = relayer_nonces.lease(relayer).await.map_err(internal)?;
     let nonce = lease.nonce();
-    let receipt = portal
+    let call = portal
         .setLeader(target, expected_epoch)
         .nonce_key(nonce_keys::ADMIN_OPS_NONCE_KEY)
         .nonce(nonce)
         .max_fee_per_gas(u128::from(gas::TEMPO_T1_BASE_FEE))
-        .max_priority_fee_per_gas(0)
-        .send_sync()
-        .timeout(Duration::from_secs(30))
-        .await
-        .map_err(|_| JsonRpcError::internal("setLeader confirmation timed out after 30 seconds"))?
-        .map_err(internal)?;
+        .max_priority_fee_per_gas(0);
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(30),
+        zone_sequencer::send_and_confirm(&call),
+    )
+    .await
+    .map_err(|_| JsonRpcError::internal("setLeader confirmation timed out after 30 seconds"))?
+    .map_err(internal)?;
     lease.landed();
     let tx_hash = receipt.transaction_hash();
     if !receipt.status() {
