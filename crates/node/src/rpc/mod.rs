@@ -721,29 +721,19 @@ where
                 .provider
                 .state_by_block_hash(block.header().inner.parent_hash)?;
             let state = self.provider.state_by_block_hash(block_hash)?;
-            let mut success = receipts
-                .iter()
-                .map(|r| (r.meta.index, r.receipt.success))
-                .collect::<HashMap<_, _>>();
-            let missing_status =
-                (0u64..)
-                    .zip(block.transactions_with_sender())
-                    .any(|(index, (signer, tx))| {
-                        senders.contains(signer)
-                            && tx.kind().is_create()
-                            && !is_protocol_nonce(tx.nonce_key())
-                            && !success.contains_key(&index)
-                    });
-            if missing_status {
-                let Some(block_receipts) = self.provider.receipts_by_block(block_hash.into())?
-                else {
-                    return Ok(HashMap::default());
-                };
-                success = (0u64..)
-                    .zip(block_receipts)
-                    .map(|(index, receipt)| (index, receipt.success))
-                    .collect();
-            }
+            // The outcome of every transaction in the block, from the stored receipts unless
+            // `receipts` already covers the whole block.
+            let success = if receipts.len() == block.body().transactions.len() {
+                receipts
+                    .iter()
+                    .map(|r| r.receipt.success)
+                    .collect::<Vec<_>>()
+            } else {
+                match self.provider.receipts_by_block(block_hash.into())? {
+                    Some(receipts) => receipts.iter().map(|r| r.success).collect(),
+                    None => return Ok(HashMap::default()),
+                }
+            };
 
             let mut addresses = HashMap::default();
             for sender in senders {
@@ -762,7 +752,8 @@ where
                         continue;
                     }
                     if !is_protocol_nonce(tx.nonce_key()) {
-                        if !tx.kind().is_create() || !success.get(&index).copied().unwrap_or(false)
+                        if !tx.kind().is_create()
+                            || !success.get(index as usize).copied().unwrap_or(false)
                         {
                             continue;
                         }
