@@ -104,8 +104,8 @@ impl TipFeeManager {
         T::EvmExt: crate::storage::evm::EvmStorageExt,
     {
         use crate::{
-            storage::PrecompileStorageProvider as _,
-            tip20::{TIP_FEE_MANAGER_BALANCE_SLOT, TIP20Token, slots as tip20_slots},
+            storage::{PrecompileStorageProvider as _, evm::EvmStorageExt as _},
+            tip20::{TIP_FEE_MANAGER_BALANCE_SLOT, slots as tip20_slots},
             tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, TIP403Registry},
         };
         use tempo_contracts::precompiles::TIP20Error;
@@ -132,49 +132,105 @@ impl TipFeeManager {
                 addr
             }
         };
-        let policy_id = TIP20Token::transfer_policy_id_on_provider(storage, user_token)?;
-        if policy_id != ALLOW_ALL_POLICY_ID {
-            StorageCtx::enter(storage, || -> Result<()> {
-                let registry = TIP403Registry::new();
-                if !registry.is_authorized_as(policy_id, fee_payer, AuthRole::sender())? {
-                    return Err(TIP20Error::policy_forbids().into());
-                }
-                Ok(())
-            })?;
-        }
-        if !storage
-            .sload_direct(user_token, tip20_slots::PAUSED)?
-            .is_zero()
-        {
-            return Err(TIP20Error::contract_paused().into());
-        }
+        let registered_policy = if spec.is_t9() {
+            let slot = storage
+                .evm_ext_mut()
+                .cached_token_transfer_policy_slot(user_token);
+            let raw = storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, slot)?;
+            let id = raw.as_limbs()[0];
+            if id != 0 { Some(id) } else { None }
+        } else {
+            None
+        };
         let tx_key_word = storage.tload_direct(
             crate::ACCOUNT_KEYCHAIN_ADDRESS,
             crate::account_keychain::slots::TRANSACTION_KEY,
         )?;
-        if !tx_key_word.is_zero() {
-            StorageCtx::enter(storage, || {
-                crate::account_keychain::AccountKeychain::authorize_transfer_direct(
-                    fee_payer, user_token, max_amount,
+        let map_delta_err = |err: TempoPrecompileError| match err {
+            TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                TIP20Error::insufficient_balance(current, max_amount, user_token).into()
+            }
+            e if e == TempoPrecompileError::under_overflow() => {
+                TIP20Error::supply_cap_exceeded().into()
+            }
+            e => e,
+        };
+        if tx_key_word.is_zero() && registered_policy.is_none_or(|id| id == ALLOW_ALL_POLICY_ID) {
+            if let Some(policy_id) = storage
+                .tip20_fee_pre_tx_fast(
+                    user_token,
+                    registered_policy.is_none(),
+                    tip20_slots::TRANSFER_POLICY_ID,
+                    tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8,
+                    ALLOW_ALL_POLICY_ID,
+                    tip20_slots::PAUSED,
+                    fee_payer_balance_slot,
+                    TIP_FEE_MANAGER_BALANCE_SLOT,
+                    max_amount,
                 )
-            })?;
+                .map_err(map_delta_err)?
+            {
+                StorageCtx::enter(storage, || -> Result<()> {
+                    let registry = TIP403Registry::new();
+                    if !registry.is_authorized_as(policy_id, fee_payer, AuthRole::sender())? {
+                        return Err(TIP20Error::policy_forbids().into());
+                    }
+                    Ok(())
+                })?;
+                if !storage
+                    .sload_direct(user_token, tip20_slots::PAUSED)?
+                    .is_zero()
+                {
+                    return Err(TIP20Error::contract_paused().into());
+                }
+                storage
+                    .sdelta_pair(
+                        user_token,
+                        fee_payer_balance_slot,
+                        TIP_FEE_MANAGER_BALANCE_SLOT,
+                        max_amount,
+                    )
+                    .map_err(map_delta_err)?;
+            }
+        } else {
+            let policy_id = match registered_policy {
+                Some(id) => id,
+                None => {
+                    let raw = storage.sload_direct(user_token, tip20_slots::TRANSFER_POLICY_ID)?;
+                    (raw >> (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8)).as_limbs()[0]
+                }
+            };
+            if policy_id != ALLOW_ALL_POLICY_ID {
+                StorageCtx::enter(storage, || -> Result<()> {
+                    let registry = TIP403Registry::new();
+                    if !registry.is_authorized_as(policy_id, fee_payer, AuthRole::sender())? {
+                        return Err(TIP20Error::policy_forbids().into());
+                    }
+                    Ok(())
+                })?;
+            }
+            if !storage
+                .sload_direct(user_token, tip20_slots::PAUSED)?
+                .is_zero()
+            {
+                return Err(TIP20Error::contract_paused().into());
+            }
+            if !tx_key_word.is_zero() {
+                StorageCtx::enter(storage, || {
+                    crate::account_keychain::AccountKeychain::authorize_transfer_direct(
+                        fee_payer, user_token, max_amount,
+                    )
+                })?;
+            }
+            storage
+                .sdelta_pair(
+                    user_token,
+                    fee_payer_balance_slot,
+                    TIP_FEE_MANAGER_BALANCE_SLOT,
+                    max_amount,
+                )
+                .map_err(map_delta_err)?;
         }
-        storage
-            .sdelta_pair(
-                user_token,
-                fee_payer_balance_slot,
-                TIP_FEE_MANAGER_BALANCE_SLOT,
-                max_amount,
-            )
-            .map_err(|err| match err {
-                TempoPrecompileError::StorageDeltaUnderflow(current) => {
-                    TIP20Error::insufficient_balance(current, max_amount, user_token).into()
-                }
-                e if e == TempoPrecompileError::under_overflow() => {
-                    TIP20Error::supply_cap_exceeded().into()
-                }
-                e => e,
-            })?;
         let mut used_two_hop = false;
         if !skip_liquidity_check && user_token != validator_token {
             used_two_hop = StorageCtx::enter(storage, || -> Result<bool> {
@@ -287,6 +343,39 @@ impl TipFeeManager {
         } else {
             Address::ZERO
         };
+        if hop_token.is_zero() {
+            let mut collected_fees_slot = Some(collected_fees_slot);
+            match storage.fee_post_tx_collect_fast(
+                TIP_FEE_MANAGER_ADDRESS,
+                validator_token_slot,
+                fee_token,
+                DEFAULT_FEE_TOKEN,
+                actual_spending,
+                |tok| (collected_fees_slot.take().unwrap())(tok),
+            )? {
+                Ok(amount) => return Ok(amount),
+                Err(validator_token) => {
+                    if !actual_spending.is_zero() {
+                        StorageCtx::enter(storage, || {
+                            Self::new().execute_fee_swap(
+                                fee_token,
+                                validator_token,
+                                actual_spending,
+                            )
+                        })?;
+                    }
+                    let amount = compute_amount_out(actual_spending)?;
+                    if !amount.is_zero() {
+                        storage.sinc_direct(
+                            TIP_FEE_MANAGER_ADDRESS,
+                            (collected_fees_slot.take().unwrap())(validator_token),
+                            amount,
+                        )?;
+                    }
+                    return Ok(amount);
+                }
+            }
+        }
         let val_token_word = storage.sload_direct(TIP_FEE_MANAGER_ADDRESS, validator_token_slot)?;
         let validator_token = {
             let addr = Address::from_word(val_token_word.into());
@@ -296,28 +385,15 @@ impl TipFeeManager {
                 addr
             }
         };
-        let amount = if hop_token.is_zero() {
-            if fee_token != validator_token {
-                if !actual_spending.is_zero() {
-                    StorageCtx::enter(storage, || {
-                        Self::new().execute_fee_swap(fee_token, validator_token, actual_spending)
-                    })?;
-                }
-                compute_amount_out(actual_spending)?
-            } else {
-                actual_spending
-            }
-        } else {
-            if !actual_spending.is_zero() {
-                StorageCtx::enter(storage, || -> Result<()> {
-                    let mut this = Self::new();
-                    let out1 = this.execute_fee_swap(fee_token, hop_token, actual_spending)?;
-                    this.execute_fee_swap(hop_token, validator_token, out1)?;
-                    Ok(())
-                })?;
-            }
-            compute_amount_out(compute_amount_out(actual_spending)?)?
-        };
+        if !actual_spending.is_zero() {
+            StorageCtx::enter(storage, || -> Result<()> {
+                let mut this = Self::new();
+                let out1 = this.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                this.execute_fee_swap(hop_token, validator_token, out1)?;
+                Ok(())
+            })?;
+        }
+        let amount = compute_amount_out(compute_amount_out(actual_spending)?)?;
         if !amount.is_zero() {
             storage.sinc_direct(
                 TIP_FEE_MANAGER_ADDRESS,

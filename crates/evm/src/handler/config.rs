@@ -3,8 +3,7 @@
 use super::configurable_account;
 use crate::{
     FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken,
-    SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
-    TempoTxEnv,
+    SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager, TempoInvalidTransaction, TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -22,12 +21,10 @@ use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardf
 use tempo_contracts::precompiles::TIPFeeAMMError;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    account_keychain::AccountKeychain,
     error::TempoPrecompileError,
     storage::{FromWord, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
     tip20::TIP20Error,
-    tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{TempoAddressExt, TempoEvmKind, transaction::calc_gas_balance_spending};
 pub use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
@@ -111,15 +108,20 @@ pub struct TempoEvmExt {
     /// Access-key expiry resolved for the most recently handled transaction.
     pub key_expiry: Option<u64>,
     /// Fee payer for which `resolved_fee_balance_slot` was computed.
-    pub(crate) resolved_fee_payer: Address,
+    #[doc(hidden)]
+    pub resolved_fee_payer: Address,
     /// Precomputed `balances[fee_payer]` slot for the current transaction.
-    pub(crate) resolved_fee_balance_slot: U256,
+    #[doc(hidden)]
+    pub resolved_fee_balance_slot: U256,
     /// Whether `collect_fee_pre_tx` wrote `two_hop_intermediate` for the current transaction.
-    pub(crate) has_two_hop_intermediate: bool,
+    #[doc(hidden)]
+    pub has_two_hop_intermediate: bool,
     /// Per-block cached fee-manager mapping slots keyed by beneficiary.
-    pub(crate) fee_slot_cache: FeeSlotCache,
+    #[doc(hidden)]
+    pub fee_slot_cache: FeeSlotCache,
     /// Per-EVM direct-mapped cache for frequent sender mapping slots.
-    pub(crate) sender_slot_cache: SenderSlotCache,
+    #[doc(hidden)]
+    pub sender_slot_cache: SenderSlotCache,
 }
 
 const SENDER_SLOT_CACHE_LEN: usize = 1024;
@@ -132,8 +134,10 @@ struct SenderSlotEntry {
     balance_slot: U256,
 }
 
+/// Per-EVM direct-mapped cache for frequent sender mapping slots.
+#[doc(hidden)]
 #[derive(Debug, Default, Clone)]
-pub(crate) struct SenderSlotCache {
+pub struct SenderSlotCache {
     entries: Option<Box<[SenderSlotEntry; SENDER_SLOT_CACHE_LEN]>>,
 }
 
@@ -163,8 +167,9 @@ impl SenderSlotCache {
 }
 
 /// Caches beneficiary-keyed `TipFeeManager` mapping slots across transactions in a block.
+#[doc(hidden)]
 #[derive(Debug, Default, Clone)]
-pub(crate) struct FeeSlotCache {
+pub struct FeeSlotCache {
     beneficiary: Option<Address>,
     validator_token_slot: U256,
     collected_fees_outer_slot: U256,
@@ -464,15 +469,30 @@ impl TempoHandlerHooks {
             calc_gas_balance_spending(envelope.evm_tx().gas_limit(), envelope.max_fee_per_gas());
         let spec = host.config_spec_id();
 
-        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            AccountKeychain::set_tx_origin_direct(envelope.evm_tx().signer())?;
-            if spec.is_t14() {
-                envelope.seed_upgrade_authority()?;
+        {
+            use tempo_precompiles::{
+                ACCOUNT_KEYCHAIN_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, account_keychain,
+                tip20_channel_reserve,
+            };
+            let origin_word = envelope.evm_tx().signer().to_word();
+            let context_hash_word = envelope.channel_open_context_hash().to_word();
+            {
+                let state = host.state_mut();
+                state.tstore(
+                    &ACCOUNT_KEYCHAIN_ADDRESS,
+                    &account_keychain::slots::TX_ORIGIN,
+                    &origin_word,
+                );
+                state.tstore(
+                    &TIP20_CHANNEL_RESERVE_ADDRESS,
+                    &tip20_channel_reserve::slots::CHANNEL_OPEN_CONTEXT_HASH,
+                    &context_hash_word,
+                );
             }
-            TIP20ChannelReserve::set_channel_open_context_hash_direct(
-                envelope.channel_open_context_hash(),
-            )
-        })?;
+            if spec.is_t14() {
+                envelope.seed_upgrade_authority_on_evm(host)?;
+            }
+        }
 
         let fee_manager = host.ext().fee_manager.clone();
         let resolved_fee_token = fee_manager
@@ -492,14 +512,17 @@ impl TempoHandlerHooks {
         if !fee_token.is_tip20() {
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
-        if !max_fee.is_zero() {
-            fee_manager.validate_fee_token(host, fee_token, spec)?;
-        }
         let fee_payer_balance_slot = host.ext_mut().sender_slot_cache.balance_slot(fee_payer);
         host.ext_mut().resolved_fee_payer = fee_payer;
         host.ext_mut().resolved_fee_balance_slot = fee_payer_balance_slot;
         host.ext_mut().has_two_hop_intermediate = false;
-        let balance = host.sload(fee_token, fee_payer_balance_slot)?;
+        let balance = fee_manager.validate_and_load_fee_balance(
+            host,
+            fee_token,
+            fee_payer_balance_slot,
+            max_fee,
+            spec,
+        )?;
         if host.feature(EvmFeatures::FEE_CHARGE) && balance < max_fee {
             return Err(TempoInvalidTransaction::from(
                 FeePaymentError::InsufficientFeeTokenBalance {

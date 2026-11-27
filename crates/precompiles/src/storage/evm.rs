@@ -479,6 +479,448 @@ where
         Ok(())
     }
 
+    /// Single-account batched pre-tx fee check & balance move on `user_token`.
+    /// Checks optional `TRANSFER_POLICY_ID` (if `check_policy_slot`), then `PAUSED`, then
+    /// `sdec(fee_payer_balance_slot, max_amount)` + `sinc(fee_manager_balance_slot, max_amount)`
+    /// on a single `AccountHandle` lookup.
+    /// Returns `Ok(Some(policy_id))` when `policy_id != ALLOW_ALL_POLICY_ID` so the caller can
+    /// run the TIP403Registry check and fall back to separate `PAUSED` + `sdelta_pair`.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn tip20_fee_pre_tx_fast(
+        &mut self,
+        user_token: Address,
+        check_policy_slot: bool,
+        policy_slot: U256,
+        policy_offset_bits: usize,
+        allow_all_policy_id: u64,
+        paused_slot: U256,
+        dec_key: U256,
+        inc_key: U256,
+        delta: U256,
+    ) -> Result<Option<u64>, TempoPrecompileError> {
+        self.ensure_not_static()?;
+        let is_t4 = self.spec.is_t4();
+        let is_t12 = self.spec.is_t12();
+        let is_t15 = self.spec.is_t15();
+        let eip2929 = self.version.feature(EvmFeatures::EIP2929);
+        let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let cold_additional = self
+            .version
+            .gas_params
+            .get(GasId::ColdStorageAdditionalCost);
+        let sstore_static = self.version.gas_params.get(GasId::SstoreStatic);
+        let call_stipend = self.version.gas_params.get(GasId::CallStipend);
+
+        let skip_cold_first = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&user_token, skip_cold_first && is_t15)?;
+        account.warm();
+
+        if check_policy_slot {
+            let (raw, is_cold) = {
+                let storage = account.storage();
+                let (slot, is_cold) = if eip2929 {
+                    storage.into_slot_with_skip_and_warm(policy_slot, skip_cold_first)?
+                } else {
+                    (
+                        storage.into_slot_with_skip(policy_slot, skip_cold_first)?,
+                        false,
+                    )
+                };
+                (slot.current(), is_cold)
+            };
+            self.actions
+                .record(StorageAction::Sload(user_token, policy_slot, raw));
+            if !is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+            if is_cold || self.cold_pricing {
+                self.gas_tracker.deduct_gas(cold_additional)?;
+            }
+            let policy_id = (raw >> policy_offset_bits).as_limbs()[0];
+            if policy_id != allow_all_policy_id {
+                return Ok(Some(policy_id));
+            }
+            if is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+        }
+
+        // Read PAUSED on the same AccountHandle
+        let skip_cold_paused = if is_t4 {
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let (paused_val, paused_cold) = {
+            let storage = account.storage();
+            let (slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(paused_slot, skip_cold_paused)?
+            } else {
+                (
+                    storage.into_slot_with_skip(paused_slot, skip_cold_paused)?,
+                    false,
+                )
+            };
+            (slot.current(), is_cold)
+        };
+        self.actions
+            .record(StorageAction::Sload(user_token, paused_slot, paused_val));
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+        }
+        if paused_cold || self.cold_pricing {
+            self.gas_tracker.deduct_gas(cold_additional)?;
+        }
+        if !paused_val.is_zero() {
+            return Err(tempo_contracts::precompiles::TIP20Error::contract_paused().into());
+        }
+
+        // sdec(dec_key, delta) on the same AccountHandle
+        let skip_cold_dec = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let (dec_current, dec_value, dec_sstore) = {
+            let storage = account.storage();
+            let (mut slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(dec_key, skip_cold_dec)?
+            } else {
+                (storage.into_slot_with_skip(dec_key, skip_cold_dec)?, false)
+            };
+            let current = slot.current();
+            if !is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+            if is_cold || self.cold_pricing {
+                self.gas_tracker.deduct_gas(cold_additional)?;
+            }
+            let value = current
+                .checked_sub(delta)
+                .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+            if is_t12 && self.gas_tracker.remaining() <= call_stipend {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            if is_t4 {
+                self.gas_tracker.deduct_gas(sstore_static)?;
+            }
+            let (original_value, present_value) = slot.write(value);
+            (
+                current,
+                value,
+                SStore {
+                    original_value,
+                    present_value,
+                    new_value: value,
+                    is_cold: false,
+                    _non_exhaustive: (),
+                },
+            )
+        };
+        let dec_zero_boundary = !dec_current.is_zero() && dec_value.is_zero();
+        if dec_zero_boundary {
+            self.actions
+                .record(StorageAction::Sload(user_token, dec_key, dec_current));
+            self.actions.record(StorageAction::Sstore(
+                user_token,
+                dec_key,
+                dec_current,
+                dec_value,
+            ));
+        } else {
+            self.actions
+                .record(StorageAction::Sdec(user_token, dec_key, dec_current, delta));
+        }
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        let need_dec_credits = self.tip1060_storage_credits_enabled
+            && SstoreTransitionFlags::from(&dec_sstore).crosses_zero_boundary();
+        if need_dec_credits {
+            drop(account);
+            sstore_storage_credits(self, user_token, Some(dec_key), &dec_sstore)?;
+            self.gas_tracker.deduct_gas(
+                self.version
+                    .gas_params
+                    .sstore_dynamic_gas(true, &dec_sstore),
+            )?;
+            self.gas_tracker
+                .deduct_state_gas(self.version.gas_params.sstore_state_gas(&dec_sstore))?;
+            if is_t4 {
+                self.gas_tracker
+                    .record_refund(self.version.gas_params.sstore_refund(true, &dec_sstore));
+            }
+            self.sdelta_inner(user_token, inc_key, delta, true)?;
+            return Ok(None);
+        }
+        self.gas_tracker.deduct_gas(
+            self.version
+                .gas_params
+                .sstore_dynamic_gas(true, &dec_sstore),
+        )?;
+        self.gas_tracker
+            .deduct_state_gas(self.version.gas_params.sstore_state_gas(&dec_sstore))?;
+        if is_t4 {
+            self.gas_tracker
+                .record_refund(self.version.gas_params.sstore_refund(true, &dec_sstore));
+        }
+
+        // sinc(inc_key, delta) on the same AccountHandle
+        let skip_cold_inc = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let (inc_current, inc_value, inc_sstore) = {
+            let storage = account.storage();
+            let (mut slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(inc_key, skip_cold_inc)?
+            } else {
+                (storage.into_slot_with_skip(inc_key, skip_cold_inc)?, false)
+            };
+            let current = slot.current();
+            if !is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+            if is_cold || self.cold_pricing {
+                self.gas_tracker.deduct_gas(cold_additional)?;
+            }
+            let value = current
+                .checked_add(delta)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            if is_t12 && self.gas_tracker.remaining() <= call_stipend {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            if is_t4 {
+                self.gas_tracker.deduct_gas(sstore_static)?;
+            }
+            let (original_value, present_value) = slot.write(value);
+            (
+                current,
+                value,
+                SStore {
+                    original_value,
+                    present_value,
+                    new_value: value,
+                    is_cold: false,
+                    _non_exhaustive: (),
+                },
+            )
+        };
+        drop(account);
+        let inc_zero_boundary = inc_current.is_zero() && !inc_value.is_zero();
+        if inc_zero_boundary {
+            self.actions
+                .record(StorageAction::Sload(user_token, inc_key, inc_current));
+            self.actions.record(StorageAction::Sstore(
+                user_token,
+                inc_key,
+                inc_current,
+                inc_value,
+            ));
+        } else {
+            self.actions
+                .record(StorageAction::Sinc(user_token, inc_key, inc_current, delta));
+        }
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        if self.tip1060_storage_credits_enabled
+            && SstoreTransitionFlags::from(&inc_sstore).crosses_zero_boundary()
+        {
+            sstore_storage_credits(self, user_token, Some(inc_key), &inc_sstore)?;
+        }
+        self.gas_tracker.deduct_gas(
+            self.version
+                .gas_params
+                .sstore_dynamic_gas(true, &inc_sstore),
+        )?;
+        self.gas_tracker
+            .deduct_state_gas(self.version.gas_params.sstore_state_gas(&inc_sstore))?;
+        if is_t4 {
+            self.gas_tracker
+                .record_refund(self.version.gas_params.sstore_refund(true, &inc_sstore));
+        }
+        Ok(None)
+    }
+
+    /// Single-account batched post-tx fee collection on `TIP_FEE_MANAGER_ADDRESS`.
+    /// Reads `validator_token_slot` and, if `validator_token == fee_token` (no swap needed),
+    /// immediately increments `collected_fees_slot(validator_token)` on the same `AccountHandle`.
+    /// Returns `Ok(Ok(amount))` when completed in-place, or `Ok(Err(validator_token))` when a
+    /// cross-token swap is required.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fee_post_tx_collect_fast(
+        &mut self,
+        fee_manager_addr: Address,
+        validator_token_slot: U256,
+        fee_token: Address,
+        default_fee_token: Address,
+        actual_spending: U256,
+        collected_fees_slot: impl FnOnce(Address) -> U256,
+    ) -> Result<Result<U256, Address>, TempoPrecompileError> {
+        let is_t4 = self.spec.is_t4();
+        let is_t12 = self.spec.is_t12();
+        let is_t15 = self.spec.is_t15();
+        let eip2929 = self.version.feature(EvmFeatures::EIP2929);
+        let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let cold_additional = self
+            .version
+            .gas_params
+            .get(GasId::ColdStorageAdditionalCost);
+        let sstore_static = self.version.gas_params.get(GasId::SstoreStatic);
+        let call_stipend = self.version.gas_params.get(GasId::CallStipend);
+
+        let skip_cold = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&fee_manager_addr, skip_cold && is_t15)?;
+        account.warm();
+        let (val_word, is_cold) = {
+            let storage = account.storage();
+            let (slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(validator_token_slot, skip_cold)?
+            } else {
+                (
+                    storage.into_slot_with_skip(validator_token_slot, skip_cold)?,
+                    false,
+                )
+            };
+            (slot.current(), is_cold)
+        };
+        self.actions.record(StorageAction::Sload(
+            fee_manager_addr,
+            validator_token_slot,
+            val_word,
+        ));
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+        }
+        if is_cold || self.cold_pricing {
+            self.gas_tracker.deduct_gas(cold_additional)?;
+        }
+        let validator_token = {
+            let addr = Address::from_word(val_word.into());
+            if addr.is_zero() {
+                default_fee_token
+            } else {
+                addr
+            }
+        };
+        if validator_token != fee_token {
+            return Ok(Err(validator_token));
+        }
+        if actual_spending.is_zero() {
+            return Ok(Ok(U256::ZERO));
+        }
+        if self.is_static {
+            return Err(TempoPrecompileError::StaticCallNotAllowed);
+        }
+        let fees_key = collected_fees_slot(validator_token);
+        let skip_cold_inc = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let (inc_current, inc_value, inc_sstore) = {
+            let storage = account.storage();
+            let (mut slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(fees_key, skip_cold_inc)?
+            } else {
+                (storage.into_slot_with_skip(fees_key, skip_cold_inc)?, false)
+            };
+            let current = slot.current();
+            if !is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+            if is_cold || self.cold_pricing {
+                self.gas_tracker.deduct_gas(cold_additional)?;
+            }
+            let value = current
+                .checked_add(actual_spending)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            if is_t12 && self.gas_tracker.remaining() <= call_stipend {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            if is_t4 {
+                self.gas_tracker.deduct_gas(sstore_static)?;
+            }
+            let (original_value, present_value) = slot.write(value);
+            (
+                current,
+                value,
+                SStore {
+                    original_value,
+                    present_value,
+                    new_value: value,
+                    is_cold: false,
+                    _non_exhaustive: (),
+                },
+            )
+        };
+        drop(account);
+        let inc_zero_boundary = inc_current.is_zero() && !inc_value.is_zero();
+        if inc_zero_boundary {
+            self.actions.record(StorageAction::Sload(
+                fee_manager_addr,
+                fees_key,
+                inc_current,
+            ));
+            self.actions.record(StorageAction::Sstore(
+                fee_manager_addr,
+                fees_key,
+                inc_current,
+                inc_value,
+            ));
+        } else {
+            self.actions.record(StorageAction::Sinc(
+                fee_manager_addr,
+                fees_key,
+                inc_current,
+                actual_spending,
+            ));
+        }
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        if self.tip1060_storage_credits_enabled
+            && SstoreTransitionFlags::from(&inc_sstore).crosses_zero_boundary()
+        {
+            sstore_storage_credits(self, fee_manager_addr, Some(fees_key), &inc_sstore)?;
+        }
+        self.gas_tracker.deduct_gas(
+            self.version
+                .gas_params
+                .sstore_dynamic_gas(true, &inc_sstore),
+        )?;
+        self.gas_tracker
+            .deduct_state_gas(self.version.gas_params.sstore_state_gas(&inc_sstore))?;
+        if is_t4 {
+            self.gas_tracker
+                .record_refund(self.version.gas_params.sstore_refund(true, &inc_sstore));
+        }
+        Ok(Ok(actual_spending))
+    }
+
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;

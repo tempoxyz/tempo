@@ -1484,6 +1484,152 @@ impl TIP20Token {
                 alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD),
             )));
         }
+        if calldata.len() == 100
+            && calldata[..4] == ITIP20::transferFromCall::SELECTOR
+            && calldata[4..16] == [0u8; 12]
+            && calldata[36..48] == [0u8; 12]
+        {
+            let from = Address::from_slice(&calldata[16..36]);
+            let to = Address::from_slice(&calldata[48..68]);
+            if !to.is_zero()
+                && !to.is_tip20()
+                && to != RECEIVE_POLICY_GUARD_ADDRESS
+                && to.decode_virtual().is_none()
+                && !(spec.is_t15() && ZoneDepositAddress::is_reserved(&to))
+            {
+                if crate::input_cost(spec, calldata.len())
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                let (initialized, paused) =
+                    match storage.tip20_init_and_paused(address, slots::PAUSED) {
+                        Ok(v) => v,
+                        Err(e) => return Some(e.into_precompile_result()),
+                    };
+                if !initialized {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    );
+                }
+                if paused {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::contract_paused())
+                            .into_precompile_result(),
+                    );
+                }
+                let policy_id = match Self::transfer_policy_id_on_provider(storage, address) {
+                    Ok(id) => id,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                let amount = U256::from_be_slice(&calldata[68..100]);
+                if policy_id != ALLOW_ALL_POLICY_ID {
+                    let res = StorageCtx::enter(storage, || -> Result<()> {
+                        let registry = TIP403Registry::new();
+                        for &(user, role) in
+                            &[(from, AuthRole::sender()), (to, AuthRole::recipient())]
+                        {
+                            if !registry.is_authorized_as(policy_id, user, role)? {
+                                return Err(TIP20Error::policy_forbids().into());
+                            }
+                        }
+                        Ok(())
+                    });
+                    if let Err(err) = res {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                let allowance_slot = caller.mapping_slot(from.mapping_slot(slots::ALLOWANCES));
+                let allowed = match storage.sload_direct(address, allowance_slot) {
+                    Ok(v) => v,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                if amount > allowed {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::insufficient_allowance())
+                            .into_precompile_result(),
+                    );
+                }
+                if allowed != U256::MAX {
+                    let new_allowance = allowed - amount;
+                    if let Err(err) = storage.sstore_direct(address, allowance_slot, new_allowance)
+                    {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                let rp_slot = to.mapping_slot(crate::tip403_registry::slots::RECEIVE_POLICIES);
+                let rp_raw = match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, rp_slot) {
+                    Ok(v) => v,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                if !rp_raw.is_zero() {
+                    storage.set_frame(Frame {
+                        address,
+                        depth: frame_depth,
+                        nested_calls: nested_calls.clone(),
+                    });
+                    let res = StorageCtx::enter(storage, || -> Result<bool> {
+                        if let Some((reason, recovery)) =
+                            TIP403Registry::check_receive_policy_from_raw(
+                                address, from, to, rp_raw,
+                            )?
+                        {
+                            let mut token = Self::from_address_unchecked(address);
+                            token.block_inbound_transfer(
+                                from,
+                                &Recipient::direct(to),
+                                amount,
+                                None,
+                                B256::ZERO,
+                                reason,
+                                recovery,
+                            )?;
+                            return Ok(true);
+                        }
+                        Ok(false)
+                    });
+                    match res {
+                        Ok(true) => {
+                            return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                                alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD),
+                            )));
+                        }
+                        Ok(false) => {}
+                        Err(err) => return Some(err.into_precompile_result()),
+                    }
+                }
+                let from_slot = storage
+                    .evm_ext()
+                    .resolved_fee_balance_slot(from)
+                    .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(from));
+                let to_slot = to.mapping_slot(slots::BALANCES);
+                if let Err(err) = storage.sdelta_pair(address, from_slot, to_slot, amount) {
+                    let mapped: TempoPrecompileError = match err {
+                        TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                            TIP20Error::insufficient_balance(current, amount, address).into()
+                        }
+                        e if e == TempoPrecompileError::under_overflow() => {
+                            TIP20Error::supply_cap_exceeded().into()
+                        }
+                        e => e,
+                    };
+                    return Some(mapped.into_precompile_result());
+                }
+                if let Err(err) = storage.emit_event_direct(
+                    address,
+                    alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                        from, to, amount,
+                    )),
+                ) {
+                    return Some(err.into_precompile_result());
+                }
+                return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                    alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD),
+                )));
+            }
+        }
         None
     }
 

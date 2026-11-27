@@ -4,9 +4,9 @@ mod config;
 pub(crate) mod configurable_account;
 
 pub use self::config::{
-    TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
-    TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
-    tempo_tx_registry,
+    FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
+    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, build_tempo_evm, tempo_execution_config,
+    tempo_opcode_config, tempo_tx_registry,
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{

@@ -59,11 +59,46 @@ impl ConfigurableRoleSigned<'_> {
 
 /// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
 /// transaction.
+/// Stack-backed list of role accounts (at most 6 per transaction: 2 configurable + 4 root keys).
+struct SmallAccounts {
+    buf: [Address; 8],
+    len: usize,
+}
+
+impl SmallAccounts {
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            buf: [Address::ZERO; 8],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    fn contains(&self, addr: &Address) -> bool {
+        self.buf[..self.len].contains(addr)
+    }
+
+    #[inline]
+    fn push(&mut self, addr: Address) {
+        debug_assert!(self.len < self.buf.len());
+        if self.len < self.buf.len() {
+            self.buf[self.len] = addr;
+            self.len += 1;
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[Address] {
+        &self.buf[..self.len]
+    }
+}
+
 struct ConfigurableRoleCharges {
     extra_gas: u64,
     state_gas: u64,
     /// Configurable role accounts already loaded, in role order.
-    accounts: Vec<Address>,
+    accounts: SmallAccounts,
 }
 
 /// State of one account loaded (and warmed) for authorization checks.
@@ -117,7 +152,13 @@ impl TempoTxEnv {
     ///
     /// `upgradeAccount` may sit anywhere in a batch, but no authorization list may delegate the
     /// account beside it. A key authorization is allowed: it applies before execution either way.
-    pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
+    pub(crate) fn seed_upgrade_authority_on_evm(
+        &self,
+        host: &mut Evm<'_, TempoEvmTypes>,
+    ) -> Result<(), TempoPrecompileError> {
+        use tempo_precompiles::{
+            CONFIGURABLE_ACCOUNT_ADDRESS, configurable_account::slots, storage::FromWord as _,
+        };
         let aa = self.as_aa();
         let eligibility = if match aa {
             None => self
@@ -136,14 +177,42 @@ impl TempoTxEnv {
             // RPC simulation has no owner witness: a registered caller signing without an
             // access key stands in for its own quorum.
             None if matches!(self.execution_context(), ExecutionContext::Simulation)
-                && aa.is_none_or(|aa| aa.signature().as_keychain().is_none())
-                && !StorageCtx.config_commitment(self.caller())?.is_zero() =>
+                && aa.is_none_or(|aa| aa.signature().as_keychain().is_none()) =>
             {
-                self.caller()
+                let has_commitment =
+                    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+                        Ok::<_, TempoPrecompileError>(
+                            !StorageCtx.config_commitment(self.caller())?.is_zero(),
+                        )
+                    })?;
+                if has_commitment {
+                    self.caller()
+                } else {
+                    Address::ZERO
+                }
             }
             None => Address::ZERO,
         };
-        ConfigurableAccount::set_authority_direct(self.caller(), direct, eligibility)
+        let caller_word = self.caller().to_word();
+        let direct_word = direct.to_word();
+        let eligibility_word = alloy_primitives::U256::from(eligibility as u8);
+        let state = host.state_mut();
+        state.tstore(
+            &CONFIGURABLE_ACCOUNT_ADDRESS,
+            &slots::TX_ORIGIN,
+            &caller_word,
+        );
+        state.tstore(
+            &CONFIGURABLE_ACCOUNT_ADDRESS,
+            &slots::DIRECTLY_AUTHORIZED_ACCOUNT,
+            &direct_word,
+        );
+        state.tstore(
+            &CONFIGURABLE_ACCOUNT_ADDRESS,
+            &slots::UPGRADE_ELIGIBILITY,
+            &eligibility_word,
+        );
+        Ok(())
     }
 
     /// Whether the sender signs with a bare primitive key, as every non-AA transaction does.
@@ -183,13 +252,13 @@ pub(crate) fn validate_state(
         None => ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
-            accounts: Vec::new(),
+            accounts: SmallAccounts::new(),
         },
     };
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {
-            extra_gas += granted_key_access_gas(host, aa, spec, &accounts)?;
+            extra_gas += granted_key_access_gas(host, aa, spec, accounts.as_slice())?;
         }
         extra_gas += zone_commitment_reads_gas(host, envelope, spec)?;
     }
@@ -342,7 +411,7 @@ fn validate_configurable_roles(
         }
         .into());
     }
-    let mut accounts = Vec::new();
+    let mut accounts = SmallAccounts::new();
     let mut extra_gas = 0;
     let mut state_gas = 0;
     for role in roles.into_iter().flatten() {
@@ -421,7 +490,7 @@ fn validate_root_keys(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
-    accounts: &mut Vec<Address>,
+    accounts: &mut SmallAccounts,
 ) -> HandlerResult<u64> {
     let caller = envelope.caller();
     let mut extra_gas = 0;

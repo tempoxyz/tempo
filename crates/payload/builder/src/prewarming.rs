@@ -191,6 +191,21 @@ impl BestTransactionsPrewarming {
                 tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
                 let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
+                if !prewarm.parallel {
+                    if let Err(err) = evm.transact(&tx_env).map(|_| ()) {
+                        // Discard actions recorded by the failed transaction before reusing this worker.
+                        evm.ext().actions.clear();
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to prewarm transaction by execution"
+                        );
+                    } else {
+                        trace!(target: "payload_builder", "Prewarmed transaction");
+                    }
+                    return None;
+                }
+
                 let result = match evm.transact(&tx_env).map(|executed| executed.detach()) {
                     Ok(executed) => executed,
                     Err(err) => {
@@ -207,10 +222,6 @@ impl BestTransactionsPrewarming {
                 };
 
                 trace!(target: "payload_builder", "Prewarmed transaction");
-
-                if !prewarm.parallel {
-                    return None;
-                }
 
                 let actions = evm.ext().actions.take_replay()?;
                 let expiring_nonce = tx

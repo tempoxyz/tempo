@@ -108,6 +108,21 @@ pub trait ProtocolFeeManager: Debug + Send + Sync {
         host.ensure_tip20_usd(spec, fee_token, actions)
     }
 
+    /// Validates `fee_token` when `max_fee` is non-zero and loads `fee_payer_balance_slot`.
+    fn validate_and_load_fee_balance(
+        &self,
+        host: &mut Evm<'_, TempoEvmTypes>,
+        fee_token: Address,
+        fee_payer_balance_slot: U256,
+        max_fee: U256,
+        spec: TempoHardfork,
+    ) -> HandlerResult<U256> {
+        if !max_fee.is_zero() {
+            self.validate_fee_token(host, fee_token, spec)?;
+        }
+        Ok(host.sload(fee_token, fee_payer_balance_slot)?)
+    }
+
     /// Resolves the validator token used to receive protocol fees.
     fn get_validator_token(
         &self,
@@ -166,6 +181,49 @@ impl TempoFeeManager {
 }
 
 impl ProtocolFeeManager for TempoFeeManager {
+    fn validate_and_load_fee_balance(
+        &self,
+        host: &mut Evm<'_, TempoEvmTypes>,
+        fee_token: Address,
+        fee_payer_balance_slot: U256,
+        max_fee: U256,
+        spec: TempoHardfork,
+    ) -> HandlerResult<U256> {
+        if max_fee.is_zero() {
+            return Ok(host.sload(fee_token, fee_payer_balance_slot)?);
+        }
+        let (raw_currency, balance) = {
+            let mut account = host.state_mut().account(&fee_token)?;
+            account.warm();
+            let raw_currency = {
+                let mut slot = account
+                    .storage()
+                    .into_slot(tempo_precompiles::tip20::slots::CURRENCY)?;
+                slot.warm();
+                slot.current()
+            };
+            if !crate::common::is_usd_currency_word(raw_currency) {
+                drop(account);
+                self.validate_fee_token(host, fee_token, spec)?;
+                return Ok(host.sload(fee_token, fee_payer_balance_slot)?);
+            }
+            let balance = {
+                let mut slot = account.storage().into_slot(fee_payer_balance_slot)?;
+                slot.warm();
+                slot.current()
+            };
+            (raw_currency, balance)
+        };
+        host.ext()
+            .actions
+            .record(tempo_precompiles::storage::StorageAction::Sload(
+                fee_token,
+                tempo_precompiles::tip20::slots::CURRENCY,
+                raw_currency,
+            ));
+        Ok(balance)
+    }
+
     fn collect_fee_pre_tx(
         &self,
         ctx: ProtocolFeeContext<'_, '_>,
