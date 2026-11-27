@@ -586,6 +586,7 @@ jobs:
           {
             echo "CLOUDSDK_CONFIG=$gcloud_config_dir"
             echo "CLOUDSDK_CORE_PROJECT=$BENCH_GCP_PROJECT_ID"
+            echo "CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=false"
           } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud
