@@ -14,17 +14,19 @@ use tempo_corpus::{
         capture::{Captured, capture},
         shadow::{ReplayOutcome, ShadowReplayer},
     },
-    types::Delta,
+    types::{Delta, Phases},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 
-/// Captures each block of a chain on `canonical` with two transfers, applies `tamper`, and
-/// replays it under `candidate`.
+type Outcomes = Vec<Result<Option<ReplayOutcome>, String>>;
+
+/// Captures each block of a chain on `canonical` with two transfers and, once per tamper, applies
+/// it and replays the block under `candidate`. Returns each tamper's outcomes, in block order.
 async fn replay_captured_blocks(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
-    tamper: fn(&mut Captured),
-) -> eyre::Result<Vec<Result<Option<ReplayOutcome>, String>>> {
+    tampers: &[fn(&mut Captured)],
+) -> eyre::Result<Vec<Outcomes>> {
     reth_tracing::init_test_tracing();
     let mut node = TestNodeBuilder::new()
         .with_schedule(ForkSchedule::DevnetAt(canonical))
@@ -43,27 +45,33 @@ async fn replay_captured_blocks(
     let consensus = TempoConsensus::new(chain_spec);
     let replayer = ShadowReplayer::new(config.clone(), candidate);
     let mut first_tx = 0;
-    let mut outcomes = Vec::new();
+    let mut outcomes = vec![Outcomes::new(); tampers.len()];
     for number in 1..=provider.best_block_number()? {
         let block = provider
             .recovered_block(number.into(), TransactionVariant::NoHash)?
             .expect("the node built the block");
-        let mut captured = capture(
-            &config,
-            &consensus,
-            &provider,
-            |at| {
-                Ok(StateProviderDatabase(
-                    provider
-                        .history_by_block_number(at)?
-                        .into_evm_state_provider(),
-                ))
-            },
-            &block,
-            first_tx,
-        )?;
-        tamper(&mut captured);
-        outcomes.push(replayer.replay(&captured.input, &block, &captured.executed));
+        for (tamper, outcomes) in tampers.iter().zip(&mut outcomes) {
+            let mut captured = capture(
+                &config,
+                &consensus,
+                &provider,
+                |at| {
+                    Ok(StateProviderDatabase(
+                        provider
+                            .history_by_block_number(at)?
+                            .into_evm_state_provider(),
+                    ))
+                },
+                &block,
+                first_tx,
+            )?;
+            tamper(&mut captured);
+            outcomes.push(
+                replayer
+                    .replay(&captured.input, &block, &captured.executed)
+                    .map_err(|error| error.to_string()),
+            );
+        }
         first_tx += block.body().transactions.len() as u64;
     }
     Ok(outcomes)
@@ -72,7 +80,9 @@ async fn replay_captured_blocks(
 #[tokio::test(flavor = "multi_thread")]
 async fn captured_blocks_compare_under_a_candidate() -> eyre::Result<()> {
     // T12's pre-block setup reads only state the canonical block reads too.
-    let outcomes = replay_captured_blocks(TempoHardfork::T11, TempoHardfork::T12, |_| {}).await?;
+    let outcomes = replay_captured_blocks(TempoHardfork::T11, TempoHardfork::T12, &[|_| {}])
+        .await?
+        .remove(0);
     assert!(
         outcomes.iter().all(|outcome| matches!(
             outcome,
@@ -86,7 +96,9 @@ async fn captured_blocks_compare_under_a_candidate() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn candidate_reads_of_uncaptured_state_are_inconclusive() -> eyre::Result<()> {
     // T14's pre-block setup reads the configurable account precompile, which no T13 block reads.
-    let outcomes = replay_captured_blocks(TempoHardfork::T13, TempoHardfork::T14, |_| {}).await?;
+    let outcomes = replay_captured_blocks(TempoHardfork::T13, TempoHardfork::T14, &[|_| {}])
+        .await?
+        .remove(0);
     assert!(
         outcomes
             .iter()
@@ -98,33 +110,45 @@ async fn candidate_reads_of_uncaptured_state_are_inconclusive() -> eyre::Result<
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_canonical_side_that_does_not_reproduce_its_record_fails_replay() -> eyre::Result<()> {
-    let outcomes = replay_captured_blocks(TempoHardfork::T11, TempoHardfork::T12, |captured| {
-        captured.executed.transactions[0].delta = Delta::default();
-    })
+    let outcomes = replay_captured_blocks(
+        TempoHardfork::T11,
+        TempoHardfork::T12,
+        &[
+            |captured| captured.executed.transactions[0].delta = Delta::default(),
+            |captured| {
+                // These blocks' post-block steps change nothing, so record a change they don't make.
+                let change = captured.executed.transactions[0].delta.clone();
+                phases(captured).post = change;
+            },
+            |captured| phases(captured).pre = Delta::default(),
+        ],
+    )
     .await?;
-    let error = |ordinal| {
+    let transaction = |ordinal| {
         Err(format!(
             "canonical transaction {ordinal} differs from its verified record"
         ))
     };
-    assert_eq!(outcomes, [error(0), error(1)]);
-
-    let outcomes = replay_captured_blocks(TempoHardfork::T11, TempoHardfork::T12, |captured| {
-        // These blocks' post-block steps change nothing, so record a change they don't make.
-        let change = captured.executed.transactions[0].delta.clone();
-        let input = Arc::get_mut(&mut captured.input).expect("capture shares no input");
-        input.phases.as_mut().expect("capture records phases").post = change;
-    })
-    .await?;
-    let error = Err("canonical post-block changes differ from their verified record".to_string());
-    assert_eq!(outcomes, [error.clone(), error]);
-
-    let outcomes = replay_captured_blocks(TempoHardfork::T11, TempoHardfork::T12, |captured| {
-        let input = Arc::get_mut(&mut captured.input).expect("capture shares no input");
-        input.phases.as_mut().expect("capture records phases").pre = Delta::default();
-    })
-    .await?;
-    let error = Err("canonical pre-block changes differ from their verified record".to_string());
-    assert_eq!(outcomes, [error.clone(), error]);
+    let phase = |phase| {
+        Err(format!(
+            "canonical {phase}-block changes differ from their verified record"
+        ))
+    };
+    assert_eq!(
+        outcomes,
+        [
+            vec![transaction(0), transaction(1)],
+            vec![phase("post"), phase("post")],
+            vec![phase("pre"), phase("pre")],
+        ]
+    );
     Ok(())
+}
+
+fn phases(captured: &mut Captured) -> &mut Phases {
+    Arc::get_mut(&mut captured.input)
+        .expect("capture shares no input")
+        .phases
+        .as_mut()
+        .expect("capture records phases")
 }

@@ -33,7 +33,7 @@ use analysis::{Report, StepChanges};
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
 use reth_primitives_traits::RecoveredBlock;
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
@@ -81,18 +81,15 @@ impl ShadowReplayer {
         self.shadow_hardfork
     }
 
-    /// Replays a verified corpus block under the candidate rules, from the pre-state and
-    /// pre- and post-block changes `input` recorded, against `executed`, the block's verified
-    /// canonical execution.
-    /// `None` means the candidate hardfork is already canonical at the block.
-    /// IMPORTANT: An error means the canonical baseline can't be trusted. Callers must treat it as
-    /// fatal.
+    /// Replays a verified corpus block, recorded in `input` and `executed`, under the candidate
+    /// rules. `None` means the candidate hardfork is already canonical at the block. An error
+    /// means the canonical baseline can't be trusted, which callers must treat as fatal.
     pub fn replay(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
         executed: &Executed,
-    ) -> Result<Option<ReplayOutcome>, String> {
+    ) -> eyre::Result<Option<ReplayOutcome>> {
         let canonical = self
             .real_config
             .chain_spec()
@@ -100,9 +97,7 @@ impl ShadowReplayer {
         if canonical >= self.shadow_hardfork {
             return Ok(None);
         }
-        let evidence = self
-            .execute(input, block, executed)
-            .map_err(|e| format!("{e:#}"))?;
+        let evidence = self.execute(input, block, executed)?;
         let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&evidence, &rules, block);
         let outcome = report.outcome(&evidence);
@@ -147,7 +142,7 @@ impl ShadowReplayer {
         let (shadow_pre, shadow_pre_state) =
             match block::run_pre_block(&self.shadow_config, block, &origin) {
                 Ok(pre) => pre,
-                Err(error) => return Ok(evidence.fail(Boundary::PreBlock, &error)),
+                Err(error) => return Ok(evidence.fail(Boundary::PreBlock, error)),
             };
         evidence.pre_block = Some(Arms {
             real: StepChanges::new(&origin, &real_pre)?,
@@ -170,7 +165,7 @@ impl ShadowReplayer {
                 )
             };
             let tx = match run(&self.shadow_config, &shadow) {
-                Err(error) => TxEvidence::Failed(ExecError::new(&error)),
+                Err(error) => TxEvidence::Failed(error),
                 Ok((candidate, _)) if candidate == *record => TxEvidence::Same,
                 Ok((candidate, shadow_actions)) => {
                     let (canonical, real_actions) = run(&self.real_config, &real)?;
@@ -191,14 +186,17 @@ impl ShadowReplayer {
         }
 
         // Post-block changes start from the executor state the last transaction left.
-        let after_txs = |pre_state| {
-            executed
-                .transactions
-                .last()
-                .map_or(Ok(pre_state), |record| block::boundary_state(&record.after))
-        };
-        let real_post =
-            block::run_post_block(&self.real_config, block, &real, after_txs(real_pre_state)?)?;
+        let after_txs = executed
+            .transactions
+            .last()
+            .map(|record| block::boundary_state(&record.after))
+            .transpose()?;
+        let real_post = block::run_post_block(
+            &self.real_config,
+            block,
+            &real,
+            after_txs.unwrap_or(real_pre_state),
+        )?;
         eyre::ensure!(
             real_post == phases.post,
             "canonical post-block changes differ from their verified record"
@@ -207,7 +205,7 @@ impl ShadowReplayer {
             &self.shadow_config,
             block,
             &shadow,
-            after_txs(shadow_pre_state)?,
+            after_txs.unwrap_or(shadow_pre_state),
         ) {
             Ok(shadow_post) => {
                 evidence.post_block = Some(Arms {
@@ -215,7 +213,7 @@ impl ShadowReplayer {
                     shadow: StepChanges::new(&shadow, &shadow_post)?,
                 });
             }
-            Err(error) => evidence = evidence.fail(Boundary::PostBlock, &error),
+            Err(error) => evidence = evidence.fail(Boundary::PostBlock, error),
         }
         Ok(evidence)
     }
@@ -245,9 +243,8 @@ impl ObservedTx {
     fn new(
         before: &View<'_>,
         record: Transaction,
-        actions: Option<Vec<StorageAction>>,
+        actions: Vec<StorageAction>,
     ) -> eyre::Result<Self> {
-        let actions = actions.ok_or_eyre("storage actions were not recorded")?;
         let receipt: TempoReceipt = alloy_rlp::decode_exact(&record.receipt)?;
         Ok(Self {
             charged_gas: record.outcome.charged_gas,
@@ -276,40 +273,18 @@ enum TxEvidence {
     /// The candidate's result differs from the canonical one.
     Differs(Box<Arms<ObservedTx>>),
     /// The candidate could not execute the transaction.
-    Failed(ExecError),
+    Failed(eyre::Report),
 }
 
-/// Why the candidate could not complete a boundary.
-#[derive(Debug)]
-enum ExecError {
-    /// Execution read state the corpus did not capture, so the boundary cannot be compared.
-    Uncaptured(String),
-    /// Execution failed.
-    Failed(String),
-}
-
-impl ExecError {
-    fn new(error: &eyre::Report) -> Self {
-        // The database's `Missing` reaches the executor's error wrapped in evm2's `AnyError`.
-        let uncaptured = error.chain().any(|error| {
-            error
-                .downcast_ref::<evm2::AnyError>()
-                .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
-        });
-        if uncaptured {
-            Self::Uncaptured(error.to_string())
-        } else {
-            Self::Failed(error.to_string())
-        }
-    }
-}
-
-impl fmt::Display for ExecError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Uncaptured(error) | Self::Failed(error) => error.fmt(f),
-        }
-    }
+/// Whether execution failed because it read state the corpus did not capture, so the boundary
+/// cannot be compared.
+fn uncaptured(error: &eyre::Report) -> bool {
+    // The database's `Missing` reaches the executor's error wrapped in evm2's `AnyError`.
+    error.chain().any(|error| {
+        error
+            .downcast_ref::<evm2::AnyError>()
+            .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
+    })
 }
 
 /// A logical execution boundary whose committed effects can be compared independently.
@@ -324,7 +299,7 @@ enum Boundary {
 #[derive(Debug)]
 struct Failure {
     boundary: Boundary,
-    error: ExecError,
+    error: eyre::Report,
 }
 
 /// Both arms' evidence at each compared boundary, in order.
@@ -339,11 +314,8 @@ struct Evidence {
 }
 
 impl Evidence {
-    fn fail(mut self, boundary: Boundary, error: &eyre::Report) -> Self {
-        self.failure = Some(Failure {
-            boundary,
-            error: ExecError::new(error),
-        });
+    fn fail(mut self, boundary: Boundary, error: eyre::Report) -> Self {
+        self.failure = Some(Failure { boundary, error });
         self
     }
 }
@@ -401,24 +373,22 @@ mod tests {
     use reth_evm::BlockExecutionError;
     use tempo_precompiles::storage::FeeHook;
 
+    /// An execution error caused by a database error.
+    fn database(error: impl std::error::Error + Send + Sync + 'static) -> eyre::Report {
+        let error = evm2::DatabaseError::new(error, true);
+        BlockExecutionError::other(evm2::AnyError::new(error)).into()
+    }
+
+    /// An execution error from reading an account the corpus did not capture.
+    pub(super) fn missing_account() -> eyre::Report {
+        database(Missing("uncaptured account 0x00".into()))
+    }
+
     #[test]
     fn only_values_the_corpus_lacks_are_uncaptured() {
-        let database = |error: evm2::DatabaseError| {
-            ExecError::new(&BlockExecutionError::other(evm2::AnyError::new(error)).into())
-        };
-        let missing = Missing("uncaptured account 0x00".into());
-        assert!(matches!(
-            database(evm2::DatabaseError::new(missing, true)),
-            ExecError::Uncaptured(_)
-        ));
-        assert!(matches!(
-            database(evm2::DatabaseError::new(fmt::Error, true)),
-            ExecError::Failed(_)
-        ));
-        assert!(matches!(
-            ExecError::new(&eyre::eyre!("uncaptured account 0x00")),
-            ExecError::Failed(_)
-        ));
+        assert!(uncaptured(&missing_account()));
+        assert!(!uncaptured(&database(std::fmt::Error)));
+        assert!(!uncaptured(&eyre::eyre!("uncaptured account 0x00")));
     }
 
     #[test]

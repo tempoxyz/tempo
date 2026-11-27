@@ -2,6 +2,7 @@
 
 use alloy_consensus::BlockHeader as _;
 use clap::{Parser, Subcommand};
+use eyre::WrapErr as _;
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
@@ -213,9 +214,10 @@ impl ReplayCommand {
             None => None,
         };
         let (config, consensus) = components(self.chain);
-        let shadow = self
-            .shadow
-            .map(|hardfork| Shadow::new(config.clone(), hardfork));
+        let shadow = self.shadow.map(|hardfork| Shadow {
+            replayer: ShadowReplayer::new(config.clone(), hardfork),
+            counts: Default::default(),
+        });
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
@@ -250,55 +252,35 @@ impl ReplayCommand {
 /// Shadow replays verified corpus blocks under a candidate hardfork and counts their outcomes.
 struct Shadow {
     replayer: ShadowReplayer,
-    matched: AtomicU64,
-    expected: AtomicU64,
-    inconclusive: AtomicU64,
-    findings: AtomicU64,
-    skipped: AtomicU64,
+    /// Blocks matched, expected, inconclusive, with findings and skipped.
+    counts: [AtomicU64; 5],
 }
 
 impl Shadow {
-    fn new(config: TempoEvmConfig, hardfork: TempoHardfork) -> Self {
-        Self {
-            replayer: ShadowReplayer::new(config, hardfork),
-            matched: Default::default(),
-            expected: Default::default(),
-            inconclusive: Default::default(),
-            findings: Default::default(),
-            skipped: Default::default(),
-        }
-    }
-
     fn check(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
         executed: &Executed,
     ) -> eyre::Result<()> {
-        let counter = match self
+        let outcome = self
             .replayer
             .replay(input, block, executed)
-            .map_err(|err| eyre::eyre!("shadow replay failed at block {}: {err}", block.number()))?
-        {
-            None => &self.skipped,
-            Some(ReplayOutcome::Match) => &self.matched,
-            Some(ReplayOutcome::Expected) => &self.expected,
-            Some(ReplayOutcome::Inconclusive) => &self.inconclusive,
-            Some(ReplayOutcome::Findings) => &self.findings,
+            .wrap_err_with(|| format!("shadow replay failed at block {}", block.number()))?;
+        let index = match outcome {
+            Some(ReplayOutcome::Match) => 0,
+            Some(ReplayOutcome::Expected) => 1,
+            Some(ReplayOutcome::Inconclusive) => 2,
+            Some(ReplayOutcome::Findings) => 3,
+            None => 4,
         };
-        counter.fetch_add(1, Ordering::Relaxed);
+        self.counts[index].fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     fn finish(self, fail_on_findings: bool) -> eyre::Result<()> {
-        let [matched, expected, inconclusive, findings, skipped] = [
-            self.matched,
-            self.expected,
-            self.inconclusive,
-            self.findings,
-            self.skipped,
-        ]
-        .map(AtomicU64::into_inner);
+        let [matched, expected, inconclusive, findings, skipped] =
+            self.counts.map(AtomicU64::into_inner);
         info!(
             blocks = matched + expected + inconclusive + findings + skipped,
             hardfork = %self.replayer.shadow_hardfork(),

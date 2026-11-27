@@ -1,9 +1,10 @@
 //! Classify independent boundary differences before formatting bounded samples.
 
 use super::{
-    Arms, Boundary, Evidence, ExecError, ReplayOutcome, TxEvidence,
+    Arms, Boundary, Evidence, ReplayOutcome, TxEvidence,
     expectations::{Context, Expectation},
     fees::fee_wrote,
+    uncaptured,
 };
 use crate::{exec::db::View, types::Delta};
 use alloy_consensus::BlockHeader as _;
@@ -34,7 +35,7 @@ impl Report {
             || evidence
                 .failure
                 .as_ref()
-                .is_some_and(|failure| matches!(failure.error, ExecError::Failed(_)))
+                .is_some_and(|failure| !uncaptured(&failure.error))
         {
             ReplayOutcome::Findings
         } else if self.boundaries_not_evaluated > 0 {
@@ -84,8 +85,8 @@ impl Report {
                     diff.record_values("receipt_logs", real_logs, shadow_logs);
                     report.record_state_diffs(&ctx, &real.changes, &shadow.changes, rules);
                 }
-                TxEvidence::Failed(ExecError::Uncaptured(_)) => continue,
-                TxEvidence::Failed(ExecError::Failed(error)) => report.record(
+                TxEvidence::Failed(error) if uncaptured(error) => continue,
+                TxEvidence::Failed(error) => report.record(
                     &ctx,
                     Field {
                         name: "execution",
@@ -93,8 +94,8 @@ impl Report {
                         slot: None,
                         fee_associated: false,
                     },
-                    Ok::<(), &str>(()),
-                    Err(error.as_str()),
+                    Ok(()),
+                    Err(error.to_string()),
                     &[],
                 ),
             }

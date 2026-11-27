@@ -220,8 +220,9 @@ pub(crate) fn between(
 mod tests {
     use super::{
         super::{
-            Block, ExecError, Failure, RecoveredBlock, ReplayOutcome,
+            Block, Failure, RecoveredBlock, ReplayOutcome,
             analysis::{AccountChange, MAX_SAMPLES, Report, StepChanges},
+            tests::missing_account,
         },
         *,
     };
@@ -578,9 +579,8 @@ mod tests {
 
     #[test]
     fn uncaptured_shadow_reads_are_inconclusive() {
-        let uncaptured = || ExecError::Uncaptured("uncaptured account 0x00".into());
         let mut evidence = evidence(2);
-        evidence.txs[0] = TxEvidence::Failed(uncaptured());
+        evidence.txs[0] = TxEvidence::Failed(missing_account());
         let report = Report::analyze(&evidence, &[], &block(2));
         assert_eq!(report.unexplained, 0);
         assert_eq!(report.outcome(&evidence), ReplayOutcome::Inconclusive);
@@ -588,7 +588,7 @@ mod tests {
         let evidence = Evidence {
             failure: Some(Failure {
                 boundary: Boundary::PreBlock,
-                error: uncaptured(),
+                error: missing_account(),
             }),
             ..Default::default()
         };
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
         let mut evidence = evidence(2);
-        evidence.txs[0] = TxEvidence::Failed(ExecError::Failed("rejected".into()));
+        evidence.txs[0] = TxEvidence::Failed(eyre::eyre!("rejected"));
         differs(&mut evidence, 1, [21_000, 21_000]).shadow.outcome = (1, "Revert".into());
 
         let report = Report::analyze(&evidence, &[], &block(2));

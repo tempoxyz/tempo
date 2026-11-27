@@ -40,10 +40,9 @@ pub struct Executed {
     pub gas: u64,
 }
 
-pub(crate) type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
-/// Installs a state hook on `executor` that collects its committed updates.
-pub(crate) fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
+fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
     let updates = Updates::default();
     let sink = updates.clone();
     eyre::ensure!(
@@ -53,7 +52,7 @@ pub(crate) fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Upda
     Ok(updates)
 }
 
-pub(crate) fn drain(updates: &Updates) -> Vec<StateUpdate> {
+fn drain(updates: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *updates.lock())
 }
 
@@ -218,9 +217,9 @@ where
 }
 
 /// Executes one transaction alone: a fresh executor over `view` (the state before it),
-/// restored from its `before` boundary, without pre-execution changes. Returns its record and,
-/// with `record_actions`, the storage actions it recorded; the caller applies its delta to carry
-/// the state forward.
+/// restored from its `before` boundary, without pre-execution changes. Returns its record and the
+/// storage actions it recorded, none without `record_actions`; the caller applies its delta to
+/// carry the state forward.
 pub fn run_standalone(
     config: &TempoEvmConfig,
     block: &RecoveredBlock<Block>,
@@ -229,7 +228,7 @@ pub fn run_standalone(
     index: usize,
     before: &[u8],
     record_actions: bool,
-) -> eyre::Result<(Transaction, Option<Vec<StorageAction>>)> {
+) -> eyre::Result<(Transaction, Vec<StorageAction>)> {
     let mut executor = executor(config, view, block, record_actions)?;
     executor.with_executor_state(boundary_state(before)?);
     let updates = hooked(&mut executor)?;
@@ -238,7 +237,7 @@ pub fn run_standalone(
         .nth(index)
         .ok_or_eyre("transaction index out of range")?;
     let mut record = transact(&mut executor, tx, ordinal, index, before.to_vec())?;
-    let actions = executor.evm().ext().actions.take();
+    let actions = executor.evm().ext().actions.take().unwrap_or_default();
     let state = executor.into_state();
     record.delta = delta(drain(&updates), &contracts(&state))?;
     Ok((record, actions))
