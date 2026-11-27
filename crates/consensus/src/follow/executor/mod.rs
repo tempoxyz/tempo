@@ -134,6 +134,7 @@ where
         let database = self
             .database_provider_ro()
             .wrap_err("failed opening a read-only database provider")?;
+
         let frontier = database
             .get_stage_checkpoint(StageId::Finish)
             .wrap_err("failed reading the finish stage checkpoint")?
@@ -144,12 +145,14 @@ where
                     .unwrap_or(checkpoint.block_number)
             });
         let height = frontier.min(height);
+
         let hash = database
             .block_hash(height)
             .wrap_err_with(|| {
                 format!("failed reading the database block hash at height `{height}`")
             })?
             .ok_or_eyre("the database has no block below the partial state-trie frontier")?;
+
         Ok(BlockNumHash::new(height, hash))
     }
 

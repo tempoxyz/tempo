@@ -257,14 +257,17 @@ where
         let Some((highest, _)) = self.pending_acknowledgements.last_key_value() else {
             return Ok(());
         };
+
         let durable = self
             .execution_provider
             .durable_block_at_or_below(highest.get())
             .wrap_err("failed reading the execution layer's durable block")?;
         let height = Height::new(durable.number);
+
         let Some((digest, _)) = self.pending_acknowledgements.get(&height) else {
             return Ok(());
         };
+
         if digest.0 != durable.hash {
             debug!(
                 durable.height = durable.number,
@@ -273,12 +276,15 @@ where
                 "durable block conflicts with the finalized block at its height; \
                 waiting for the execution layer to unwind it",
             );
+
             return Ok(());
         }
+
         let pending = self.pending_acknowledgements.split_off(&height.next());
         for (_, (_, ack)) in std::mem::replace(&mut self.pending_acknowledgements, pending) {
             ack.acknowledge();
         }
+
         Ok(())
     }
 
