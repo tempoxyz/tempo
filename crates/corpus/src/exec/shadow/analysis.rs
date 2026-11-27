@@ -109,8 +109,8 @@ impl Report {
             report.boundaries_evaluated += 1;
         }
         // Every transaction plus the pre- and post-block boundaries.
-        let total = block.body().transactions.len() + 2;
-        report.boundaries_not_evaluated = total - report.boundaries_evaluated;
+        report.boundaries_not_evaluated =
+            block.body().transactions.len() + 2 - report.boundaries_evaluated;
         report
     }
 
@@ -132,19 +132,13 @@ impl Report {
             field.fee_associated = fee_wrote(&arms.real.actions, address, slot)
                 || fee_wrote(&arms.shadow.actions, address, slot);
         }
-        let accepted = rules
+        let rule_id = rules
             .iter()
             .find_map(|rule| rule.accepts(ctx, &field).then_some(rule.id));
-        let rule_id = match accepted {
-            Some(id) => {
-                *self.expected.entry(id).or_default() += 1;
-                Some(id)
-            }
-            None => {
-                self.unexplained += 1;
-                None
-            }
-        };
+        match rule_id {
+            Some(id) => *self.expected.entry(id).or_default() += 1,
+            None => self.unexplained += 1,
+        }
         // Rank by metadata before formatting: only retained samples allocate strings.
         let key = (rule_id.is_some(), ctx.boundary, field);
         let index = self.samples.partition_point(|(boundary, diff, rule)| {

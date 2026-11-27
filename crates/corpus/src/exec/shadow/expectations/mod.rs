@@ -403,43 +403,27 @@ mod tests {
             )
         };
         let real = StepChanges::default;
+        let t15 = &rule("t15.zone-runtime-upgrade");
         assert!(accepts_pre_block(t13, &verifier, real(), upgraded()));
         // T14 and T15 leave the verifier on its T13 runtime.
         assert!(!accepts_pre_block(t14, &verifier, real(), upgraded()));
-        assert!(!accepts_pre_block(
-            &rule("t15.zone-runtime-upgrade"),
-            &verifier,
-            real(),
-            upgraded()
-        ));
-    }
+        assert!(!accepts_pre_block(t15, &verifier, real(), upgraded()));
 
-    #[test]
-    fn accepts_t15_portal_upgrade_from_any_earlier_runtime() {
-        let address = ZONE_PORTAL_IMPL_ADDRESS;
-        let code = Field {
-            name: "code",
-            address: Some(address),
-            slot: None,
-            fee_associated: false,
-        };
-        let t15 = rule("t15.zone-runtime-upgrade");
-        let accepts = |before: &Bytes, after: &Bytes| {
+        let upgrades = |before: &Bytes, after: &Bytes| {
             let before = AccountInfo {
                 code_hash: keccak256(before),
                 ..Default::default()
             };
-            let shadow = changes(address, code_change(Some(before), keccak256(after)));
-            accepts_pre_block(&t15, &code, StepChanges::default(), shadow)
+            accepts_pre_block(t15, &code, real(), step(Some(before), keccak256(after)))
         };
         for before in [
             ZONE_PORTAL_RUNTIME,
             T13_ZONE_PORTAL_RUNTIME,
             T14_ZONE_PORTAL_RUNTIME,
         ] {
-            assert!(accepts(&before, &T15_ZONE_PORTAL_RUNTIME));
+            assert!(upgrades(&before, &T15_ZONE_PORTAL_RUNTIME));
         }
-        assert!(!accepts(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME));
+        assert!(!upgrades(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME));
     }
 
     #[test]
