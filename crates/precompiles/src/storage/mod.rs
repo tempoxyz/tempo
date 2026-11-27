@@ -4,7 +4,7 @@
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
 pub mod actions;
-pub use actions::{StorageAction, StorageActions};
+pub use actions::{FeeHook, StorageAction, StorageActions};
 
 pub mod evm;
 pub use evm::SstoreTransitionFlags;

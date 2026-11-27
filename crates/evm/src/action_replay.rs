@@ -185,6 +185,7 @@ impl TempoBlockExecutor<'_> {
                         .map_err(|_| StorageActionReplayError::ActionConflict)?;
                     self.replay_state.sstore(action.address(), key, value)?;
                 }
+                StorageAction::Marker(_) => {}
                 StorageAction::FeeAmmLiquidityCheck(
                     key,
                     sload_value,
