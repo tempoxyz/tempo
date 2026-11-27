@@ -10,7 +10,10 @@ pub mod token;
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy::consensus::Transaction;
 use alloy_eips::BlockId;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{
+    Address, B256,
+    map::{HashMap, HashSet},
+};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
@@ -23,7 +26,7 @@ use reth_primitives_traits::{
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcBlock, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
-use std::{fmt::Debug, marker::PhantomData, sync::Arc};
+use std::{borrow::Cow, fmt::Debug, marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
@@ -605,17 +608,39 @@ where
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
+        self.convert(receipts, None)
+    }
+
+    fn convert_receipts_with_block(
+        &self,
+        receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
+        block: &RecoveredBlock<tempo_primitives::Block>,
+    ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
+        self.convert(receipts, Some(block))
+    }
+}
+
+impl<Provider, ChainSpec> TempoReceiptConverter<Provider, ChainSpec>
+where
+    Provider: BlockReader<Block = tempo_primitives::Block> + StateProviderFactory,
+    ChainSpec: EthChainSpec + 'static,
+{
+    /// Converts `receipts`, all from one block, which is `block` when the caller has it.
+    fn convert(
+        &self,
+        receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
+        block: Option<&RecoveredBlock<tempo_primitives::Block>>,
+    ) -> Result<Vec<TempoTransactionReceipt>, EthApiError> {
+        let lane_creates = self.lane_create_addresses(&receipts, block)?;
         let receipt_context = receipts
             .iter()
-            .map(|r| (r.tx, r.meta, r.receipt.success))
+            .map(|r| (r.tx, r.meta.index))
             .collect::<Vec<_>>();
-        // All receipts are from the same block, so its data is loaded at most once.
-        let mut lane_creates = None;
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
             .zip(receipt_context)
-            .map(|(inner, (tx, meta, success))| {
+            .map(|(inner, (tx, index))| {
                 let mut receipt = TempoTransactionReceipt {
                     inner,
                     fee_token: None,
@@ -629,23 +654,8 @@ where
                 // for a 2D or expiring nonce transaction is its lane nonce. The contract is
                 // deployed at the sender's account nonce instead, so report that address when
                 // it can be determined from the block, and no address otherwise.
-                if receipt.inner.contract_address.is_some()
-                    && tx.nonce_key().is_some_and(|key| !key.is_zero())
-                {
-                    receipt.inner.contract_address = if success {
-                        if lane_creates.is_none() {
-                            lane_creates =
-                                Some(LaneCreates::load(&self.provider, meta.block_hash)?);
-                        }
-                        lane_creates
-                            .as_ref()
-                            .and_then(Option::as_ref)
-                            .map(|lane_creates| lane_creates.address(meta.index, tx.signer()))
-                            .transpose()?
-                            .flatten()
-                    } else {
-                        None
-                    };
+                if receipt.inner.contract_address.is_some() && is_lane(tx.nonce_key()) {
+                    receipt.inner.contract_address = lane_creates.get(&index).copied();
                 }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
@@ -661,121 +671,102 @@ where
             })
             .collect()
     }
-}
 
-/// Block data for finding the addresses of the 2D and expiring nonce CREATEs in one block.
-struct LaneCreates {
-    block: RecoveredBlock<tempo_primitives::Block>,
-    receipts: Vec<TempoReceipt>,
-    /// State before the block.
-    parent_state: StateProviderBox,
-    /// State after the block.
-    state: StateProviderBox,
-}
+    /// Returns the addresses of the successful 2D and expiring nonce CREATEs among `receipts`,
+    /// by transaction index, for those whose address the block determines.
+    ///
+    /// Every protocol nonce transaction of a sender bumps its account nonce once, and so does every
+    /// lane CREATE that succeeds: a CREATE may only be a Tempo transaction's first call, and a
+    /// failed lane transaction rolls the bump back. Other lane transactions leave it alone. Walking
+    /// the block from the sender's account nonce before it assigns each successful lane CREATE its
+    /// nonce, accepted only if the walk ends at the account nonce after the block, so any other
+    /// bump, such as an EIP-7702 authorization, leaves the sender's CREATEs without an address. A
+    /// lane CREATE missing from `receipts` is assumed to have succeeded, which the final count
+    /// also checks.
+    ///
+    /// Returns no addresses if the block is not stored, such as a pending block, or its state is
+    /// pruned, not yet synced or gone after a reorg.
+    fn lane_create_addresses(
+        &self,
+        receipts: &[ConvertReceiptInput<'_, TempoPrimitives>],
+        block: Option<&RecoveredBlock<tempo_primitives::Block>>,
+    ) -> Result<HashMap<u64, Address>, ProviderError> {
+        let senders = receipts
+            .iter()
+            .filter(|r| r.receipt.success && r.tx.kind().is_create() && is_lane(r.tx.nonce_key()))
+            .map(|r| r.tx.signer())
+            .collect::<HashSet<_>>();
+        let Some(block_hash) = receipts.first().map(|r| r.meta.block_hash) else {
+            return Ok(HashMap::default());
+        };
+        if senders.is_empty() {
+            return Ok(HashMap::default());
+        }
 
-impl LaneCreates {
-    /// Loads the block `block_hash`, its receipts and the state around it. Returns `None` if the
-    /// block is not stored, such as a pending block, or its state is pruned, not yet synced or gone
-    /// after a reorg.
-    fn load<Provider>(provider: &Provider, block_hash: B256) -> Result<Option<Self>, ProviderError>
-    where
-        Provider: BlockReader<Block = tempo_primitives::Block>
-            + ReceiptProvider<Receipt = TempoReceipt>
-            + StateProviderFactory,
-    {
-        let Some(block) =
-            provider.recovered_block(block_hash.into(), TransactionVariant::NoHash)?
-        else {
-            return Ok(None);
-        };
-        let Some(receipts) = provider.receipts_by_block(block_hash.into())? else {
-            return Ok(None);
-        };
-        let state = |hash| match provider.state_by_block_hash(hash) {
-            Ok(state) => Ok(Some(state)),
-            // The state is pruned, not synced yet, or the block was reorged out since it was read.
+        let result = (|| {
+            let block = match block {
+                Some(block) => Cow::Borrowed(block),
+                None => match self
+                    .provider
+                    .recovered_block(block_hash.into(), TransactionVariant::NoHash)?
+                {
+                    Some(block) => Cow::Owned(block),
+                    None => return Ok(HashMap::default()),
+                },
+            };
+            let parent_state = self
+                .provider
+                .state_by_block_hash(block.header().inner.parent_hash)?;
+            let state = self.provider.state_by_block_hash(block_hash)?;
+            let success = receipts
+                .iter()
+                .map(|r| (r.meta.index, r.receipt.success))
+                .collect::<HashMap<_, _>>();
+
+            let mut addresses = HashMap::default();
+            for sender in senders {
+                let account_nonce = |state: &StateProviderBox| {
+                    Ok::<_, ProviderError>(
+                        state
+                            .basic_account(&sender)?
+                            .map_or(0, |account| account.nonce),
+                    )
+                };
+                let after = account_nonce(&state)?;
+                let mut nonce = account_nonce(&parent_state)?;
+                let mut created = Vec::new();
+                for (index, (signer, tx)) in (0u64..).zip(block.transactions_with_sender()) {
+                    if *signer != sender {
+                        continue;
+                    }
+                    if is_lane(tx.nonce_key()) {
+                        if !tx.kind().is_create() || !success.get(&index).copied().unwrap_or(true) {
+                            continue;
+                        }
+                        created.push((index, sender.create(nonce)));
+                    }
+                    nonce = nonce.saturating_add(1);
+                }
+                if nonce == after {
+                    addresses.extend(created);
+                }
+            }
+            Ok(addresses)
+        })();
+        match result {
             Err(
                 ProviderError::StateAtBlockPruned(_)
                 | ProviderError::StateUnavailableDuringSync
                 | ProviderError::StateForHashNotFound(_),
-            ) => Ok(None),
-            Err(err) => Err(err),
-        };
-        let (Some(parent_state), Some(state)) =
-            (state(block.header().inner.parent_hash)?, state(block_hash)?)
-        else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            block,
-            receipts,
-            parent_state,
-            state,
-        }))
-    }
-
-    /// Returns the address the 2D or expiring nonce CREATE at `index` from `sender` deployed, or
-    /// `None` if it cannot be determined.
-    ///
-    /// Counts the sender's transactions in the block that bump its account nonce and, if they
-    /// account for the whole change, assigns them consecutive nonces in block order.
-    fn address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
-        match self.try_address(index, sender) {
-            Err(
-                ProviderError::StateAtBlockPruned(_) | ProviderError::StateUnavailableDuringSync,
-            ) => Ok(None),
+            ) => Ok(HashMap::default()),
             result => result,
         }
     }
+}
 
-    /// [`Self::address`], failing with [`ProviderError::StateAtBlockPruned`] or
-    /// [`ProviderError::StateUnavailableDuringSync`] if the state it reads is unavailable.
-    fn try_address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
-        let account_nonce = |state: &StateProviderBox| {
-            Ok::<_, ProviderError>(
-                state
-                    .basic_account(&sender)?
-                    .map_or(0, |account| account.nonce),
-            )
-        };
-        let before = account_nonce(&self.parent_state)?;
-        let after = account_nonce(&self.state)?;
-
-        // Each of the sender's protocol nonce transactions and successful lane CREATEs bumps its
-        // account nonce once, in block order: a CREATE may only be a Tempo transaction's first
-        // call, and other lane transactions don't touch the account nonce.
-        let mut bumps = 0u64;
-        let mut target = None;
-        for (position, (signer, tx)) in self.block.transactions_with_sender().enumerate() {
-            if *signer != sender {
-                continue;
-            }
-            let is_lane = tx.nonce_key().is_some_and(|key| !key.is_zero());
-            if is_lane && !tx.kind().is_create() {
-                continue;
-            }
-            if is_lane
-                && !self
-                    .receipts
-                    .get(position)
-                    .is_some_and(|receipt| receipt.success)
-            {
-                // A failed lane CREATE may or may not have used its nonce, depending on the fork.
-                return Ok(None);
-            }
-            if position as u64 == index {
-                target = Some(bumps);
-            }
-            bumps += 1;
-        }
-
-        // Any other bump, such as an EIP-7702 authorization by the sender or a CREATE from its
-        // delegated code, would make the count differ.
-        if after.checked_sub(before) != Some(bumps) {
-            return Ok(None);
-        }
-        Ok(target.map(|offset| sender.create(before + offset)))
-    }
+/// Returns whether a transaction with `nonce_key` uses a 2D or expiring nonce.
+fn is_lane(nonce_key: Option<U256>) -> bool {
+    nonce_key.is_some_and(|key| !key.is_zero())
 }
 
 #[derive(Debug)]
