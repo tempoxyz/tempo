@@ -131,11 +131,7 @@ impl StorageCtx {
             ));
         }
         // SAFETY: Non-null `slot` points to the active stack local in `enter`.
-        let Some(mut ptr) = (unsafe { (*slot).take() }) else {
-            return Err(TempoPrecompileError::Fatal(
-                "No storage context. 'StorageCtx::enter' must be called first".to_string(),
-            ));
-        };
+        let mut ptr = unsafe { (*slot).take() }.expect("StorageCtx already borrowed");
         let _guard = BorrowGuard { slot, ptr };
         // SAFETY: Unique access is guaranteed because the pointer was taken out of `slot`.
         f(unsafe { ptr.as_mut() })
@@ -777,6 +773,18 @@ mod tests {
 
             // Wrong order: committing outer while inner is still active
             outer.commit();
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "StorageCtx already borrowed")]
+    fn test_try_with_storage_reentrancy_panics() {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let _ = StorageCtx.with_account_info(Address::ZERO, |_| {
+                let _ = StorageCtx.sload(Address::ZERO, U256::ZERO);
+                Ok(())
+            });
         });
     }
 

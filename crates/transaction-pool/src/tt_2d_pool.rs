@@ -2678,7 +2678,8 @@ impl Iterator for BestAA2dTransactions {
             0,
             self.by_id
                 .len()
-                .checked_add(self.expiring_nonce_order.len()),
+                .checked_add(self.expiring_nonce_order.len())
+                .and_then(|n| n.checked_add(self.live_expiring_nonce_order.len())),
         )
     }
 }

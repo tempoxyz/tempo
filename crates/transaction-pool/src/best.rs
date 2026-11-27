@@ -4,45 +4,65 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_primitives::{Address, U256};
 use std::{
     collections::HashMap,
-    hash::{BuildHasherDefault, Hasher},
+    hash::{BuildHasher, Hasher, RandomState},
 };
 
-/// Fast hasher for `(token_address, keccak256_slot)` keys: the slot is already a Keccak-256 hash.
-#[derive(Default)]
+/// Randomly seeded fast hasher for `(token_address, storage_slot)` keys.
+#[derive(Clone, Copy)]
+struct SlotKeyBuildHasher(u64);
+
+impl Default for SlotKeyBuildHasher {
+    #[inline]
+    fn default() -> Self {
+        Self(RandomState::new().hash_one(0u64) | 1)
+    }
+}
+
+impl BuildHasher for SlotKeyBuildHasher {
+    type Hasher = SlotKeyHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> Self::Hasher {
+        SlotKeyHasher(self.0)
+    }
+}
+
 struct SlotKeyHasher(u64);
 
 impl Hasher for SlotKeyHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        self.0
+        let mut h = self.0;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51afd7ed558ccd);
+        h ^= h >> 33;
+        h
     }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        // Address is written as 20 bytes; mix its last 8 bytes (unique token ID suffix).
-        if bytes.len() >= 8 {
-            let n = bytes.len();
-            let v = u64::from_ne_bytes([
-                bytes[n - 8],
-                bytes[n - 7],
-                bytes[n - 6],
-                bytes[n - 5],
-                bytes[n - 4],
-                bytes[n - 3],
-                bytes[n - 2],
-                bytes[n - 1],
-            ]);
-            self.0 = self.0.wrapping_mul(0x9e3779b97f4a7c15) ^ v;
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in chunks.by_ref() {
+            let v = u64::from_ne_bytes(chunk.try_into().unwrap());
+            self.0 = (self.0 ^ v).wrapping_mul(0x9e3779b97f4a7c15);
+        }
+        let rem = chunks.remainder();
+        if !rem.is_empty() {
+            let mut tail = 0u64;
+            for &b in rem {
+                tail = (tail << 8) | u64::from(b);
+            }
+            self.0 = (self.0 ^ tail).wrapping_mul(0x9e3779b97f4a7c15);
         }
     }
 
     #[inline]
     fn write_u64(&mut self, i: u64) {
-        self.0 = self.0.wrapping_mul(0x9e3779b97f4a7c15) ^ i;
+        self.0 = (self.0 ^ i).wrapping_mul(0x9e3779b97f4a7c15);
     }
 }
 
-type BalanceMap = HashMap<(Address, U256), U256, BuildHasherDefault<SlotKeyHasher>>;
+type BalanceMap = HashMap<(Address, U256), U256, SlotKeyBuildHasher>;
 pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;

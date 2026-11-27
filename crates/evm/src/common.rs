@@ -177,7 +177,14 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, actions, || {
             let raw = StorageCtx.sload(fee_token, tempo_precompiles::tip20::slots::CURRENCY)?;
-            Ok(is_usd_currency_word(raw))
+            if is_usd_currency_word(raw) {
+                return Ok(true);
+            }
+            if !raw.bit(0) {
+                return Ok(false);
+            }
+            let token = TIP20Token::from_address_unchecked(fee_token);
+            Ok(token.currency.len()? <= 31 && token.currency.read()?.as_str() == "USD")
         })
     }
 
@@ -905,6 +912,35 @@ mod tests {
             StorageActions::disabled(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn test_is_tip20_usd_out_of_line_usd_matches_ensure() {
+        let fee_token = PATH_USD_ADDRESS;
+        let mut db = InMemoryDB::default();
+        // Odd header encoding length 3: (3 * 2) + 1 = 7
+        db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, &U256::from(7));
+        let data_slot = U256::from_be_bytes(
+            alloy_primitives::keccak256(tip20_slots::CURRENCY.to_be_bytes::<32>()).0,
+        );
+        let mut word = [0u8; 32];
+        word[..3].copy_from_slice(b"USD");
+        db.insert_account_storage(&fee_token, &data_slot, &U256::from_be_bytes(word));
+
+        assert!(
+            db.is_tip20_usd(
+                TempoHardfork::Genesis,
+                fee_token,
+                StorageActions::disabled(),
+            )
+            .unwrap()
+        );
+        db.ensure_tip20_usd(
+            TempoHardfork::Genesis,
+            fee_token,
+            StorageActions::disabled(),
+        )
+        .unwrap();
     }
 
     #[test]
