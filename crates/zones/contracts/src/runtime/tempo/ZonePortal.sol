@@ -1339,8 +1339,10 @@ contract ZonePortal is IZonePortal {
         bytes32 ephemeralPubkeyY
     )
         internal
-        pure
+        view
     {
+        // BENCH BASELINE ONLY: also run the MODEXP check so this costs what deposit did before.
+        if (!Secp256k1Lib.isValidX(encrypted.ephemeralPubkeyX)) revert InvalidEphemeralPubkey();
         if (
             !Secp256k1Lib.isCompressedYParity(encrypted.ephemeralPubkeyYParity)
                 || !Secp256k1Lib.isValidPoint(
