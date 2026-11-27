@@ -41,8 +41,20 @@
 //! read again every 30 seconds without a new one. A new peer set is tracked
 //! under the finalized height it was read at when its membership changes;
 //! when only addresses change, the existing set's addresses are overwritten.
+//!
+//! # Address overrides
+//!
+//! [`AddressOverrides`] replace the contract's ingress or egress address of
+//! peers already in the set, on this node only. They let validators reach a
+//! peer whose registered address is wrong while the chain cannot finalize the
+//! transaction that fixes it.
 
-use std::{num::NonZeroU32, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    num::NonZeroU32,
+    sync::Arc,
+};
 
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::PublicKey;
@@ -73,6 +85,19 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     /// The P2P network's maximum peer set size. The network panics on larger
     /// peer sets; a warning is logged past 2/3 of it.
     pub(crate) max_peers: NonZeroU32,
+    /// Addresses that replace peers' contract entries on this node.
+    pub(crate) address_overrides: AddressOverrides,
+}
+
+/// Addresses that replace peers' validator config contract entries on this
+/// node only, keyed by the peer's public key. A public key that is not in the
+/// peer set is ignored; overrides never add peers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddressOverrides {
+    /// Replaces the ingress address this node dials.
+    pub ingress: HashMap<PublicKey, SocketAddr>,
+    /// Replaces the egress IP this node accepts connections from.
+    pub egress: HashMap<PublicKey, IpAddr>,
 }
 
 /// Initializes the actor. It reads no peers until the executor reports a

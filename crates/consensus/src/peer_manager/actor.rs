@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
+    net::SocketAddr,
     num::NonZeroU32,
     pin::Pin,
     sync::Arc,
@@ -11,7 +12,7 @@ use alloy_primitives::B256;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epocher, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
+use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Ingress, Provider};
 use commonware_runtime::{
     Clock, ContextCell, Metrics, Spawner, spawn_cell,
     telemetry::metrics::{Gauge, MetricsExt as _},
@@ -34,7 +35,7 @@ use crate::{
 const HEARTBEAT_UPDATE_INTERVAL: Duration = Duration::from_secs(30);
 
 use super::{
-    ExecutionLayer,
+    AddressOverrides, ExecutionLayer,
     ingress::{Message, MessageWithCause},
 };
 
@@ -50,6 +51,7 @@ where
     /// The latest finalized block reported by the executor.
     latest_finalized: Option<executor::Finalized>,
     max_peers: NonZeroU32,
+    address_overrides: AddressOverrides,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
@@ -72,6 +74,7 @@ where
             execution_node,
             epoch_strategy,
             max_peers,
+            address_overrides,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> Self {
@@ -79,6 +82,13 @@ where
             "peers",
             "how many peers are registered overall for the latest epoch",
         );
+        if address_overrides != AddressOverrides::default() {
+            warn!(
+                ?address_overrides,
+                "overriding validator config contract addresses of peers; remove the \
+                overrides once the contract is fixed",
+            );
+        }
         let context = ContextCell::new(context);
         let peer_update_timer = Box::pin(context.sleep(HEARTBEAT_UPDATE_INTERVAL));
         Self {
@@ -88,6 +98,7 @@ where
             epoch_strategy,
             latest_finalized: None,
             max_peers,
+            address_overrides,
             mailbox,
             peers,
             last_tracked_peers: None,
@@ -188,9 +199,10 @@ where
             format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
         })?;
 
-        let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
+        let mut peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(self.execution_node.as_ref(), finalized.digest.0)
             .wrap_err("failed reading peer set from execution layer")?;
+        peers.apply_overrides(&self.address_overrides);
 
         debug!(
             boundary.height = latest_boundary_header.number(),
@@ -276,6 +288,28 @@ impl Peers {
 
     fn len(&self) -> usize {
         self.primary.len().saturating_add(self.secondary.len())
+    }
+
+    /// Replaces the ingress or egress address of every peer named in
+    /// `overrides`, keeping the contract's value for the side not named.
+    fn apply_overrides(&mut self, overrides: &AddressOverrides) {
+        for (key, address) in self
+            .primary
+            .iter_pairs_mut()
+            .chain(self.secondary.iter_pairs_mut())
+        {
+            let ingress = overrides.ingress.get(key);
+            let egress = overrides.egress.get(key);
+            if ingress.is_none() && egress.is_none() {
+                continue;
+            }
+            *address = Address::Asymmetric {
+                ingress: ingress
+                    .map_or_else(|| address.ingress(), |socket| Ingress::Socket(*socket)),
+                // Commonware only reads the IP of the egress address.
+                egress: egress.map_or_else(|| address.egress(), |ip| SocketAddr::new(*ip, 0)),
+            };
+        }
     }
 
     fn to_flat_map(&self) -> ordered::Map<PublicKey, Address> {
@@ -447,6 +481,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
     };
+    use test_case::test_case;
 
     use super::*;
 
@@ -705,6 +740,7 @@ mod tests {
                 oracle,
                 epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                 max_peers: commonware_utils::NZU32!(128),
+                address_overrides: AddressOverrides::default(),
             },
         )
         .0
@@ -762,6 +798,87 @@ mod tests {
             assert_peer(&tracked[0].1.primary, &peer(2));
             assert_peer(&tracked[0].1.secondary, &peer(1));
         });
+    }
+
+    #[test]
+    fn executor_report_tracks_overridden_addresses() {
+        Runner::default().start(|context| async move {
+            let oracle = RecordingOracle::default();
+            let execution = Arc::new(bootstrap_execution(19, 2));
+            let mut actor = init_at(context, execution.clone(), oracle.clone());
+            let ingress: SocketAddr = "203.0.113.7:8000".parse().unwrap();
+            actor.address_overrides.ingress = HashMap::from([(peer(2).public_key, ingress)]);
+
+            actor
+                .handle_message(Span::none(), finalized(&execution))
+                .await
+                .unwrap();
+
+            let tracked = oracle.tracked.lock().unwrap();
+            assert_eq!(
+                tracked[0].1.primary.get_value(&peer(2).public_key),
+                Some(&Address::Asymmetric {
+                    ingress: Ingress::Socket(ingress),
+                    egress: peer(2).p2p_address.egress(),
+                }),
+            );
+            assert_peer(&tracked[0].1.secondary, &peer(1));
+        });
+    }
+
+    #[test_case(Some("203.0.113.7:8000"), None)]
+    #[test_case(None, Some("198.51.100.9"))]
+    #[test_case(Some("[2001:db8::7]:8000"), Some("198.51.100.9"))]
+    fn overrides_replace_only_the_named_side_of_the_named_peer(
+        ingress: Option<&str>,
+        egress: Option<&str>,
+    ) -> eyre::Result<()> {
+        let execution = execution_with_validators(&[peer(1), peer(2)])?;
+        let outcome = dkg_outcome([peer(1).public_key], [peer(1).public_key])?;
+        let mut peers =
+            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let ingress = ingress.map(str::parse::<SocketAddr>).transpose()?;
+        let egress = egress.map(str::parse::<IpAddr>).transpose()?;
+
+        peers.apply_overrides(&AddressOverrides {
+            ingress: ingress
+                .map(|ingress| (peer(2).public_key, ingress))
+                .into_iter()
+                .collect(),
+            egress: egress
+                .map(|egress| (peer(2).public_key, egress))
+                .into_iter()
+                .collect(),
+        });
+
+        let contract = peer(2).p2p_address;
+        assert_eq!(
+            peers.secondary.get_value(&peer(2).public_key),
+            Some(&Address::Asymmetric {
+                ingress: ingress.map_or_else(|| contract.ingress(), Ingress::Socket),
+                egress: egress.map_or_else(|| contract.egress(), |ip| SocketAddr::new(ip, 0)),
+            }),
+        );
+        assert_peer(&peers.primary, &peer(1));
+        Ok(())
+    }
+
+    #[test]
+    fn overrides_do_not_add_peers() -> eyre::Result<()> {
+        let execution = execution_with_validators(&[peer(1)])?;
+        let outcome = dkg_outcome([peer(1).public_key], [peer(1).public_key])?;
+        let mut peers =
+            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+
+        peers.apply_overrides(&AddressOverrides {
+            ingress: HashMap::from([(peer(2).public_key, "203.0.113.7:8000".parse()?)]),
+            egress: HashMap::from([(peer(2).public_key, "198.51.100.9".parse()?)]),
+        });
+
+        assert_eq!(peers.len(), 1);
+        assert_peer(&peers.primary, &peer(1));
+        assert_no_peer(&peers.secondary, &peer(2));
+        Ok(())
     }
 
     #[test]

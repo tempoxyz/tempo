@@ -5,7 +5,8 @@
 #![allow(clippy::large_unopt_stack_frames)]
 
 use std::{
-    net::SocketAddr,
+    collections::{HashMap, hash_map::Entry},
+    net::{IpAddr, SocketAddr},
     num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
     str::FromStr,
@@ -13,7 +14,9 @@ use std::{
     time::Duration,
 };
 
-use crate::network_identity::NetworkIdentity;
+use crate::{network_identity::NetworkIdentity, peer_manager::AddressOverrides};
+use alloy_primitives::B256;
+use commonware_codec::DecodeExt as _;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
@@ -342,6 +345,26 @@ pub struct Args {
     #[arg(long = "consensus.allow-dns", default_value_t = true)]
     pub allow_dns: bool,
 
+    /// Dial the validator with this ed25519 public key at `IP:PORT` instead
+    /// of the ingress address in the validator config contract. Repeat the
+    /// flag for each validator.
+    ///
+    /// Restores connectivity when a validator's registered address is wrong
+    /// and the chain cannot finalize the transaction that fixes it. Remove
+    /// once the contract is fixed.
+    #[arg(long = "consensus.override-ingress", value_name = "PUBKEY=IP:PORT")]
+    pub override_ingress: Vec<PeerAddressOverride<SocketAddr>>,
+
+    /// Accept connections from the validator with this ed25519 public key
+    /// from `IP` instead of the egress address in the validator config
+    /// contract. Repeat the flag for each validator.
+    ///
+    /// Restores connectivity when a validator's registered address is wrong
+    /// and the chain cannot finalize the transaction that fixes it. Remove
+    /// once the contract is fixed.
+    #[arg(long = "consensus.override-egress", value_name = "PUBKEY=IP")]
+    pub override_egress: Vec<PeerAddressOverride<IpAddr>>,
+
     /// Time into the future that a timestamp can be and still be considered valid.
     #[arg(long = "consensus.synchrony-bound", default_value = "5s")]
     pub synchrony_bound: PositiveDuration,
@@ -526,6 +549,40 @@ impl PositiveDuration {
     }
 }
 
+/// A validator's ed25519 public key and the address that replaces one of its
+/// validator config contract entries, parsed from `PUBKEY=ADDRESS`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerAddressOverride<T> {
+    /// The validator whose address is replaced.
+    pub public_key: PublicKey,
+    /// The address used instead of the contract's.
+    pub address: T,
+}
+
+impl<T> FromStr for PeerAddressOverride<T>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
+    type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (public_key, address) = s.split_once('=').ok_or("expected `PUBKEY=ADDRESS`")?;
+        let public_key = public_key
+            .parse::<B256>()
+            .map_err(|error| format!("public key is not 32 hex bytes: {error}"))?;
+        let public_key = PublicKey::decode(commonware_codec::Copying(public_key.as_slice()))
+            .map_err(|error| format!("public key is not an ed25519 public key: {error}"))?;
+        let address = address
+            .parse()
+            .map_err(|error| format!("invalid address `{address}`: {error}"))?;
+        Ok(Self {
+            public_key,
+            address,
+        })
+    }
+}
+
 impl FromStr for PositiveDuration {
     type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -593,6 +650,15 @@ impl Args {
              `--consensus.wait-to-rebroadcast-nullify` ({wait_to_rebroadcast_nullify:?})",
         );
         Ok(())
+    }
+
+    /// Collects `--consensus.override-ingress` and `--consensus.override-egress`
+    /// by public key. Errors if either flag names a public key twice.
+    pub(crate) fn address_overrides(&self) -> eyre::Result<AddressOverrides> {
+        Ok(AddressOverrides {
+            ingress: collect_overrides("--consensus.override-ingress", &self.override_ingress)?,
+            egress: collect_overrides("--consensus.override-egress", &self.override_egress)?,
+        })
     }
 
     /// Transport settings for `tempo/1`.
@@ -725,12 +791,33 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
     }
 }
 
+fn collect_overrides<T: Copy>(
+    flag: &str,
+    overrides: &[PeerAddressOverride<T>],
+) -> eyre::Result<HashMap<PublicKey, T>> {
+    let mut collected = HashMap::with_capacity(overrides.len());
+    for PeerAddressOverride {
+        public_key,
+        address,
+    } in overrides
+    {
+        match collected.entry(public_key.clone()) {
+            Entry::Occupied(_) => eyre::bail!("`{flag}` names public key `{public_key}` twice"),
+            Entry::Vacant(slot) => {
+                slot.insert(*address);
+            }
+        }
+    }
+    Ok(collected)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
     use clap::{CommandFactory as _, Parser as _};
     use commonware_codec::Encode as _;
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 
     use super::*;
     use reth_ethereum::chainspec::ForkCondition;
@@ -794,6 +881,86 @@ mod tests {
         parse(&["--dev", "--consensus.verification-mode", value])
             .consensus
             .verification_mode
+    }
+
+    fn public_key_hex(seed: u64) -> String {
+        crate::utils::public_key_to_b256(&PrivateKey::from_seed(seed).public_key()).to_string()
+    }
+
+    #[test]
+    fn address_overrides_are_collected_by_public_key() {
+        let ingress = format!("{}=203.0.113.7:8000", public_key_hex(1));
+        let ipv6_ingress = format!("{}=[2001:db8::7]:8000", public_key_hex(2));
+        let egress = format!("{}=198.51.100.9", public_key_hex(1));
+        let overrides = parse(&[
+            "--dev",
+            "--consensus.override-ingress",
+            &ingress,
+            "--consensus.override-ingress",
+            &ipv6_ingress,
+            "--consensus.override-egress",
+            &egress,
+        ])
+        .consensus
+        .address_overrides()
+        .unwrap();
+
+        assert_eq!(
+            overrides.ingress,
+            HashMap::from([
+                (
+                    PrivateKey::from_seed(1).public_key(),
+                    "203.0.113.7:8000".parse().unwrap()
+                ),
+                (
+                    PrivateKey::from_seed(2).public_key(),
+                    "[2001:db8::7]:8000".parse().unwrap()
+                ),
+            ]),
+        );
+        assert_eq!(
+            overrides.egress,
+            HashMap::from([(
+                PrivateKey::from_seed(1).public_key(),
+                "198.51.100.9".parse().unwrap()
+            )]),
+        );
+    }
+
+    #[test]
+    fn address_overrides_reject_a_public_key_named_twice() {
+        let first = format!("{}=203.0.113.7:8000", public_key_hex(1));
+        let second = format!("{}=203.0.113.8:8000", public_key_hex(1));
+        let error = parse(&[
+            "--dev",
+            "--consensus.override-ingress",
+            &first,
+            "--consensus.override-ingress",
+            &second,
+        ])
+        .consensus
+        .address_overrides()
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`--consensus.override-ingress` names public key `{}` twice",
+                PrivateKey::from_seed(1).public_key()
+            ),
+        );
+    }
+
+    #[test_case("203.0.113.7:8000" => "expected `PUBKEY=ADDRESS`")]
+    #[test_case("0x11=203.0.113.7:8000" => "public key is not 32 hex bytes: invalid string length")]
+    #[test_case("0x0202020202020202020202020202020202020202020202020202020202020202=203.0.113.7:8000" => "public key is not an ed25519 public key: Wrapped Error: Context(ed25519)")]
+    #[test_case("SEED1=203.0.113.7" => "invalid address `203.0.113.7`: invalid socket address syntax")]
+    fn peer_address_override_rejects(value: &str) -> String {
+        value
+            .replace("SEED1", &public_key_hex(1))
+            .parse::<PeerAddressOverride<SocketAddr>>()
+            .unwrap_err()
+            .to_string()
     }
 
     #[test]
