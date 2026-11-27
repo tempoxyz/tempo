@@ -110,6 +110,375 @@ where
         self
     }
 
+    /// Installs a precompile call frame in place (used by direct fast paths before rare fallbacks).
+    #[inline]
+    pub(crate) fn set_frame(&mut self, frame: Frame) {
+        self.frame = Some(frame);
+    }
+
+    /// Creates a provider configured for protocol fee execution (unbounded gas, TIP-1060 disabled).
+    #[inline]
+    pub fn new_without_tip1060_accounting(
+        evm: &'evm mut Evm<'db, T>,
+        gas_tracker: &'gas mut GasTracker,
+        spec: TempoHardfork,
+    ) -> Self {
+        let actions = evm.ext().storage_actions();
+        let non_creditable_slots = evm.ext().non_creditable_slots();
+        let mut this = Self::new(evm, gas_tracker, spec, false)
+            .with_actions(actions)
+            .with_non_creditable_slots(non_creditable_slots);
+        this.tip1060_storage_credits_enabled = false;
+        this
+    }
+
+    #[inline]
+    pub(crate) fn evm_ext(&self) -> &T::EvmExt {
+        self.evm.ext()
+    }
+
+    #[inline]
+    pub(crate) fn evm_ext_mut(&mut self) -> &mut T::EvmExt {
+        self.evm.ext_mut()
+    }
+
+    #[inline]
+    pub(crate) fn sload_direct(
+        &mut self,
+        address: Address,
+        key: U256,
+    ) -> Result<U256, TempoPrecompileError> {
+        self.sload_inner(address, key, true)
+    }
+
+    #[inline]
+    pub(crate) fn sstore_direct(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+        self.sstore_inner(address, key, value, |result| {
+            StorageAction::Sstore(address, key, result.present_value, value)
+        })
+    }
+
+    #[inline]
+    pub(crate) fn sinc_direct(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.sdelta_inner(address, key, delta, true)
+    }
+
+    #[inline]
+    pub(crate) fn tload_direct(
+        &mut self,
+        address: Address,
+        key: U256,
+    ) -> Result<U256, TempoPrecompileError> {
+        self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
+        Ok(self.evm.state_mut().tload(&address, &key))
+    }
+
+    #[inline]
+    pub(crate) fn emit_event_direct(
+        &mut self,
+        address: Address,
+        event: LogData,
+    ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+        self.deduct_gas(
+            u64::from(gas::LOG).saturating_add(
+                self.version
+                    .gas_params
+                    .log_cost(event.topics().len() as u8, event.data.len()),
+            ),
+        )?;
+        self.evm.log(Log {
+            address,
+            data: event,
+        });
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn tip20_is_initialized(
+        &mut self,
+        address: Address,
+    ) -> Result<bool, TempoPrecompileError> {
+        self.with_account_info_only(address, |info| !info.is_empty_code_hash())
+    }
+
+    /// Single-account batched TIP-20 init + PAUSED check using one State::account_with_skip lookup.
+    /// Returns `(initialized, paused)`.
+    #[inline]
+    pub(crate) fn tip20_init_and_paused(
+        &mut self,
+        address: Address,
+        paused_slot: U256,
+    ) -> Result<(bool, bool), TempoPrecompileError> {
+        let is_t4 = self.spec.is_t4();
+        let eip2929 = self.version.feature(EvmFeatures::EIP2929);
+        let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let cold_acct_cost = self.version.gas_params.cold_account_additional_cost();
+        let cold_slot_cost = self
+            .version
+            .gas_params
+            .get(GasId::ColdStorageAdditionalCost);
+
+        let skip_cold_acct = if is_t4 {
+            self.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_acct_cost
+        } else {
+            false
+        };
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, skip_cold_acct)?;
+        let acct_cold = eip2929 && account.warm();
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+        }
+        if acct_cold {
+            self.gas_tracker.deduct_gas(cold_acct_cost)?;
+        }
+        if account.is_empty_code_hash() {
+            return Ok((false, false));
+        }
+
+        let skip_cold_paused = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_slot_cost
+        } else {
+            false
+        };
+        let (paused_val, paused_cold) = {
+            let storage = account.storage();
+            let (slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(paused_slot, skip_cold_paused)?
+            } else {
+                (
+                    storage.into_slot_with_skip(paused_slot, skip_cold_paused)?,
+                    false,
+                )
+            };
+            (slot.current(), is_cold)
+        };
+        self.actions
+            .record(StorageAction::Sload(address, paused_slot, paused_val));
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+        }
+        if paused_cold || self.cold_pricing {
+            self.gas_tracker.deduct_gas(cold_slot_cost)?;
+        }
+        Ok((true, !paused_val.is_zero()))
+    }
+
+    /// Performs sdec(address, dec_key, delta) followed by sinc(address, inc_key, delta)
+    /// while reusing a single AccountHandle on the common non-zero-boundary path.
+    #[inline]
+    pub(crate) fn sdelta_pair(
+        &mut self,
+        address: Address,
+        dec_key: U256,
+        inc_key: U256,
+        delta: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+        let is_t4 = self.spec.is_t4();
+        let is_t12 = self.spec.is_t12();
+        let is_t15 = self.spec.is_t15();
+        let eip2929 = self.version.feature(EvmFeatures::EIP2929);
+        let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let cold_additional = self
+            .version
+            .gas_params
+            .get(GasId::ColdStorageAdditionalCost);
+        let sstore_static = self.version.gas_params.get(GasId::SstoreStatic);
+        let call_stipend = self.version.gas_params.get(GasId::CallStipend);
+
+        let skip_cold_dec = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, skip_cold_dec && is_t15)?;
+        account.warm();
+        let (dec_current, dec_value, dec_sstore) = {
+            let storage = account.storage();
+            let (mut slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(dec_key, skip_cold_dec)?
+            } else {
+                (storage.into_slot_with_skip(dec_key, skip_cold_dec)?, false)
+            };
+            let current = slot.current();
+            if !is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+            if is_cold || self.cold_pricing {
+                self.gas_tracker.deduct_gas(cold_additional)?;
+            }
+            let value = current
+                .checked_sub(delta)
+                .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+            if is_t12 && self.gas_tracker.remaining() <= call_stipend {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            if is_t4 {
+                self.gas_tracker.deduct_gas(sstore_static)?;
+            }
+            let (original_value, present_value) = slot.write(value);
+            (
+                current,
+                value,
+                SStore {
+                    original_value,
+                    present_value,
+                    new_value: value,
+                    is_cold: false,
+                    _non_exhaustive: (),
+                },
+            )
+        };
+
+        let dec_zero_boundary = !dec_current.is_zero() && dec_value.is_zero();
+        if dec_zero_boundary {
+            self.actions
+                .record(StorageAction::Sload(address, dec_key, dec_current));
+            self.actions.record(StorageAction::Sstore(
+                address,
+                dec_key,
+                dec_current,
+                dec_value,
+            ));
+        } else {
+            self.actions
+                .record(StorageAction::Sdec(address, dec_key, dec_current, delta));
+        }
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        let need_dec_credits = self.tip1060_storage_credits_enabled
+            && SstoreTransitionFlags::from(&dec_sstore).crosses_zero_boundary();
+        if need_dec_credits {
+            drop(account);
+            sstore_storage_credits(self, address, Some(dec_key), &dec_sstore)?;
+            self.gas_tracker.deduct_gas(
+                self.version
+                    .gas_params
+                    .sstore_dynamic_gas(true, &dec_sstore),
+            )?;
+            self.gas_tracker
+                .deduct_state_gas(self.version.gas_params.sstore_state_gas(&dec_sstore))?;
+            if is_t4 {
+                self.gas_tracker
+                    .record_refund(self.version.gas_params.sstore_refund(true, &dec_sstore));
+            }
+            return self.sdelta_inner(address, inc_key, delta, true);
+        }
+        self.gas_tracker.deduct_gas(
+            self.version
+                .gas_params
+                .sstore_dynamic_gas(true, &dec_sstore),
+        )?;
+        self.gas_tracker
+            .deduct_state_gas(self.version.gas_params.sstore_state_gas(&dec_sstore))?;
+        if is_t4 {
+            self.gas_tracker
+                .record_refund(self.version.gas_params.sstore_refund(true, &dec_sstore));
+        }
+
+        let skip_cold_inc = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_additional
+        } else {
+            false
+        };
+        let (inc_current, inc_value, inc_sstore) = {
+            let storage = account.storage();
+            let (mut slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(inc_key, skip_cold_inc)?
+            } else {
+                (storage.into_slot_with_skip(inc_key, skip_cold_inc)?, false)
+            };
+            let current = slot.current();
+            if !is_t4 {
+                self.gas_tracker.deduct_gas(warm_cost)?;
+            }
+            if is_cold || self.cold_pricing {
+                self.gas_tracker.deduct_gas(cold_additional)?;
+            }
+            let value = current
+                .checked_add(delta)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            if is_t12 && self.gas_tracker.remaining() <= call_stipend {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            if is_t4 {
+                self.gas_tracker.deduct_gas(sstore_static)?;
+            }
+            let (original_value, present_value) = slot.write(value);
+            (
+                current,
+                value,
+                SStore {
+                    original_value,
+                    present_value,
+                    new_value: value,
+                    is_cold: false,
+                    _non_exhaustive: (),
+                },
+            )
+        };
+        drop(account);
+
+        let inc_zero_boundary = inc_current.is_zero() && !inc_value.is_zero();
+        if inc_zero_boundary {
+            self.actions
+                .record(StorageAction::Sload(address, inc_key, inc_current));
+            self.actions.record(StorageAction::Sstore(
+                address,
+                inc_key,
+                inc_current,
+                inc_value,
+            ));
+        } else {
+            self.actions
+                .record(StorageAction::Sinc(address, inc_key, inc_current, delta));
+        }
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        if self.tip1060_storage_credits_enabled
+            && SstoreTransitionFlags::from(&inc_sstore).crosses_zero_boundary()
+        {
+            sstore_storage_credits(self, address, Some(inc_key), &inc_sstore)?;
+        }
+        self.gas_tracker.deduct_gas(
+            self.version
+                .gas_params
+                .sstore_dynamic_gas(true, &inc_sstore),
+        )?;
+        self.gas_tracker
+            .deduct_state_gas(self.version.gas_params.sstore_state_gas(&inc_sstore))?;
+        if is_t4 {
+            self.gas_tracker
+                .record_refund(self.version.gas_params.sstore_refund(true, &inc_sstore));
+        }
+        Ok(())
+    }
+
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
@@ -423,6 +792,40 @@ where
     }
 
     #[inline]
+    fn with_account_info_only<R>(
+        &mut self,
+        address: Address,
+        f: impl FnOnce(&AccountInfo) -> R,
+    ) -> Result<R, TempoPrecompileError> {
+        let additional_cost = self.version.gas_params.cold_account_additional_cost();
+        let warm_storage_read_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(warm_storage_read_cost)?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, insufficient_gas_for_cold_load)?;
+        let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
+
+        if !self.spec.is_t4() {
+            self.gas_tracker.deduct_gas(warm_storage_read_cost)?;
+        }
+
+        if is_cold {
+            self.gas_tracker.deduct_gas(additional_cost)?;
+        }
+
+        let default = AccountInfo::default();
+        Ok(f(account.get().unwrap_or(&default)))
+    }
+
+    #[allow(dead_code)]
+    #[inline]
     fn with_loaded_account<R>(
         &mut self,
         address: Address,
@@ -589,7 +992,7 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        self.with_loaded_account(address, |info, _| f(info))
+        self.with_account_info_only(address, |info| f(info))
     }
 
     fn with_warm_caller_info(
@@ -860,7 +1263,7 @@ where
     #[inline]
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
         let spec = self.spec;
-        self.with_loaded_account(address, |info, _| account_config_commitment(info, spec))?
+        self.with_account_info_only(address, |info| account_config_commitment(info, spec))?
     }
 
     fn set_config_commitment(
@@ -914,6 +1317,23 @@ pub trait EvmStorageExt {
 
     /// Returns the kind of the EVM, whose rules every storage context over it follows.
     fn kind(&self) -> TempoEvmKind;
+
+    #[inline]
+    fn resolved_fee_balance_slot(&self, _addr: Address) -> Option<U256> {
+        None
+    }
+
+    #[inline]
+    fn cached_balance_slot(&mut self, addr: Address) -> U256 {
+        use crate::storage::StorageKey as _;
+        addr.mapping_slot(crate::tip20::slots::BALANCES)
+    }
+
+    #[inline]
+    fn cached_token_transfer_policy_slot(&mut self, token: Address) -> U256 {
+        use crate::storage::StorageKey as _;
+        token.mapping_slot(crate::tip403_registry::slots::TOKEN_TRANSFER_POLICIES)
+    }
 }
 
 bitflags! {

@@ -80,13 +80,14 @@ impl NonceManager {
             return Err(NonceError::invalid_nonce_key().into());
         }
 
-        let current = self.nonces[account][nonce_key].read()?;
+        let mut slot = self.nonces[account].entry(&nonce_key);
+        let current = slot.read()?;
 
         let new_nonce = current
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.nonces[account][nonce_key].write(new_nonce)?;
+        slot.write(new_nonce)?;
 
         self.emit_event(NonceEvent::nonce_incremented(account, nonce_key, new_nonce))?;
 

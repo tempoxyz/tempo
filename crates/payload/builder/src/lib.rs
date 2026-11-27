@@ -445,8 +445,8 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut batched = BatchedStateHook::new(handle.take_state_hook(), 32);
-            executor.set_state_hook(move |state| batched.on_state(state));
+            let mut hook = handle.take_state_hook();
+            executor.set_state_hook(move |state| hook.on_state(state));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -457,9 +457,17 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
-        const ROOTS_BATCH_SIZE: usize = 64;
-        let mut roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
+        let drain_receipts = hardfork.is_t13() && executor.receipts().is_empty();
+        let (tx_root_tx, tx_root_rx, rcpt_root_tx, rcpt_root_rx) =
+            self.spawn_roots_tasks(drain_receipts);
+        const ROOTS_BATCH_SIZE: usize = 16;
+        let mut tx_roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
+        let mut rcpt_roots_batch = if drain_receipts {
+            Vec::new()
+        } else {
+            Vec::with_capacity(ROOTS_BATCH_SIZE)
+        };
+        let initial_receipts = executor.receipts().len();
         let use_regular_gas = executor.uses_regular_gas();
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
@@ -557,7 +565,9 @@ where
             }
 
             // Leave room for the end-of-block system transactions.
-            if executor.receipts().len() + SYSTEM_TX_COUNT >= MAX_BLOCK_TRANSACTIONS {
+            if initial_receipts + pool_transactions_included as usize + SYSTEM_TX_COUNT
+                >= MAX_BLOCK_TRANSACTIONS
+            {
                 break BlockBuildStopReason::TransactionCountLimit;
             }
 
@@ -763,15 +773,23 @@ where
             trace!("Transaction executed");
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
-            let receipt = executor.receipts().last().unwrap().clone();
-            if !receipt.success {
+            if !executor.receipts().last().unwrap().success {
                 reverted_transactions += 1;
             }
-            roots_batch.push((tx, receipt));
-            if roots_batch.len() >= ROOTS_BATCH_SIZE {
-                let batch =
-                    std::mem::replace(&mut roots_batch, Vec::with_capacity(ROOTS_BATCH_SIZE));
-                let _ = roots_tx.send(batch);
+            tx_roots_batch.push(tx);
+            if !drain_receipts {
+                rcpt_roots_batch.push(executor.receipts().last().unwrap().clone());
+            }
+            if tx_roots_batch.len() >= ROOTS_BATCH_SIZE {
+                let tx_batch =
+                    std::mem::replace(&mut tx_roots_batch, Vec::with_capacity(ROOTS_BATCH_SIZE));
+                let rcpt_batch = if drain_receipts {
+                    executor.take_receipts(ROOTS_BATCH_SIZE)
+                } else {
+                    std::mem::replace(&mut rcpt_roots_batch, Vec::with_capacity(ROOTS_BATCH_SIZE))
+                };
+                let _ = tx_root_tx.send(tx_batch);
+                let _ = rcpt_root_tx.send(rcpt_batch);
             }
         };
 
@@ -826,14 +844,21 @@ where
 
         let builder_finish_start = Instant::now();
 
-        if !roots_batch.is_empty() {
-            let _ = roots_tx.send(roots_batch);
+        if !tx_roots_batch.is_empty() {
+            let _ = tx_root_tx.send(tx_roots_batch);
         }
-        // Drop the roots task handle to trigger finalization
-        drop(roots_tx);
+        if drain_receipts {
+            if !executor.receipts().is_empty() {
+                let _ = rcpt_root_tx.send(executor.take_receipts(0));
+            }
+        } else if !rcpt_roots_batch.is_empty() {
+            let _ = rcpt_root_tx.send(rcpt_roots_batch);
+        }
+        // Drop the roots task handles to trigger finalization in parallel
+        drop(tx_root_tx);
+        drop(rcpt_root_tx);
 
-        let execution_output = executor.finish()?;
-        let execution_result = &execution_output.result;
+        let mut execution_output = executor.finish()?;
         let execution_state = &execution_output.state;
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
@@ -900,16 +925,27 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let RootsTaskResult {
+        let TxRootTaskResult {
             transactions_root,
-            receipts_root,
-            receipts_bloom,
             transactions,
             senders,
             encoded_block_transactions,
-        } = roots_rx
+        } = tx_root_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
+        let ReceiptRootTaskResult {
+            receipts_root,
+            receipts_bloom,
+            mut receipts,
+        } = rcpt_root_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
+        if drain_receipts {
+            let tail = std::mem::take(&mut execution_output.result.receipts);
+            receipts.extend(tail);
+            execution_output.result.receipts = receipts;
+        }
+        let execution_result = &execution_output.result;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -918,7 +954,7 @@ where
                 &parent_header,
                 transactions,
                 execution_result,
-                execution_state,
+                &execution_output.state,
                 &finish_provider,
                 state_root,
                 None,
@@ -1165,34 +1201,27 @@ where
         Ok(BuildOutcome::Freeze(payload))
     }
 
-    fn spawn_roots_task(
-        &self,
-    ) -> (
-        Sender<Vec<(BestTransaction, TempoReceipt)>>,
-        oneshot::Receiver<RootsTaskResult>,
-    ) {
-        let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<Vec<(BestTransaction, TempoReceipt)>>();
-        let (result_tx, result_rx) = oneshot::channel();
-        let parent = Span::current();
+    fn spawn_roots_tasks(&self, collect_receipts: bool) -> RootsTaskHandles {
+        let (txs_tx, txs_rx) = crossbeam_channel::unbounded::<Vec<BestTransaction>>();
+        let (tx_result_tx, tx_result_rx) = oneshot::channel();
+        let (rcpts_tx, rcpts_rx) = crossbeam_channel::unbounded::<Vec<TempoReceipt>>();
+        let (rcpt_result_tx, rcpt_result_rx) = oneshot::channel();
+        let parent_tx = Span::current();
+        let parent_rcpt = parent_tx.clone();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", move || {
+            .spawn_blocking_named("builder-tx-root", move || {
                 let _span =
-                    debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
+                    debug_span!(target: "payload_builder", parent: &parent_tx, "builder_tx_root")
                         .entered();
                 let mut transactions = Vec::with_capacity(4096);
                 let mut senders = Vec::with_capacity(4096);
-
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
-
                 let mut buf = Vec::with_capacity(512);
 
-                for batch in transactions_rx.into_iter() {
-                    for (tx, receipt) in batch {
+                for batch in txs_rx.into_iter() {
+                    for tx in batch {
                         let (tx, sender) = tx.transaction.inner().clone().into_parts();
                         buf.clear();
                         tx.encode_2718(&mut buf);
@@ -1200,28 +1229,57 @@ where
                         encoded_block_transactions.push(&tx, &buf);
                         transactions.push(tx);
                         senders.push(sender);
-
-                        let receipt = receipt.with_bloom_ref();
-
-                        buf.clear();
-                        receipt.encode_2718(&mut buf);
-                        receipts_root.push_next(&buf);
-                        receipts_bloom |= receipt.bloom();
                     }
                 }
                 let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
-                let _ = result_tx.send(RootsTaskResult {
+                let _ = tx_result_tx.send(TxRootTaskResult {
                     transactions_root,
-                    receipts_root,
-                    receipts_bloom,
                     transactions,
                     senders,
                     encoded_block_transactions: encoded_block_transactions.finish(),
                 });
             });
 
-        (transactions_tx, result_rx)
+        self.executor
+            .spawn_blocking_named("builder-rcpt-root", move || {
+                let _span = debug_span!(
+                    target: "payload_builder",
+                    parent: &parent_rcpt,
+                    "builder_rcpt_root"
+                )
+                .entered();
+                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+                let mut receipts_bloom = Bloom::ZERO;
+                let mut receipts = if collect_receipts {
+                    Vec::with_capacity(4096)
+                } else {
+                    Vec::new()
+                };
+                let mut buf = Vec::with_capacity(512);
+
+                for batch in rcpts_rx.into_iter() {
+                    for receipt in batch {
+                        {
+                            let receipt_ref = receipt.with_bloom_ref();
+                            buf.clear();
+                            receipt_ref.encode_2718(&mut buf);
+                            receipts_root.push_next(&buf);
+                            receipts_bloom |= receipt_ref.bloom();
+                        }
+                        if collect_receipts {
+                            receipts.push(receipt);
+                        }
+                    }
+                }
+                let receipts_root = receipts_root.finalize();
+                let _ = rcpt_result_tx.send(ReceiptRootTaskResult {
+                    receipts_root,
+                    receipts_bloom,
+                    receipts,
+                });
+            });
+
+        (txs_tx, tx_result_rx, rcpts_tx, rcpt_result_rx)
     }
 }
 
@@ -1249,152 +1307,29 @@ fn maybe_override_fee_recipient<DB: Database>(
     }
 }
 
-/// Result produced by the roots task while finalizing payload block data.
+/// Result produced by the transaction-root task while finalizing payload block data.
 #[derive(Debug)]
-pub(crate) struct RootsTaskResult {
-    /// The root hash of the transaction trie.
+pub(crate) struct TxRootTaskResult {
     transactions_root: B256,
-    /// The root hash of the receipts trie.
-    receipts_root: B256,
-    /// The receipts bloom filter.
-    receipts_bloom: Bloom,
-    /// The transactions included in the block.
     transactions: Vec<TempoTxEnvelope>,
-    /// The senders of the transactions.
     senders: Vec<Address>,
-    /// The RLP encoded transaction list for the block body.
-    ///
-    /// Since roots task already encodes every transaction for the transaction trie,
-    /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
-/// Batches per-transaction StateUpdates before forwarding them to the sparse trie task,
-/// deduplicating hot account and storage writes within each batch while preserving exact
-/// ordering around account creations, deletions, and storage wipes.
-struct BatchedStateHook<H: OnStateHook> {
-    inner: H,
-    batch_txs: usize,
-    buffered_txs: usize,
-    accounts: alloy_primitives::map::AddressHashMap<reth_execution_types::AccountUpdate>,
-    storage_indices:
-        alloy_primitives::map::AddressHashMap<alloy_primitives::map::U256HashMap<usize>>,
+/// Result produced by the receipt-root task while finalizing payload block data.
+#[derive(Debug)]
+pub(crate) struct ReceiptRootTaskResult {
+    receipts_root: B256,
+    receipts_bloom: Bloom,
+    receipts: Vec<TempoReceipt>,
 }
 
-impl<H: OnStateHook> BatchedStateHook<H> {
-    const LINEAR_SCAN_LIMIT: usize = 8;
-
-    fn new(inner: H, batch_txs: usize) -> Self {
-        Self {
-            inner,
-            batch_txs: batch_txs.max(1),
-            buffered_txs: 0,
-            accounts: Default::default(),
-            storage_indices: Default::default(),
-        }
-    }
-
-    fn flush(&mut self) {
-        if self.accounts.is_empty() {
-            self.buffered_txs = 0;
-            return;
-        }
-        let accounts = self.accounts.drain().map(|(_, acc)| acc).collect();
-        self.storage_indices.clear();
-        self.buffered_txs = 0;
-        self.inner
-            .on_state(reth_execution_types::StateUpdate { accounts });
-    }
-
-    fn on_state(&mut self, state: reth_execution_types::StateUpdate) {
-        if state.is_empty() {
-            return;
-        }
-        // Flush around lifecycle transitions (creation, deletion, storage wipe) to keep semantics exact.
-        if state
-            .accounts
-            .iter()
-            .any(|acc| acc.created || acc.wiped || acc.current.is_none() || acc.original.is_none())
-        {
-            self.flush();
-            self.inner.on_state(state);
-            return;
-        }
-
-        for acc in state.accounts {
-            let addr = acc.address;
-            match self.accounts.entry(addr) {
-                alloy_primitives::map::Entry::Vacant(v) => {
-                    if acc.storage.len() > Self::LINEAR_SCAN_LIMIT {
-                        let mut idx_map =
-                            alloy_primitives::map::U256HashMap::with_capacity_and_hasher(
-                                acc.storage.len(),
-                                Default::default(),
-                            );
-                        for (idx, (k, _)) in acc.storage.iter().enumerate() {
-                            idx_map.insert(*k, idx);
-                        }
-                        self.storage_indices.insert(addr, idx_map);
-                    }
-                    v.insert(acc);
-                }
-                alloy_primitives::map::Entry::Occupied(mut o) => {
-                    let existing = o.get_mut();
-                    existing.current = acc.current;
-                    if !acc.storage.is_empty() {
-                        if !self.storage_indices.contains_key(&addr)
-                            && existing.storage.len() + acc.storage.len() > Self::LINEAR_SCAN_LIMIT
-                        {
-                            let mut idx_map =
-                                alloy_primitives::map::U256HashMap::with_capacity_and_hasher(
-                                    existing.storage.len() + acc.storage.len(),
-                                    Default::default(),
-                                );
-                            for (idx, (k, _)) in existing.storage.iter().enumerate() {
-                                idx_map.insert(*k, idx);
-                            }
-                            self.storage_indices.insert(addr, idx_map);
-                        }
-                        if let Some(idx_map) = self.storage_indices.get_mut(&addr) {
-                            for (k, slot) in acc.storage {
-                                if let Some(&idx) = idx_map.get(&k) {
-                                    existing.storage[idx].1 = slot;
-                                } else {
-                                    let idx = existing.storage.len();
-                                    existing.storage.push((k, slot));
-                                    idx_map.insert(k, idx);
-                                }
-                            }
-                        } else {
-                            for (k, slot) in acc.storage {
-                                if let Some((_, prev)) =
-                                    existing.storage.iter_mut().find(|(ek, _)| *ek == k)
-                                {
-                                    *prev = slot;
-                                } else {
-                                    existing.storage.push((k, slot));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        self.buffered_txs += 1;
-        if self.buffered_txs >= self.batch_txs {
-            self.flush();
-        }
-    }
-}
-
-impl<H: OnStateHook> Drop for BatchedStateHook<H> {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            self.flush();
-        }
-    }
-}
+type RootsTaskHandles = (
+    Sender<Vec<BestTransaction>>,
+    oneshot::Receiver<TxRootTaskResult>,
+    Sender<Vec<TempoReceipt>>,
+    oneshot::Receiver<ReceiptRootTaskResult>,
+);
 
 #[cfg(test)]
 mod tests {
@@ -1413,145 +1348,5 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
-    }
-
-    #[test]
-    fn batched_state_hook_merges_and_flushes_equivalently() {
-        use alloy_primitives::{Address, U256};
-        use evm2::{block::bundle_state::StorageSlot, evm::AccountInfo};
-        use reth_execution_types::{AccountUpdate, StateUpdate};
-        use std::sync::{Arc, Mutex};
-
-        let received: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
-        let rec_clone = Arc::clone(&received);
-        let addr = Address::repeat_byte(0x11);
-        let created_addr = Address::repeat_byte(0x22);
-
-        let info0 = AccountInfo {
-            balance: U256::from(100),
-            ..Default::default()
-        };
-        let info1 = AccountInfo {
-            balance: U256::from(200),
-            ..Default::default()
-        };
-        let info2 = AccountInfo {
-            balance: U256::from(300),
-            ..Default::default()
-        };
-
-        {
-            let mut hook = BatchedStateHook::new(
-                move |state: StateUpdate| {
-                    rec_clone.lock().unwrap().push(state);
-                },
-                3,
-            );
-
-            let mut storage1 = Vec::new();
-            for k in 0u64..10 {
-                storage1.push((
-                    U256::from(k),
-                    StorageSlot {
-                        previous_or_original_value: U256::ZERO,
-                        present_value: U256::from(k + 1),
-                    },
-                ));
-            }
-            hook.on_state(StateUpdate {
-                accounts: vec![AccountUpdate {
-                    address: addr,
-                    original: Some(info0.clone()),
-                    current: Some(info1.clone()),
-                    created: false,
-                    wiped: false,
-                    storage: storage1,
-                }],
-            });
-            hook.on_state(StateUpdate {
-                accounts: vec![AccountUpdate {
-                    address: addr,
-                    original: Some(info1),
-                    current: Some(info2.clone()),
-                    created: false,
-                    wiped: false,
-                    storage: vec![
-                        (
-                            U256::from(3),
-                            StorageSlot {
-                                previous_or_original_value: U256::from(4),
-                                present_value: U256::from(99),
-                            },
-                        ),
-                        (
-                            U256::from(10),
-                            StorageSlot {
-                                previous_or_original_value: U256::ZERO,
-                                present_value: U256::from(100),
-                            },
-                        ),
-                    ],
-                }],
-            });
-            assert_eq!(received.lock().unwrap().len(), 0);
-
-            hook.on_state(StateUpdate {
-                accounts: vec![AccountUpdate {
-                    address: created_addr,
-                    original: None,
-                    current: Some(info0.clone()),
-                    created: true,
-                    wiped: false,
-                    storage: vec![],
-                }],
-            });
-            assert_eq!(received.lock().unwrap().len(), 2);
-
-            hook.on_state(StateUpdate {
-                accounts: vec![AccountUpdate {
-                    address: addr,
-                    original: Some(info2.clone()),
-                    current: Some(info0.clone()),
-                    created: false,
-                    wiped: false,
-                    storage: vec![],
-                }],
-            });
-        }
-
-        let updates = received.lock().unwrap();
-        assert_eq!(updates.len(), 3);
-        let merged = updates[0].account(&addr).unwrap();
-        assert_eq!(merged.original, Some(info0));
-        assert_eq!(merged.current, Some(info2));
-        assert_eq!(merged.storage.len(), 11);
-        assert_eq!(
-            merged
-                .storage
-                .iter()
-                .find(|(k, _)| *k == U256::from(3))
-                .unwrap()
-                .1
-                .present_value,
-            U256::from(99)
-        );
-        assert_eq!(
-            merged
-                .storage
-                .iter()
-                .find(|(k, _)| *k == U256::from(10))
-                .unwrap()
-                .1
-                .present_value,
-            U256::from(100)
-        );
-        assert!(updates[1].account(&created_addr).unwrap().created);
-        assert_eq!(
-            updates[2].account(&addr).unwrap().current,
-            Some(AccountInfo {
-                balance: U256::from(100),
-                ..Default::default()
-            })
-        );
     }
 }

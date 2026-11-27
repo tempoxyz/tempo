@@ -1,8 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{
-        ContractStorage, Handler, StorageAction, StorageCtx, StorageKey, packing::insert_into_word,
-    },
+    storage::{ContractStorage, Handler, StorageAction, StorageCtx, packing::insert_into_word},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip403_registry::AuthRole,
@@ -685,16 +683,23 @@ impl TipFeeManager {
             let amount_out = compute_amount_out(amount_in)?;
 
             let pool_id = self.pool_id(user_token, validator_token);
-            let mut pool = self.pools[pool_id].read()?;
-            let pool_slot = pool.encode_to_slot()?;
+            let mut pool_handle = self.pools.entry(&pool_id);
+            let mut pool = pool_handle.read()?;
+            let pool_slot = if actions.is_enabled() {
+                Some(pool.encode_to_slot()?)
+            } else {
+                None
+            };
             pool.apply_swap(amount_in, amount_out)?;
-            self.pools[pool_id].write(pool)?;
+            pool_handle.write(pool)?;
 
-            actions.record_always(StorageAction::FeeAmmSwap(
-                pool_id.mapping_slot(self.pools.slot()),
-                pool_slot,
-                amount_in,
-            ));
+            if let Some(pool_slot) = pool_slot {
+                actions.record_always(StorageAction::FeeAmmSwap(
+                    pool_handle.as_slot().slot(),
+                    pool_slot,
+                    amount_in,
+                ));
+            }
 
             Ok(amount_out)
         })

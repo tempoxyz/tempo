@@ -110,6 +110,120 @@ pub struct TempoEvmExt {
     pub resolved_fee_token: Option<ResolvedFeeToken>,
     /// Access-key expiry resolved for the most recently handled transaction.
     pub key_expiry: Option<u64>,
+    /// Fee payer for which `resolved_fee_balance_slot` was computed.
+    pub(crate) resolved_fee_payer: Address,
+    /// Precomputed `balances[fee_payer]` slot for the current transaction.
+    pub(crate) resolved_fee_balance_slot: U256,
+    /// Whether `collect_fee_pre_tx` wrote `two_hop_intermediate` for the current transaction.
+    pub(crate) has_two_hop_intermediate: bool,
+    /// Per-block cached fee-manager mapping slots keyed by beneficiary.
+    pub(crate) fee_slot_cache: FeeSlotCache,
+    /// Per-EVM direct-mapped cache for frequent sender mapping slots.
+    pub(crate) sender_slot_cache: SenderSlotCache,
+}
+
+const SENDER_SLOT_CACHE_LEN: usize = 1024;
+const SENDER_SLOT_CACHE_MASK: usize = SENDER_SLOT_CACHE_LEN - 1;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SenderSlotEntry {
+    addr: Address,
+    valid: bool,
+    balance_slot: U256,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SenderSlotCache {
+    entries: Option<Box<[SenderSlotEntry; SENDER_SLOT_CACHE_LEN]>>,
+}
+
+impl SenderSlotCache {
+    #[inline]
+    fn idx(addr: Address) -> usize {
+        let b = addr.0.0;
+        let h = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+            ^ u64::from_le_bytes([b[12], b[13], b[14], b[15], b[16], b[17], b[18], b[19]]);
+        ((h.wrapping_mul(0x9e3779b97f4a7c15)) >> 54) as usize & SENDER_SLOT_CACHE_MASK
+    }
+
+    #[inline]
+    pub(crate) fn balance_slot(&mut self, addr: Address) -> U256 {
+        let table = self
+            .entries
+            .get_or_insert_with(|| Box::new([SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN]));
+        let e = &mut table[Self::idx(addr)];
+        if !e.valid || e.addr != addr {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.addr = addr;
+            e.valid = true;
+            e.balance_slot = addr.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
+        }
+        e.balance_slot
+    }
+}
+
+/// Caches beneficiary-keyed `TipFeeManager` mapping slots across transactions in a block.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FeeSlotCache {
+    beneficiary: Option<Address>,
+    validator_token_slot: U256,
+    collected_fees_outer_slot: U256,
+    collected_fees_slots: [(Address, U256); 4],
+    collected_fees_len: usize,
+    token_policy_slots: [(Address, U256); 8],
+    token_policy_len: usize,
+}
+
+impl FeeSlotCache {
+    #[inline]
+    fn ensure_beneficiary(&mut self, beneficiary: Address) {
+        if self.beneficiary != Some(beneficiary) {
+            use tempo_precompiles::{storage::StorageKey as _, tip_fee_manager::slots};
+            self.beneficiary = Some(beneficiary);
+            self.validator_token_slot = beneficiary.mapping_slot(slots::VALIDATOR_TOKENS);
+            self.collected_fees_outer_slot = beneficiary.mapping_slot(slots::COLLECTED_FEES);
+            self.collected_fees_len = 0;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn validator_token_slot(&mut self, beneficiary: Address) -> U256 {
+        self.ensure_beneficiary(beneficiary);
+        self.validator_token_slot
+    }
+
+    #[inline]
+    pub(crate) fn collected_fees_slot(&mut self, beneficiary: Address, token: Address) -> U256 {
+        self.ensure_beneficiary(beneficiary);
+        for &(cached_token, cached_slot) in &self.collected_fees_slots[..self.collected_fees_len] {
+            if cached_token == token {
+                return cached_slot;
+            }
+        }
+        use tempo_precompiles::storage::StorageKey as _;
+        let slot = token.mapping_slot(self.collected_fees_outer_slot);
+        if self.collected_fees_len < self.collected_fees_slots.len() {
+            self.collected_fees_slots[self.collected_fees_len] = (token, slot);
+            self.collected_fees_len += 1;
+        }
+        slot
+    }
+
+    #[inline]
+    pub(crate) fn token_transfer_policy_slot(&mut self, token: Address) -> U256 {
+        for &(cached_token, cached_slot) in &self.token_policy_slots[..self.token_policy_len] {
+            if cached_token == token {
+                return cached_slot;
+            }
+        }
+        use tempo_precompiles::{storage::StorageKey as _, tip403_registry::slots};
+        let slot = token.mapping_slot(slots::TOKEN_TRANSFER_POLICIES);
+        if self.token_policy_len < self.token_policy_slots.len() {
+            self.token_policy_slots[self.token_policy_len] = (token, slot);
+            self.token_policy_len += 1;
+        }
+        slot
+    }
 }
 
 impl Default for TempoEvmExt {
@@ -131,6 +245,11 @@ impl TempoEvmExt {
             skip_liquidity_check: false,
             resolved_fee_token: None,
             key_expiry: None,
+            resolved_fee_payer: Address::ZERO,
+            resolved_fee_balance_slot: U256::ZERO,
+            has_two_hop_intermediate: false,
+            fee_slot_cache: FeeSlotCache::default(),
+            sender_slot_cache: SenderSlotCache::default(),
         }
     }
 }
@@ -146,6 +265,22 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
 
     fn kind(&self) -> TempoEvmKind {
         self.kind
+    }
+
+    #[inline]
+    fn resolved_fee_balance_slot(&self, addr: Address) -> Option<U256> {
+        (addr == self.resolved_fee_payer && !self.resolved_fee_balance_slot.is_zero())
+            .then_some(self.resolved_fee_balance_slot)
+    }
+
+    #[inline]
+    fn cached_balance_slot(&mut self, addr: Address) -> U256 {
+        self.sender_slot_cache.balance_slot(addr)
+    }
+
+    #[inline]
+    fn cached_token_transfer_policy_slot(&mut self, token: Address) -> U256 {
+        self.fee_slot_cache.token_transfer_policy_slot(token)
     }
 }
 
@@ -188,6 +323,7 @@ pub fn build_tempo_evm<'a>(
 pub(super) struct TempoFeeContext {
     pub(super) fee_payer: alloy_primitives::Address,
     pub(super) fee_token: alloy_primitives::Address,
+    pub(super) fee_payer_balance_slot: U256,
     pub(super) collected: U256,
 }
 
@@ -359,8 +495,11 @@ impl TempoHandlerHooks {
         if !max_fee.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
         }
-        let balance =
-            host.get_token_balance(fee_token, fee_payer, spec, StorageActions::disabled())?;
+        let fee_payer_balance_slot = host.ext_mut().sender_slot_cache.balance_slot(fee_payer);
+        host.ext_mut().resolved_fee_payer = fee_payer;
+        host.ext_mut().resolved_fee_balance_slot = fee_payer_balance_slot;
+        host.ext_mut().has_two_hop_intermediate = false;
+        let balance = host.sload(fee_token, fee_payer_balance_slot)?;
         if host.feature(EvmFeatures::FEE_CHARGE) && balance < max_fee {
             return Err(TempoInvalidTransaction::from(
                 FeePaymentError::InsufficientFeeTokenBalance {
@@ -374,6 +513,7 @@ impl TempoHandlerHooks {
         Ok(TempoFeeContext {
             fee_payer,
             fee_token,
+            fee_payer_balance_slot,
             collected,
         })
     }
@@ -431,11 +571,15 @@ impl TempoHandlerHooks {
         }
 
         if host.config_spec_id().is_t7() && !context.collected.is_zero() {
-            host.ext().non_creditable_slots.borrow_mut().initialize(
-                context.fee_payer,
-                context.fee_token,
-                key_id,
-            );
+            host.ext()
+                .non_creditable_slots
+                .borrow_mut()
+                .initialize_with_slot(
+                    context.fee_payer,
+                    context.fee_token,
+                    key_id,
+                    context.fee_payer_balance_slot,
+                );
         }
 
         Ok(())

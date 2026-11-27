@@ -86,7 +86,7 @@ struct ReceivePolicy {
 
 /// Per-account TIP-1028 receive policy configuration. Packed in a single slot.
 #[derive(Debug, Clone, Default, Storable)]
-struct ReceivePolicyConfig {
+pub(crate) struct ReceivePolicyConfig {
     /// Whether the account has configured a receive policy.
     has_receive_policy: bool,
     /// Policy ID authorizing senders for inbound transfers.
@@ -273,7 +273,26 @@ impl TIP403Registry {
 
     /// Returns the registered policy ID without validating the token address.
     /// Fast-path lookup of a token's registered transfer policy ID without constructing `TIP403Registry`.
+    /// Decodes a non-zero raw `TokenTransferPolicy` storage word into `Option<u64>`.
     #[inline]
+    pub(crate) fn decode_token_transfer_policy_raw(raw: U256) -> Result<Option<u64>> {
+        if raw.is_zero() {
+            return Ok(None);
+        }
+        use crate::storage::{LayoutCtx, Storable as _, StorageOps};
+        struct RawWord(U256);
+        impl StorageOps for RawWord {
+            fn load(&self, _slot: U256) -> Result<U256> {
+                Ok(self.0)
+            }
+            fn store(&mut self, _slot: U256, _value: U256) -> Result<()> {
+                unreachable!()
+            }
+        }
+        let binding = TokenTransferPolicy::load(&RawWord(raw), U256::ZERO, LayoutCtx::FULL)?;
+        Ok(binding.is_set.then_some(binding.policy_id))
+    }
+
     pub(crate) fn registered_token_transfer_policy_id_direct(
         token: Address,
     ) -> Result<Option<u64>> {
@@ -447,6 +466,30 @@ impl TIP403Registry {
             TIP403_REGISTRY_ADDRESS,
         )
         .read()?;
+        if !config.has_receive_policy {
+            return Ok(None);
+        }
+        Self::new().check_receive_policy_with_config(token, sender, receiver, config)
+    }
+
+    #[inline]
+    pub(crate) fn check_receive_policy_from_raw(
+        token: Address,
+        sender: Address,
+        receiver: Address,
+        raw: U256,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        use crate::storage::{LayoutCtx, Storable as _, StorageOps};
+        struct RawWord(U256);
+        impl StorageOps for RawWord {
+            fn load(&self, _slot: U256) -> Result<U256> {
+                Ok(self.0)
+            }
+            fn store(&mut self, _slot: U256, _value: U256) -> Result<()> {
+                unreachable!()
+            }
+        }
+        let config = ReceivePolicyConfig::load(&RawWord(raw), U256::ZERO, LayoutCtx::FULL)?;
         if !config.has_receive_policy {
             return Ok(None);
         }

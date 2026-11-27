@@ -338,6 +338,12 @@ impl<'a> TempoBlockExecutor<'a> {
         self.evm().version().feature(evm2::EvmFeatures::EIP8037)
     }
 
+    /// Takes accumulated receipts out of the inner executor for zero-clone root handoff on T13+.
+    #[inline]
+    pub fn take_receipts(&mut self, next_cap: usize) -> Vec<TempoReceipt> {
+        core::mem::replace(&mut self.inner.inner.receipts, Vec::with_capacity(next_cap))
+    }
+
     pub(crate) fn new(
         evm: TempoEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,

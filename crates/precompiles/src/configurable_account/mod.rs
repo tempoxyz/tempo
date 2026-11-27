@@ -38,16 +38,33 @@ pub struct ConfigurableAccount {
 impl ConfigurableAccount {
     /// Seeds only the direct outer owner-quorum authority, never a delegate or sponsor, and
     /// whether the transaction may migrate its sender.
+    #[inline]
+    pub fn set_authority_direct(
+        origin: Address,
+        directly_authorized: Address,
+        upgrade_eligibility: UpgradeEligibility,
+    ) -> Result<()> {
+        crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, CONFIGURABLE_ACCOUNT_ADDRESS)
+            .t_write(origin)?;
+        crate::storage::Slot::<Address>::new(
+            slots::DIRECTLY_AUTHORIZED_ACCOUNT,
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+        )
+        .t_write(directly_authorized)?;
+        crate::storage::Slot::<UpgradeEligibility>::new(
+            slots::UPGRADE_ELIGIBILITY,
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+        )
+        .t_write(upgrade_eligibility)
+    }
+
     pub fn set_authority(
         &mut self,
         origin: Address,
         directly_authorized: Address,
         upgrade_eligibility: UpgradeEligibility,
     ) -> Result<()> {
-        self.tx_origin.t_write(origin)?;
-        self.directly_authorized_account
-            .t_write(directly_authorized)?;
-        self.upgrade_eligibility.t_write(upgrade_eligibility)
+        Self::set_authority_direct(origin, directly_authorized, upgrade_eligibility)
     }
 
     fn derive_account(

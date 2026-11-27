@@ -4,8 +4,8 @@ pub use ITIP20ChannelReserve::{
     ITIP20ChannelReserveEvents as TIP20ChannelReserveEvent,
 };
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, U256, address, keccak256};
-use alloy_sol_types::{SolCall, SolValue};
+use alloy_primitives::{Address, B256, address, keccak256};
+use alloy_sol_types::SolCall;
 
 /// Native TIP-1034 channel reserve precompile address.
 pub const TIP20_CHANNEL_RESERVE_ADDRESS: Address =
@@ -258,13 +258,23 @@ crate::sol! {
 
 impl ITIP20ChannelReserve::ChannelDescriptor {
     /// Hash preimage of the channel id, domain-separated by chain and precompile address.
+    #[inline]
+    pub fn id_preimage_bytes(&self, chain_id: u64) -> [u8; 288] {
+        let mut buf = [0u8; 288];
+        buf[12..32].copy_from_slice(self.payer.as_slice());
+        buf[44..64].copy_from_slice(self.payee.as_slice());
+        buf[76..96].copy_from_slice(self.operator.as_slice());
+        buf[108..128].copy_from_slice(self.token.as_slice());
+        buf[128..160].copy_from_slice(self.salt.as_slice());
+        buf[172..192].copy_from_slice(self.authorizedSigner.as_slice());
+        buf[192..224].copy_from_slice(self.expiringNonceHash.as_slice());
+        buf[236..256].copy_from_slice(TIP20_CHANNEL_RESERVE_ADDRESS.as_slice());
+        buf[280..288].copy_from_slice(&chain_id.to_be_bytes());
+        buf
+    }
+
     pub fn id_preimage(&self, chain_id: u64) -> Vec<u8> {
-        (
-            self.clone(),
-            TIP20_CHANNEL_RESERVE_ADDRESS,
-            U256::from(chain_id),
-        )
-            .abi_encode()
+        self.id_preimage_bytes(chain_id).to_vec()
     }
 
     /// Returns the channel id on `chain_id`, as the precompile computes it.

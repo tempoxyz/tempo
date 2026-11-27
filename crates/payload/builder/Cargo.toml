@@ -31,7 +31,6 @@ reth-consensus-common.workspace = true
 reth-engine-tree.workspace = true
 reth-errors.workspace = true
 reth-evm.workspace = true
-reth-execution-types.workspace = true
 reth-evm-ethereum.workspace = true
 reth-metrics.workspace = true
 reth-payload-builder.workspace = true
@@ -56,7 +55,6 @@ tokio.workspace = true
 antithesis_sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
-evm2.workspace = true
 proptest.workspace = true
 tempo-precompiles.workspace = true
 test-case.workspace = true

@@ -856,8 +856,8 @@ impl TIP20ChannelReserve {
 
     /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
-        self.storage
-            .keccak256(&descriptor.id_preimage(self.storage.chain_id()))
+        let preimage = descriptor.id_preimage_bytes(self.storage.chain_id());
+        self.storage.keccak256(&preimage)
     }
 
     /// Ensures the caller is the payee or the descriptor's nonzero operator.

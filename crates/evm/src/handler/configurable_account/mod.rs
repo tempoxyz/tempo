@@ -143,7 +143,7 @@ impl TempoTxEnv {
             }
             None => Address::ZERO,
         };
-        ConfigurableAccount::new().set_authority(self.caller(), direct, eligibility)
+        ConfigurableAccount::set_authority_direct(self.caller(), direct, eligibility)
     }
 
     /// Whether the sender signs with a bare primitive key, as every non-AA transaction does.

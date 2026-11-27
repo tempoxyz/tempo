@@ -294,6 +294,20 @@ impl NonCreditableSlots {
     }
 
     #[inline]
+    pub fn initialize_with_slot(
+        &mut self,
+        fee_payer: Address,
+        fee_token: Address,
+        keychain_fee_key: Option<Address>,
+        fee_balance_slot: U256,
+    ) {
+        self.fee_payer = fee_payer;
+        self.fee_token = fee_token;
+        self.keychain_fee_key = keychain_fee_key;
+        let _ = self.fee_balance_slot.set(fee_balance_slot);
+    }
+
+    #[inline]
     pub fn clear(&mut self) {
         *self = Self::empty();
     }

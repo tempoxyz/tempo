@@ -13,9 +13,9 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::{Handler, StorageAction, StorageActions, StorageCtx},
+    storage::{StorageAction, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Error, TIP20Token},
+    tip20::TIP20Error,
 };
 use tempo_primitives::transaction::calc_gas_balance_spending;
 
@@ -175,15 +175,31 @@ impl ProtocolFeeManager for TempoFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> TempoResult<Address> {
-        ctx.enter(|| {
-            TipFeeManager::new().collect_fee_pre_tx(
-                fee_payer,
-                user_token,
-                max_amount,
-                beneficiary,
-                skip_liquidity_check,
-            )
-        })
+        let fee_payer_balance_slot = ctx.host.ext().resolved_fee_balance_slot;
+        let validator_token_slot = ctx
+            .host
+            .ext_mut()
+            .fee_slot_cache
+            .validator_token_slot(beneficiary);
+        let spec = ctx.host.config_spec_id();
+        let mut gas = evm2::interpreter::GasTracker::new(u64::MAX);
+        let mut storage =
+            tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new_without_tip1060_accounting(
+                ctx.host,
+                &mut gas,
+                spec,
+            );
+        let (token, used_two_hop) = TipFeeManager::collect_fee_pre_tx_on_provider(
+            &mut storage,
+            fee_payer,
+            fee_payer_balance_slot,
+            user_token,
+            max_amount,
+            validator_token_slot,
+            skip_liquidity_check,
+        )?;
+        ctx.host.ext_mut().has_two_hop_intermediate = used_two_hop;
+        Ok(token)
     }
 
     fn collect_fee_post_tx(
@@ -195,15 +211,37 @@ impl ProtocolFeeManager for TempoFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> TempoResult<U256> {
-        ctx.enter(|| {
-            TipFeeManager::new().collect_fee_post_tx(
+        let fee_payer_balance_slot = ctx.host.ext().resolved_fee_balance_slot;
+        let has_two_hop_intermediate = ctx.host.ext().has_two_hop_intermediate;
+        let validator_token_slot = ctx
+            .host
+            .ext_mut()
+            .fee_slot_cache
+            .validator_token_slot(beneficiary);
+        let spec = ctx.host.config_spec_id();
+        let mut cache = core::mem::take(&mut ctx.host.ext_mut().fee_slot_cache);
+        let mut gas = evm2::interpreter::GasTracker::new(u64::MAX);
+        let res = {
+            let mut storage =
+                tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new_without_tip1060_accounting(
+                    ctx.host,
+                    &mut gas,
+                    spec,
+                );
+            TipFeeManager::collect_fee_post_tx_on_provider(
+                &mut storage,
                 fee_payer,
+                fee_payer_balance_slot,
                 actual_spending,
                 refund_amount,
                 fee_token,
-                beneficiary,
+                validator_token_slot,
+                |validator_token| cache.collected_fees_slot(beneficiary, validator_token),
+                has_two_hop_intermediate,
             )
-        })
+        };
+        ctx.host.ext_mut().fee_slot_cache = cache;
+        res
     }
 }
 
@@ -299,7 +337,7 @@ where
     // Check stored user token preference
     let user_token = state.with_read_only_storage_ctx(spec, actions.clone(), || {
         // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-        TipFeeManager::new().user_tokens[fee_payer].read()
+        TipFeeManager::get_user_token_direct(fee_payer)
     })?;
 
     if !user_token.is_zero() {
@@ -326,7 +364,10 @@ where
         let sufficient = balance >= max_fee;
         actions.record(StorageAction::FeeTokenBalanceCheck(
             token,
-            TIP20Token::from_address_unchecked(token).balances[fee_payer].slot(),
+            tempo_precompiles::storage::StorageKey::mapping_slot(
+                &fee_payer,
+                tempo_precompiles::tip20::slots::BALANCES,
+            ),
             balance,
             max_fee,
             sufficient,
