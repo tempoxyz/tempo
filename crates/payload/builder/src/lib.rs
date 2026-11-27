@@ -558,7 +558,10 @@ where
             }
 
             let mut pool_tx = match best_txs.next() {
-                Some(StateAwareNext::Ready(pool_tx)) => pool_tx,
+                Some(StateAwareNext::Ready(pool_tx)) => {
+                    pool_tx.tx.transaction.reset_failed_inclusions();
+                    pool_tx
+                }
                 // Return to the top of the loop after each skip, so a run of skips still checks
                 // for cancellation and the build budget.
                 Some(StateAwareNext::Insolvent(tx)) => {

@@ -45,8 +45,8 @@ use tempo_primitives::{
 };
 use thiserror::Error;
 
-/// Payload builds that may skip a transaction as not includable before the builder evicts it from
-/// the pool; see [`TempoPooledTransaction::record_failed_inclusion`].
+/// Consecutive payload builds that may skip a transaction as not includable before the builder
+/// evicts it from the pool; see [`TempoPooledTransaction::record_failed_inclusion`].
 pub const MAX_FAILED_INCLUSIONS: u32 = 3;
 
 /// Tempo pooled transaction representation.
@@ -89,7 +89,7 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
-    /// Payload builds that skipped this transaction as not includable.
+    /// Consecutive payload builds that skipped this transaction as not includable.
     failed_inclusions: FailedInclusions,
 }
 
@@ -504,11 +504,18 @@ impl TempoPooledTransaction {
     /// Records that a payload build skipped this transaction because it could not be included at
     /// that point in the block, such as when its fee payer spent its balance earlier in the block.
     ///
-    /// The count is shared by every holder of the pool's `Arc`, so it survives across builds.
-    /// Returns true once the transaction has been skipped [`MAX_FAILED_INCLUSIONS`] times, and on
-    /// every skip after that: the caller should evict it from the pool.
+    /// The count is shared by every holder of the pool's `Arc`, so it survives across builds, and
+    /// [`Self::reset_failed_inclusions`] clears it. Returns true once the transaction has been
+    /// skipped [`MAX_FAILED_INCLUSIONS`] times in a row, and on every skip after that: the caller
+    /// should evict it from the pool.
     pub fn record_failed_inclusion(&self) -> bool {
         self.failed_inclusions.0.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_FAILED_INCLUSIONS
+    }
+
+    /// Clears the count of [`Self::record_failed_inclusion`], when a payload build yields the
+    /// transaction for execution.
+    pub fn reset_failed_inclusions(&self) {
+        self.failed_inclusions.0.store(0, Ordering::Relaxed);
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -2078,7 +2085,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_inclusions_trigger_eviction_at_the_limit_and_survive_clones() {
+    fn consecutive_failed_inclusions_trigger_eviction_and_survive_clones() {
         let tx = TxBuilder::aa(Address::random()).build();
         for _ in 1..MAX_FAILED_INCLUSIONS {
             assert!(!tx.record_failed_inclusion());
@@ -2093,5 +2100,12 @@ mod tests {
                 .build()
                 .record_failed_inclusion()
         );
+
+        // Only consecutive skips count.
+        tx.reset_failed_inclusions();
+        for _ in 1..MAX_FAILED_INCLUSIONS {
+            assert!(!tx.record_failed_inclusion());
+        }
+        assert!(tx.record_failed_inclusion());
     }
 }
