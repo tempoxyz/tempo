@@ -445,7 +445,10 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        const ROOTS_BATCH_SIZE: usize = 16;
+        let (tx_root_tx, tx_root_rx, rcpt_root_tx, rcpt_root_rx) = self.spawn_roots_tasks();
+        let mut tx_roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
+        let mut rcpt_roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -745,7 +748,18 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((tx, receipt));
+            tx_roots_batch.push(tx);
+            rcpt_roots_batch.push(receipt);
+            if tx_roots_batch.len() >= ROOTS_BATCH_SIZE {
+                let _ = tx_root_tx.send(std::mem::replace(
+                    &mut tx_roots_batch,
+                    Vec::with_capacity(ROOTS_BATCH_SIZE),
+                ));
+                let _ = rcpt_root_tx.send(std::mem::replace(
+                    &mut rcpt_roots_batch,
+                    Vec::with_capacity(ROOTS_BATCH_SIZE),
+                ));
+            }
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -799,8 +813,15 @@ where
 
         let builder_finish_start = Instant::now();
 
-        // Drop the roots task handle to trigger finalization
-        drop(roots_tx);
+        if !tx_roots_batch.is_empty() {
+            let _ = tx_root_tx.send(tx_roots_batch);
+        }
+        if !rcpt_roots_batch.is_empty() {
+            let _ = rcpt_root_tx.send(rcpt_roots_batch);
+        }
+        // Drop the roots task handles to trigger finalization in parallel
+        drop(tx_root_tx);
+        drop(rcpt_root_tx);
 
         let execution_output = executor.finish()?;
         let execution_result = &execution_output.result;
@@ -870,14 +891,18 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let RootsTaskResult {
+        let TxRootTaskResult {
             transactions_root,
-            receipts_root,
-            receipts_bloom,
             transactions,
             senders,
             encoded_block_transactions,
-        } = roots_rx
+        } = tx_root_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
+        let ReceiptRootTaskResult {
+            receipts_root,
+            receipts_bloom,
+        } = rcpt_root_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
 
@@ -1135,61 +1160,74 @@ where
         Ok(BuildOutcome::Freeze(payload))
     }
 
-    fn spawn_roots_task(
-        &self,
-    ) -> (
-        Sender<(BestTransaction, TempoReceipt)>,
-        oneshot::Receiver<RootsTaskResult>,
-    ) {
-        let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
-        let (result_tx, result_rx) = oneshot::channel();
-        let parent = Span::current();
+    fn spawn_roots_tasks(&self) -> RootsTaskHandles {
+        let (txs_tx, txs_rx) = crossbeam_channel::unbounded::<Vec<BestTransaction>>();
+        let (tx_result_tx, tx_result_rx) = oneshot::channel();
+        let (rcpts_tx, rcpts_rx) = crossbeam_channel::unbounded::<Vec<TempoReceipt>>();
+        let (rcpt_result_tx, rcpt_result_rx) = oneshot::channel();
+        let parent_tx = Span::current();
+        let parent_rcpt = parent_tx.clone();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", move || {
+            .spawn_blocking_named("builder-tx-root", move || {
                 let _span =
-                    debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
+                    debug_span!(target: "payload_builder", parent: &parent_tx, "builder_tx_root")
                         .entered();
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
-
+                let mut transactions = Vec::with_capacity(4096);
+                let mut senders = Vec::with_capacity(4096);
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
+                let mut buf = Vec::with_capacity(512);
 
-                let mut buf = Vec::new();
-
-                for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.transaction.inner().clone().into_parts();
-                    buf.clear();
-                    tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
-                    encoded_block_transactions.push(&tx, &buf);
-                    transactions.push(tx);
-                    senders.push(sender);
-
-                    let receipt = receipt.with_bloom_ref();
-
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
+                for batch in txs_rx.into_iter() {
+                    for tx in batch {
+                        let (tx, sender) = tx.transaction.inner().clone().into_parts();
+                        buf.clear();
+                        tx.encode_2718(&mut buf);
+                        transactions_root.push_next(&buf);
+                        encoded_block_transactions.push(&tx, &buf);
+                        transactions.push(tx);
+                        senders.push(sender);
+                    }
                 }
                 let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
-                let _ = result_tx.send(RootsTaskResult {
+                let _ = tx_result_tx.send(TxRootTaskResult {
                     transactions_root,
-                    receipts_root,
-                    receipts_bloom,
                     transactions,
                     senders,
                     encoded_block_transactions: encoded_block_transactions.finish(),
                 });
             });
 
-        (transactions_tx, result_rx)
+        self.executor
+            .spawn_blocking_named("builder-rcpt-root", move || {
+                let _span = debug_span!(
+                    target: "payload_builder",
+                    parent: &parent_rcpt,
+                    "builder_rcpt_root"
+                )
+                .entered();
+                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+                let mut receipts_bloom = Bloom::ZERO;
+                let mut buf = Vec::with_capacity(512);
+
+                for batch in rcpts_rx.into_iter() {
+                    for receipt in batch {
+                        let receipt = receipt.with_bloom_ref();
+                        buf.clear();
+                        receipt.encode_2718(&mut buf);
+                        receipts_root.push_next(&buf);
+                        receipts_bloom |= receipt.bloom();
+                    }
+                }
+                let receipts_root = receipts_root.finalize();
+                let _ = rcpt_result_tx.send(ReceiptRootTaskResult {
+                    receipts_root,
+                    receipts_bloom,
+                });
+            });
+
+        (txs_tx, tx_result_rx, rcpts_tx, rcpt_result_rx)
     }
 }
 
@@ -1217,26 +1255,37 @@ fn maybe_override_fee_recipient<DB: Database>(
     }
 }
 
-/// Result produced by the roots task while finalizing payload block data.
+/// Result produced by the transaction-root task while finalizing payload block data.
 #[derive(Debug)]
-pub(crate) struct RootsTaskResult {
+pub(crate) struct TxRootTaskResult {
     /// The root hash of the transaction trie.
     transactions_root: B256,
-    /// The root hash of the receipts trie.
-    receipts_root: B256,
-    /// The receipts bloom filter.
-    receipts_bloom: Bloom,
     /// The transactions included in the block.
     transactions: Vec<TempoTxEnvelope>,
     /// The senders of the transactions.
     senders: Vec<Address>,
     /// The RLP encoded transaction list for the block body.
     ///
-    /// Since roots task already encodes every transaction for the transaction trie,
+    /// Since the transaction-root task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
+/// Result produced by the receipt-root task while finalizing payload block data.
+#[derive(Debug)]
+pub(crate) struct ReceiptRootTaskResult {
+    /// The root hash of the receipts trie.
+    receipts_root: B256,
+    /// The receipts bloom filter.
+    receipts_bloom: Bloom,
+}
+
+type RootsTaskHandles = (
+    Sender<Vec<BestTransaction>>,
+    oneshot::Receiver<TxRootTaskResult>,
+    Sender<Vec<TempoReceipt>>,
+    oneshot::Receiver<ReceiptRootTaskResult>,
+);
 #[cfg(test)]
 mod tests {
     use super::*;
