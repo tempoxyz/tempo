@@ -16,6 +16,7 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _};
+use futures::{FutureExt as _, StreamExt as _};
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_node_api::ConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
@@ -619,8 +620,10 @@ where
 /// `sinks` must be the same [`EventSinks`] handed to [`route_events_to_generations`] — the
 /// router is long-lived while generations come and go.
 ///
-/// Subscribes to schedule notifications plus generation task completion, re-derives the desired
-/// role by the next-anchor rule, and switches role generations.
+/// Subscribes to schedule notifications, canonical head changes and generation task completion,
+/// re-derives the desired role by the next-anchor rule, and switches role generations.
+/// The decision reads both the schedule and the canonical checkpoint, so waking on either keeps
+/// it correct even if a writer updates the schedule before its block becomes canonical.
 /// Observation alone never switches roles — the trigger is consumption progress reaching
 /// the boundary, which this loop tracks by re-reading the local Tempo checkpoint.
 pub(crate) async fn run_role_controller<P, Pool>(
@@ -631,6 +634,7 @@ pub(crate) async fn run_role_controller<P, Pool>(
     Pool: TransactionPool<Transaction = TempoPooledTransaction> + 'static,
 {
     let mut schedule_changes = context.schedule.subscribe();
+    let mut canonical_changes = context.provider.canonical_state_stream();
 
     let mut generation_id: u64 = 0;
     let mut current: Option<RunningGeneration> = None;
@@ -831,6 +835,21 @@ pub(crate) async fn run_role_controller<P, Pool>(
                     }
                     // Unreachable: join_next() is only polled while the set is non-empty.
                     None => {}
+                }
+            }
+            // The canonical stream is a broadcast with one item per block, so drain what is
+            // already queued to make a burst one decision. While a decision retry is pending, only
+            // its backoff wakes the loop.
+            canonical = canonical_changes.next(), if !retry_decision => {
+                if canonical.is_none() {
+                    error!(target: "zone::role", "Canonical state stream closed");
+                    return;
+                }
+                while let Some(canonical) = canonical_changes.next().now_or_never() {
+                    if canonical.is_none() {
+                        error!(target: "zone::role", "Canonical state stream closed");
+                        return;
+                    }
                 }
             }
             _ = async {
