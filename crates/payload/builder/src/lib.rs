@@ -64,6 +64,7 @@ use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
     estimator::FinishedBuild,
 };
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::ring_hints};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
@@ -78,6 +79,10 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+
+/// Ring indices whose expiring-nonce keys are hashed ahead of each build: more than a block of
+/// expiring-nonce transactions.
+const RING_HINT_WINDOW: usize = 65_536;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -345,6 +350,32 @@ where
         let general_gas_limit =
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+
+        // Hash the expiring-nonce ring keys of this block on a worker, ahead of the executing
+        // thread. Dropping the guard at the end of the build cancels the worker.
+        let _ring_hints = if hardfork.is_t1() {
+            let ring_state = self.provider.state_by_block_hash(parent_header.hash())?;
+            let read_slot = move |slot: U256| {
+                ring_state
+                    .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
+                    .ok()
+                    .flatten()
+            };
+            let start = read_slot(ring_hints::RING_POINTER_SLOT)
+                .unwrap_or_default()
+                .saturating_to::<u32>();
+            let hints = ring_hints::RingHints::new(
+                start,
+                hardfork.expiring_nonce_set_capacity(),
+                RING_HINT_WINDOW,
+            );
+            let worker_hints = hints.clone();
+            self.executor
+                .spawn_blocking_named("builder-nonce-ring", move || worker_hints.fill(read_slot));
+            Some(ring_hints::activate(hints))
+        } else {
+            None
+        };
 
         // When consensus passes only the DKG ceremony output for a boundary block, as it does from
         // T15, the builder fills in the rest of the outcome from the parent state. Other

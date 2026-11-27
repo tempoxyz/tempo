@@ -84,6 +84,18 @@ impl<K, V: StorableType> Mapping<K, V> {
         })
     }
 
+    /// Seeds the handler cache for `key` with a slot computed ahead of time, so the first access
+    /// to `key` does not hash it. `slot` must equal `key.mapping_slot(self.slot())`.
+    pub fn prime(&self, key: &K, slot: U256)
+    where
+        K: StorageKey + Hash + Eq + Clone,
+    {
+        debug_assert_eq!(slot, key.mapping_slot(self.base_slot));
+        let address = self.address;
+        self.cache
+            .get_or_insert(key, || V::handle(slot, LayoutCtx::FULL, address));
+    }
+
     /// Returns a mutable `Handler` for the given key.
     ///
     /// Use this when you need to call mutable methods like `write()` or `delete()`.

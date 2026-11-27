@@ -1193,8 +1193,15 @@ fn apply_nonce(
         let timestamp = host.block().timestamp.saturating_to::<u64>();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
         let capacity = spec.expiring_nonce_set_capacity();
+        let seen_slot = spec
+            .is_t1b()
+            .then(|| envelope.expiring_nonce_seen_slot())
+            .flatten();
         return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut nonces = NonceManager::new();
+            if let Some(slot) = seen_slot {
+                nonces.prime_expiring_nonce_seen(replay_hash, slot);
+            }
             let previous_pointer = if let Some(index) = aa.expiring_nonce_idx() {
                 let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(nonce_error)?;
                 nonces
