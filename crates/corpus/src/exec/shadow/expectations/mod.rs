@@ -196,7 +196,6 @@ pub(crate) fn load(candidate: TempoHardfork) -> eyre::Result<Vec<(TempoHardfork,
 
 fn rule_file(candidate: TempoHardfork) -> Option<&'static str> {
     match candidate {
-        TempoHardfork::T13 => Some(include_str!("t13.json")),
         TempoHardfork::T14 => Some(include_str!("t14.json")),
         TempoHardfork::T15 => Some(include_str!("t15.json")),
         _ => None,
@@ -458,17 +457,16 @@ mod tests {
             "t14.zone-portal-upgrade",
             "t15.zone-runtime-upgrade",
         ];
-        assert_eq!(ids(T12, T13), [fee, t13]);
-        assert_eq!(ids(T11, T13), ids(T12, T13));
-        assert_eq!(ids(T13, T13), [fee]);
         assert_eq!(ids(T13, T14), [fee, t14]);
+        assert_eq!(ids(T14, T14), [fee]);
         assert_eq!(ids(T12, T14), [fee, t13, t14]);
+        assert_eq!(ids(T11, T14), ids(T12, T14));
         assert_eq!(ids(T14, T15), [fee, t15]);
         assert_eq!(ids(T13, T15), [fee, t14, t15]);
         assert_eq!(ids(T12, T15), [fee, t13, t14, t15]);
         assert_eq!(
-            load(T12).unwrap_err().to_string(),
-            "no shadow expectations for T12"
+            load(T13).unwrap_err().to_string(),
+            "no shadow expectations for T13"
         );
     }
 
