@@ -250,7 +250,6 @@ fn exact_genesis(edits: StateInput, blocks: &[TempoBlock]) -> StateInput {
     let mut outcome = TempoExecutionOutcome::default();
     let (_, _, rejection) = execute::execute_blocks(
         &Tempo,
-        &mut (),
         &TempoEvmConfig::new(Arc::clone(&spec)),
         &TempoConsensus::new(spec),
         &db,

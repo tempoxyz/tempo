@@ -173,7 +173,6 @@ fn execute<E: Engine>(
     let mut outcome = TempoExecutionOutcome::default();
     let (applied, failed_logs, rejection) = execute_blocks(
         engine,
-        &mut E::Checks::default(),
         &chain.evm_config,
         &chain.consensus,
         &db,
@@ -382,7 +381,6 @@ pub(crate) fn recover_block(
 /// of the failed block's transactions before it failed, and why it failed.
 pub(crate) fn execute_blocks<E: Engine>(
     engine: &E,
-    checks: &mut E::Checks,
     evm_config: &E::EvmConfig,
     consensus: &E::Consensus,
     db: &Db,
@@ -391,10 +389,12 @@ pub(crate) fn execute_blocks<E: Engine>(
 ) -> (Net, Vec<Log>, Option<Rejection>) {
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
+    // What the chain's own checks carry between the run's steps, fresh for every run.
+    let mut checks = E::Checks::default();
     for (index, block) in blocks.iter().enumerate() {
         let mut executed = execute_block(
             engine,
-            checks,
+            &mut checks,
             evm_config,
             consensus,
             db,
