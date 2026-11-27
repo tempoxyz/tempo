@@ -8,6 +8,9 @@ ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 ARG EXTRA_RUSTFLAGS=""
+# Applied to linux/amd64 builds only, and requires AVX-512 hosts. x86-64-v4 enables faster keccak
+# and other vectorized paths; it lacks AES-NI, PCLMULQDQ and ADX, which rocksdb's crc32c needs.
+ARG AMD64_RUSTFLAGS="-C target-cpu=x86-64-v4 -C target-feature=+aes,+pclmulqdq,+adx"
 
 # .cargo/config.toml makes smolgen idempotent by default; images keep the real build timestamp.
 ENV VERGEN_IDEMPOTENT=0
@@ -18,7 +21,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    CPU_RUSTFLAGS="$(if [ "${TARGETARCH}" = amd64 ]; then echo "${AMD64_RUSTFLAGS}"; fi)" && \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${CPU_RUSTFLAGS} ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet" \
         --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
@@ -29,7 +33,8 @@ FROM builder AS devnet-builder
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    CPU_RUSTFLAGS="$(if [ "${TARGETARCH}" = amd64 ]; then echo "${AMD64_RUSTFLAGS}"; fi)" && \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${CPU_RUSTFLAGS} ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet,custom-pcrs"
 
