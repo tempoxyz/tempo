@@ -1996,11 +1996,20 @@ impl ZonePoolBuilder {
     }
 }
 
+/// Accepts the transaction when its sender or its fee payer holds a nonzero balance of an
+/// enabled zone token, so a funded sponsor can submit for an account that holds none yet.
 fn validate_has_enabled_token_balance(
     provider: &impl StateProviderFactory,
     enabled_tokens: &EnabledTokenRegistry,
-    sender: Address,
+    tx: &TempoPooledTransaction,
 ) -> Result<(), InvalidPoolTransactionError> {
+    let sender = *tx.sender_ref();
+    let fee_payer = tx.fee_payer().map_err(|_| {
+        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
+            "could not recover the transaction fee payer".into(),
+        )))
+    })?;
+
     let state = provider.latest().map_err(|err| {
         warn!(%err, "Failed to read latest state for zone token-balance admission check");
         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
@@ -2008,22 +2017,31 @@ fn validate_has_enabled_token_balance(
         )))
     })?;
 
+    let accounts: &[Address] = if fee_payer == sender {
+        &[sender]
+    } else {
+        &[sender, fee_payer]
+    };
     for token in enabled_tokens.read().iter().copied() {
-        let slot = TIP20Token::from_address_unchecked(token).balances[sender].slot();
-        let balance = state.storage(token, slot.into()).map_err(|err| {
-            warn!(%err, %sender, "Failed to read zone token balance during pool admission");
-            InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                HandlerError::External("could not verify balance of an enabled zone token".into()),
-            ))
-        })?;
-        if balance.is_some_and(|balance| !balance.is_zero()) {
-            return Ok(());
+        for &account in accounts {
+            let slot = TIP20Token::from_address_unchecked(token).balances[account].slot();
+            let balance = state.storage(token, slot.into()).map_err(|err| {
+                warn!(%err, %account, "Failed to read zone token balance during pool admission");
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                    HandlerError::External(
+                        "could not verify balance of an enabled zone token".into(),
+                    ),
+                ))
+            })?;
+            if balance.is_some_and(|balance| !balance.is_zero()) {
+                return Ok(());
+            }
         }
     }
 
     Err(InvalidPoolTransactionError::other(
         TempoPoolTransactionError::Evm(HandlerError::External(
-            "sender must hold a nonzero balance of an enabled zone token".into(),
+            "sender or fee payer must hold a nonzero balance of an enabled zone token".into(),
         )),
     ))
 }
@@ -2066,7 +2084,7 @@ where
             if let Some(allowlist) = &transfer_allowlist {
                 validate_transfer_calls(allowlist.as_ref(), tx)?;
             }
-            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
+            validate_has_enabled_token_balance(&provider, &enabled_tokens, tx)
         });
 
         let validator =

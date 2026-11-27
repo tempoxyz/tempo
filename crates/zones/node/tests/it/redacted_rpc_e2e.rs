@@ -64,10 +64,25 @@ fn signed_sponsored_raw_transaction(
     fee_payer: &PrivateKeySigner,
     chain_id: u64,
 ) -> eyre::Result<String> {
+    signed_raw_transaction_with_fee(
+        signer,
+        Some(fee_payer),
+        chain_id,
+        u128::from(TEMPO_T0_BASE_FEE),
+    )
+}
+
+/// Signs a transaction paying `max_fee_per_gas`, sponsored by `fee_payer` when given.
+fn signed_raw_transaction_with_fee(
+    signer: &PrivateKeySigner,
+    fee_payer: Option<&PrivateKeySigner>,
+    chain_id: u64,
+    max_fee_per_gas: u128,
+) -> eyre::Result<String> {
     let mut transaction = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
+        max_priority_fee_per_gas: max_fee_per_gas,
+        max_fee_per_gas,
         gas_limit: 500_000,
         calls: vec![Call {
             to: TxKind::Call(signer.address()),
@@ -78,8 +93,10 @@ fn signed_sponsored_raw_transaction(
         ..Default::default()
     };
 
-    let fee_payer_hash = transaction.fee_payer_signature_hash(signer.address());
-    transaction.fee_payer_signature = Some(fee_payer.sign_hash_sync(&fee_payer_hash)?);
+    if let Some(fee_payer) = fee_payer {
+        let fee_payer_hash = transaction.fee_payer_signature_hash(signer.address());
+        transaction.fee_payer_signature = Some(fee_payer.sign_hash_sync(&fee_payer_hash)?);
+    }
 
     let signature = signer.sign_hash_sync(&transaction.signature_hash())?;
     let envelope: TempoTxEnvelope = transaction.into_signed(signature.into()).into();
@@ -263,7 +280,7 @@ async fn test_auth_rejection() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Pool admission requires the transaction sender to hold an enabled zone token.
+/// Pool admission requires the transaction sender or its fee payer to hold an enabled zone token.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_send_raw_transaction_requires_enabled_token_balance() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -271,43 +288,42 @@ async fn test_send_raw_transaction_requires_enabled_token_balance() -> eyre::Res
     let mut ctx = start_zone_with_redacted_rpc().await?;
     let user_signer = PrivateKeySigner::random();
     let fee_payer = PrivateKeySigner::random();
-    ctx.inject_deposit(
-        PATH_USD_ADDRESS,
-        fee_payer.address(),
-        fee_payer.address(),
-        1_000_000,
-    )
-    .await?;
-    let raw = signed_sponsored_raw_transaction(&user_signer, &fee_payer, ctx.config.chain_id)?;
 
+    // A zero-fee transaction passes the fee check, so only the enabled-token check rejects it.
+    let unfunded_raw =
+        signed_raw_transaction_with_fee(&user_signer, Some(&fee_payer), ctx.config.chain_id, 0)?;
     for method in ["eth_sendRawTransaction", "eth_sendRawTransactionSync"] {
-        let response = ctx.call_as_user(method, json!([raw]), &user_signer).await?;
+        let response = ctx
+            .call_as_user(method, json!([unfunded_raw]), &user_signer)
+            .await?;
         assert_eq!(
             response["error"]["code"].as_i64(),
             Some(-32603),
-            "{method} should reject a sender without enabled-token balance: {response}",
+            "{method} should reject a transaction when neither sender nor fee payer holds an enabled token: {response}",
         );
         assert_eq!(
             response["error"]["message"].as_str(),
-            Some("sender must hold a nonzero balance of an enabled zone token"),
+            Some("sender or fee payer must hold a nonzero balance of an enabled zone token"),
             "{method} should explain why the transaction was rejected: {response}",
         );
     }
 
+    // A funded fee payer admits a transaction from a sender that holds nothing.
     ctx.inject_deposit(
         PATH_USD_ADDRESS,
-        user_signer.address(),
-        user_signer.address(),
+        fee_payer.address(),
+        fee_payer.address(),
         1_000_000,
     )
     .await?;
 
+    let raw = signed_sponsored_raw_transaction(&user_signer, &fee_payer, ctx.config.chain_id)?;
     let response = ctx
         .call_as_user("eth_sendRawTransaction", json!([raw]), &user_signer)
         .await?;
     assert!(
         response["result"].as_str().is_some(),
-        "funded sender transaction should be accepted: {response}",
+        "transaction sponsored by a funded fee payer should be accepted: {response}",
     );
 
     Ok(())
