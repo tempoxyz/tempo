@@ -103,8 +103,8 @@ impl ShadowReplayer {
         if canonical >= self.shadow_hardfork {
             return Ok(None);
         }
-        let check_header = !self.rules.skips_header_checks(canonical);
-        let evidence = self.execute(input, block, executed, check_header)?;
+        let skipped_header_checks = self.rules.skipped_header_checks(canonical);
+        let evidence = self.execute(input, block, executed, skipped_header_checks)?;
         let rules = self.rules.between(canonical);
         let report = Report::analyze(&evidence, &rules, block);
         let outcome = report.outcome(&evidence);
@@ -138,13 +138,14 @@ impl ShadowReplayer {
     }
 
     /// Runs the candidate's steps of `block` and pairs each with its canonical counterpart.
-    /// Without `check_header`, the candidate skips its checks of the header against state.
+    /// The candidate skips its checks of the header against state if `skipped_header_checks`
+    /// names any rule.
     fn execute(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
         executed: &Executed,
-        check_header: bool,
+        skipped_header_checks: Vec<&'static str>,
     ) -> eyre::Result<Evidence> {
         let phases = input
             .phases
@@ -157,7 +158,11 @@ impl ShadowReplayer {
             real_pre == phases.pre,
             "canonical pre-block changes differ from their verified record"
         );
-        let mut evidence = Evidence::default();
+        let check_header = skipped_header_checks.is_empty();
+        let mut evidence = Evidence {
+            skipped_header_checks,
+            ..Default::default()
+        };
         let (shadow_pre, shadow_pre_state) =
             match block::run_pre_block(&self.shadow_config, block, &origin, check_header) {
                 Ok(pre) => pre,
@@ -313,12 +318,14 @@ struct Failure {
 /// Both arms' evidence at each compared boundary, in order.
 ///
 /// `None` for pre/post-block means the candidate did not complete that boundary.
+/// `skipped_header_checks` names the rules that made the candidate skip its header checks.
 #[derive(Debug, Default)]
 struct Evidence {
     pre_block: Option<Arms<StepChanges>>,
     txs: Vec<TxEvidence>,
     post_block: Option<Arms<StepChanges>>,
     failure: Option<Failure>,
+    skipped_header_checks: Vec<&'static str>,
 }
 
 impl Evidence {

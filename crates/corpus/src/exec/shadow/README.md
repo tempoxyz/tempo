@@ -63,13 +63,16 @@ The fee-state check is built in and always runs first. Fork-specific rules come 
 per candidate hardfork in `expectations/` (`t15.json` for `--shadow T15`), compiled into the
 binary. Each rule names the fork that introduces it; replay applies the rules for forks in
 `(canonical fork, candidate fork]`, in file order. A candidate without a rule file is rejected
-before replay starts.
+before replay starts. Replays cover blocks from the latest hardfork active on every network, so
+files hold rules only for forks after it, and a fork's rules are deleted once it is active
+everywhere. Blocks from before that fork would report its changes as findings.
 
 A `skip-header-checks` rule makes the candidate skip the checks of a block's header against state
 that its fork introduces, such as T14's proposer fee recipient check. They read state blocks of
 earlier forks never read, so the corpus lacks it, and they change no state, so skipping them
 hides no compared effect. The executor can only skip all such checks at once, so the candidate
-skips them all on a block whose canonical fork predates any skip rule's fork.
+skips them all on a block whose canonical fork predates any skip rule's fork. Each such block
+counts the skip rules as expected differences, so it never reports a plain `Match`.
 
 A rule's `kind` selects a check implemented in Rust, and its other fields configure it, naming
 `tempo-contracts` constants such as `ZONE_PORTAL_IMPL_ADDRESS` or `T14_ZONE_PORTAL_RUNTIME`. Rule

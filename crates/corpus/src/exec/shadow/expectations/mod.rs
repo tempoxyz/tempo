@@ -15,12 +15,8 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 use std::collections::HashSet;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
-    precompiles::{ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS},
-    zones::{
-        T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME,
-        ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
-    },
+    precompiles::ZONE_PORTAL_IMPL_ADDRESS,
+    zones::{T13_ZONE_PORTAL_RUNTIME, T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME},
 };
 use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
@@ -175,8 +171,8 @@ static FEE_STATE: Expectation = Expectation {
 pub(crate) struct Rules {
     /// Expectations, each with the fork that introduces it, in fork order.
     expectations: Vec<(TempoHardfork, Expectation)>,
-    /// The latest fork whose header checks the candidate skips.
-    skip_header_checks: Option<TempoHardfork>,
+    /// Rules that skip the header checks their fork introduces, in fork order.
+    skip_header_checks: Vec<(TempoHardfork, &'static str)>,
 }
 
 impl Rules {
@@ -193,10 +189,14 @@ impl Rules {
             .collect()
     }
 
-    /// Whether the candidate skips its header checks on a block of the `canonical` fork. The
-    /// executor can only skip them all at once.
-    pub(crate) fn skips_header_checks(&self, canonical: TempoHardfork) -> bool {
-        self.skip_header_checks.is_some_and(|fork| fork > canonical)
+    /// The rules that make the candidate skip its header checks on a block of the `canonical`
+    /// fork. Any one skips them all, since the executor can only skip them all at once.
+    pub(crate) fn skipped_header_checks(&self, canonical: TempoHardfork) -> Vec<&'static str> {
+        self.skip_header_checks
+            .iter()
+            .filter(|(fork, _)| *fork > canonical)
+            .map(|(_, id)| *id)
+            .collect()
     }
 }
 
@@ -240,7 +240,7 @@ fn parse(candidate: TempoHardfork, json: &'static str) -> eyre::Result<Rules> {
                 let check = Check::RuntimeUpgrade(accounts);
                 rules.expectations.push((fork, Expectation { id, check }));
             }
-            Rule::SkipHeaderChecks { .. } => rules.skip_header_checks = Some(fork),
+            Rule::SkipHeaderChecks { .. } => rules.skip_header_checks.push((fork, id)),
         }
     }
     Ok(rules)
@@ -281,13 +281,10 @@ fn runtimes<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<B256>, D::
         .collect())
 }
 
-named_constants!(address -> Address = Address::from {
-    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-});
+named_constants!(address -> Address = Address::from { ZONE_PORTAL_IMPL_ADDRESS });
 
 named_constants!(runtime -> B256 = keccak256 {
-    ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
-    T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
+    T13_ZONE_PORTAL_RUNTIME,
     T14_ZONE_PORTAL_RUNTIME,
     T15_ZONE_PORTAL_RUNTIME,
 });
@@ -304,6 +301,10 @@ mod tests {
     };
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Signature};
     use evm2::evm::AccountInfo;
+    use tempo_contracts::{
+        precompiles::ZONE_VERIFIER_ADDRESS,
+        zones::{T13_ZONE_VERIFIER_RUNTIME, ZONE_PORTAL_RUNTIME},
+    };
     use tempo_precompiles::storage::FeeHook;
     use tempo_primitives::{TempoTransaction, transaction::Call};
     use test_case::test_case;
@@ -364,14 +365,7 @@ mod tests {
             slot: None,
             fee_associated: false,
         };
-        let t13 = &rule("t13.zone-runtime-upgrade");
         let t14 = &rule("t14.zone-portal-upgrade");
-        assert!(accepts_pre_block(
-            t13,
-            &code,
-            unchanged(),
-            upgraded(&T13_ZONE_PORTAL_RUNTIME)
-        ));
         assert!(accepts_pre_block(
             t14,
             &code,
@@ -391,10 +385,10 @@ mod tests {
             upgraded(&T14_ZONE_PORTAL_RUNTIME)
         ));
         assert!(!accepts_pre_block(
-            t13,
+            t14,
             &code,
             unchanged(),
-            upgraded(&ZONE_PORTAL_RUNTIME)
+            upgraded(&T13_ZONE_PORTAL_RUNTIME)
         ));
 
         let verifier = Field {
@@ -409,7 +403,6 @@ mod tests {
         };
         let real = StepChanges::default;
         let t15 = &rule("t15.zone-runtime-upgrade");
-        assert!(accepts_pre_block(t13, &verifier, real(), upgraded()));
         // T14 and T15 leave the verifier on its T13 runtime.
         assert!(!accepts_pre_block(t14, &verifier, real(), upgraded()));
         assert!(!accepts_pre_block(t15, &verifier, real(), upgraded()));
@@ -421,14 +414,14 @@ mod tests {
             };
             accepts_pre_block(t15, &code, real(), step(Some(before), keccak256(after)))
         };
-        for before in [
-            ZONE_PORTAL_RUNTIME,
-            T13_ZONE_PORTAL_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME,
-        ] {
+        for before in [T13_ZONE_PORTAL_RUNTIME, T14_ZONE_PORTAL_RUNTIME] {
             assert!(upgrades(&before, &T15_ZONE_PORTAL_RUNTIME));
         }
-        assert!(!upgrades(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME));
+        assert!(!upgrades(&ZONE_PORTAL_RUNTIME, &T15_ZONE_PORTAL_RUNTIME));
+        assert!(!upgrades(
+            &T13_ZONE_PORTAL_RUNTIME,
+            &T14_ZONE_PORTAL_RUNTIME
+        ));
     }
 
     #[test]
@@ -442,30 +435,26 @@ mod tests {
                 .map(|rule| rule.id)
                 .collect::<Vec<_>>()
         };
-        let [fee, t13, t14, t15] = [
+        let [fee, t14, t15] = [
             FEE_STATE.id,
-            "t13.zone-runtime-upgrade",
             "t14.zone-portal-upgrade",
             "t15.zone-runtime-upgrade",
         ];
         assert_eq!(ids(T13, T14), [fee, t14]);
         assert_eq!(ids(T14, T14), [fee]);
-        assert_eq!(ids(T12, T14), [fee, t13, t14]);
-        assert_eq!(ids(T11, T14), ids(T12, T14));
         assert_eq!(ids(T14, T15), [fee, t15]);
         assert_eq!(ids(T13, T15), [fee, t14, t15]);
-        assert_eq!(ids(T12, T15), [fee, t13, t14, t15]);
-        let skips = |canonical, candidate| load(candidate).unwrap().skips_header_checks(canonical);
-        assert_eq!(
-            [
-                skips(T13, T14),
-                skips(T14, T14),
-                skips(T13, T15),
-                skips(T14, T15),
-                skips(T15, T15)
-            ],
-            [true, false, true, true, false]
-        );
+        let skipped =
+            |canonical, candidate| load(candidate).unwrap().skipped_header_checks(canonical);
+        let [fee_recipient, dkg_outcome] = [
+            "t14.proposer-fee-recipient-check",
+            "t15.boundary-dkg-outcome-check",
+        ];
+        assert_eq!(skipped(T13, T14), [fee_recipient]);
+        assert!(skipped(T14, T14).is_empty());
+        assert_eq!(skipped(T13, T15), [fee_recipient, dkg_outcome]);
+        assert_eq!(skipped(T14, T15), [dkg_outcome]);
+        assert!(skipped(T15, T15).is_empty());
         assert_eq!(
             load(T13).unwrap_err().to_string(),
             "no shadow expectations for T13"
@@ -530,7 +519,7 @@ mod tests {
             pre_block: Some(Arms::default()),
             txs: (0..txs).map(|_| TxEvidence::Same).collect(),
             post_block: Some(Arms::default()),
-            failure: None,
+            ..Default::default()
         }
     }
 
@@ -581,6 +570,18 @@ mod tests {
         assert_eq!(report.outcome(&evidence), ReplayOutcome::Match);
         assert_eq!(report.boundaries_evaluated, 4);
         assert_eq!(report.boundaries_not_evaluated, 0);
+    }
+
+    #[test]
+    fn skipped_header_checks_are_expected() {
+        let mut evidence = evidence(1);
+        evidence.skipped_header_checks = vec!["t14.proposer-fee-recipient-check"];
+        let report = Report::analyze(&evidence, &[], &block(1));
+        assert_eq!(
+            report.expected,
+            [("t14.proposer-fee-recipient-check", 1)].into()
+        );
+        assert_eq!(report.outcome(&evidence), ReplayOutcome::Expected);
     }
 
     #[test]
