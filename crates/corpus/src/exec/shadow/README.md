@@ -65,6 +65,12 @@ binary. Each rule names the fork that introduces it; replay applies the rules fo
 `(canonical fork, candidate fork]`, in file order. A candidate without a rule file is rejected
 before replay starts.
 
+A `skip-header-checks` rule makes the candidate skip the checks of a block's header against state
+that its fork introduces, such as T14's proposer fee recipient check. They read state blocks of
+earlier forks never read, so the corpus lacks it, and they change no state, so skipping them
+hides no compared effect. The executor can only skip all such checks at once, so the candidate
+skips them all on a block whose canonical fork predates any skip rule's fork.
+
 A rule's `kind` selects a check implemented in Rust, and its other fields configure it, naming
 `tempo-contracts` constants such as `ZONE_PORTAL_IMPL_ADDRESS` or `T14_ZONE_PORTAL_RUNTIME`. Rule
 files are strict: unknown fields, kinds or constant names, duplicate ids, an account listed twice

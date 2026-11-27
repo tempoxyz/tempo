@@ -84,3 +84,4 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 proptest.workspace = true
 tempfile.workspace = true
 test-case.workspace = true
+tempo-primitives = { workspace = true, features = ["test-utils"] }

@@ -32,5 +32,10 @@
         "to": "T14_ZONE_PORTAL_RUNTIME"
       }
     ]
+  },
+  {
+    "id": "t14.proposer-fee-recipient-check",
+    "fork": "T14",
+    "kind": "skip-header-checks"
   }
 ]

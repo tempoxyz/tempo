@@ -34,6 +34,11 @@
     ]
   },
   {
+    "id": "t14.proposer-fee-recipient-check",
+    "fork": "T14",
+    "kind": "skip-header-checks"
+  },
+  {
     "id": "t15.zone-runtime-upgrade",
     "fork": "T15",
     "kind": "runtime-upgrade",
@@ -44,5 +49,10 @@
         "to": "T15_ZONE_PORTAL_RUNTIME"
       }
     ]
+  },
+  {
+    "id": "t15.boundary-dkg-outcome-check",
+    "fork": "T15",
+    "kind": "skip-header-checks"
   }
 ]

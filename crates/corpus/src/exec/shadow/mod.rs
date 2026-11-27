@@ -31,7 +31,7 @@ use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::{Report, StepChanges};
 use evm2::AnyError;
-use expectations::Expectation;
+use expectations::Rules;
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutionError, InternalBlockExecutionError};
@@ -66,7 +66,7 @@ pub struct ShadowReplayer {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
-    rules: Vec<(TempoHardfork, Expectation)>,
+    rules: Rules,
 }
 
 impl ShadowReplayer {
@@ -103,8 +103,9 @@ impl ShadowReplayer {
         if canonical >= self.shadow_hardfork {
             return Ok(None);
         }
-        let evidence = self.execute(input, block, executed)?;
-        let rules = expectations::between(&self.rules, canonical);
+        let check_header = !self.rules.skips_header_checks(canonical);
+        let evidence = self.execute(input, block, executed, check_header)?;
+        let rules = self.rules.between(canonical);
         let report = Report::analyze(&evidence, &rules, block);
         let outcome = report.outcome(&evidence);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
@@ -137,25 +138,28 @@ impl ShadowReplayer {
     }
 
     /// Runs the candidate's steps of `block` and pairs each with its canonical counterpart.
+    /// Without `check_header`, the candidate skips its checks of the header against state.
     fn execute(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
         executed: &Executed,
+        check_header: bool,
     ) -> eyre::Result<Evidence> {
         let phases = input
             .phases
             .as_ref()
             .ok_or_eyre("missing phase expectations")?;
         let origin = View::new(input.clone());
-        let (real_pre, real_pre_state) = block::run_pre_block(&self.real_config, block, &origin)?;
+        let (real_pre, real_pre_state) =
+            block::run_pre_block(&self.real_config, block, &origin, true)?;
         eyre::ensure!(
             real_pre == phases.pre,
             "canonical pre-block changes differ from their verified record"
         );
         let mut evidence = Evidence::default();
         let (shadow_pre, shadow_pre_state) =
-            match block::run_pre_block(&self.shadow_config, block, &origin) {
+            match block::run_pre_block(&self.shadow_config, block, &origin, check_header) {
                 Ok(pre) => pre,
                 Err(error) => return Ok(evidence.fail(Boundary::PreBlock, error)),
             };
