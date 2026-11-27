@@ -165,6 +165,20 @@ pub(crate) struct WithdrawalProcessorMetrics {
     pub(crate) slot_processing_duration_seconds: Histogram,
 }
 
+/// Metrics emitted while draining TIP-1150 token queues.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_queued_withdrawals")]
+pub(crate) struct QueuedWithdrawalDrainMetrics {
+    /// Number of unpaid entries in all token queues.
+    pub(crate) pending_entries: Gauge,
+
+    /// Number of `processQueuedWithdrawals` transactions confirmed on L1.
+    pub(crate) drains_confirmed_total: Counter,
+
+    /// Number of token drains that failed to send, confirm, or reverted.
+    pub(crate) drains_failed_total: Counter,
+}
+
 /// Metrics emitted by the zone monitor and batch submitter.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_monitor")]

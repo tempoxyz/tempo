@@ -3112,11 +3112,12 @@ pub(crate) async fn spawn_sequencer(
         sequencer_signer,
         zone_sequencer::BatchAnchorConfig::default(),
         zone_sequencer::WithdrawalBatchLimits::default(),
+        Duration::from_millis(500),
     )
     .await
 }
 
-/// Spawn the zone sequencer background tasks with custom limits.
+/// Spawn the zone sequencer background tasks with custom limits and withdrawal poll interval.
 pub(crate) async fn spawn_sequencer_with_config(
     l1: &L1TestNode,
     zone: &ZoneTestNode,
@@ -3124,6 +3125,7 @@ pub(crate) async fn spawn_sequencer_with_config(
     sequencer_signer: alloy_signer_local::PrivateKeySigner,
     batch_anchor_config: zone_sequencer::BatchAnchorConfig,
     withdrawal_batch_limits: zone_sequencer::WithdrawalBatchLimits,
+    withdrawal_poll_interval: Duration,
 ) -> zone_sequencer::ZoneSequencerHandle {
     let config = zone_sequencer::ZoneSequencerConfig {
         chain_spec: std::sync::Arc::new(zone_chainspec::ZoneChainSpec {
@@ -3133,7 +3135,7 @@ pub(crate) async fn spawn_sequencer_with_config(
         l1_rpc_url: l1.http_url().to_string(),
         retry_connection_interval: Duration::from_millis(100),
         zone_poll_interval: Duration::from_secs(1),
-        withdrawal_poll_interval: Duration::from_millis(500),
+        withdrawal_poll_interval,
         withdrawal_batch_limits,
         outbox_address: ZONE_OUTBOX_ADDRESS,
         inbox_address: ZONE_INBOX_ADDRESS,

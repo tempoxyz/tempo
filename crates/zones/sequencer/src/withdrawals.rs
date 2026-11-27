@@ -42,11 +42,13 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_contracts::precompiles::{ITIP20, OUSD_ADDRESS, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
 use tokio_util::sync;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{Instrument as _, debug, error, info, instrument, warn};
+
+mod token_queues;
 
 use crate::{
     abi::{self, LegacyZonePortal, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
-    metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
+    metrics::{QueuedWithdrawalDrainMetrics, SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
     prover_config::active_l1_hardfork,
     settlement::{WithdrawalPage, find_processed_offset},
@@ -80,7 +82,22 @@ fn bound_l1_fees(fees: Eip1559Estimation) -> Eip1559Estimation {
 const PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS: u64 = 1_250_000;
 
 /// Planner-only gas reserved for a simple withdrawal.
+// TODO: remove after T15
 const PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS: u64 = 1_000_000;
+
+/// Planner-only gas reserved for a simple withdrawal from T15, when it may enter its TIP-1150
+/// token queue.
+///
+/// Foundry traces of the T15 portal, with cold accounts and no TIP-1060 storage credits, used
+/// 1,026,244 gas for a queued plain withdrawal that also creates its token queue's bounds slot
+/// (four slots created in `Refund` mode, charged upfront whatever credits the portal holds), plus
+/// about 2,750 calldata gas. A queued deposit bounce-back used at most 775,905, within
+/// [`PROCESS_DEPOSIT_BOUNCEBACK_ITEM_OVERHEAD_GAS`]. A one-record batch, in a portal that had
+/// processed no withdrawal before, used 1,578,723 in all, within
+/// [`PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS`] plus this allowance.
+/// `test_gas_queuedEntriesFitProcessWithdrawalsReservations` in `crates/zones/contracts` checks
+/// these allowances.
+const T15_PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS: u64 = 1_100_000;
 
 /// Planner-only fixed allowance for a callback withdrawal, excluding its forwarded callback gas.
 const PROCESS_CALLBACK_WITHDRAWAL_ITEM_OVERHEAD_GAS: u64 = 1_750_000;
@@ -331,6 +348,9 @@ struct StoreSnapshot {
 /// Withdrawals are first split by the configured per-transaction gas limit, then submitted through
 /// a bounded queue of consecutive-nonce transactions. On any failure, the next cycle reconciles
 /// the portal queue and retries its unfinished suffix.
+///
+/// The same wakes, each confirmed `processWithdrawals` transaction and a timer of its own also
+/// start a drain of the TIP-1150 token queues, which runs in its own task.
 pub struct WithdrawalProcessor {
     config: WithdrawalProcessorConfig,
     provider: DynProvider<TempoNetwork>,
@@ -338,7 +358,11 @@ pub struct WithdrawalProcessor {
     store: SharedWithdrawalStore,
     notify: Arc<Notify>,
     repair_notify: Arc<Notify>,
+    /// Wakes the token-queue drain task. Notified on every processor wake and after every
+    /// confirmed `processWithdrawals` transaction.
+    drain_notify: Notify,
     metrics: WithdrawalProcessorMetrics,
+    drain_metrics: QueuedWithdrawalDrainMetrics,
     sequencer_metrics: SequencerMetrics,
 }
 
@@ -363,7 +387,9 @@ impl WithdrawalProcessor {
             store,
             notify,
             repair_notify,
+            drain_notify: Notify::new(),
             metrics: WithdrawalProcessorMetrics::default(),
+            drain_metrics: QueuedWithdrawalDrainMetrics::default(),
             sequencer_metrics: SequencerMetrics::default(),
         }
     }
@@ -390,19 +416,27 @@ impl WithdrawalProcessor {
     /// Run the processor loop. This method never returns under normal operation.
     ///
     /// Waits for a notification from the batch submitter (or a fallback timeout) before
-    /// checking the L1 withdrawal queue. Returns only when `shutdown` fires; the
-    /// token is observed at the wait boundary so an in-flight processing cycle completes
-    /// first.
+    /// checking the L1 withdrawal queue. Each wake also wakes the token-queue drain task, which
+    /// this spawns: drains wait on their own receipts, so a slow drain never holds up
+    /// `processWithdrawals`. Returns only when `shutdown` fires; the token is observed at the wait
+    /// boundary so an in-flight processing cycle completes first, while a drain in progress is
+    /// abandoned.
     #[instrument(skip_all, fields(portal = %self.config.portal_address))]
-    pub async fn run(&self, shutdown: &sync::CancellationToken) {
+    pub async fn run(self: Arc<Self>, shutdown: &sync::CancellationToken) {
         info!("Withdrawal processor started");
+
+        let drains = tokio::spawn({
+            let processor = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            async move { processor.drain_token_queues(&shutdown).await }.in_current_span()
+        });
 
         loop {
             tokio::select! {
                 biased;
                 () = shutdown.cancelled() => {
                     debug!("Withdrawal processor observed shutdown at the poll boundary");
-                    return;
+                    break;
                 }
                 _ = self.notify.notified() => {
                     debug!("Woken by batch submission notification");
@@ -412,16 +446,21 @@ impl WithdrawalProcessor {
                 }
             }
 
+            self.drain_notify.notify_one();
             if let Err(e) = self.process_queue(shutdown).await {
                 error!(error = %e, "Withdrawal processing cycle failed");
             }
 
             if shutdown.is_cancelled() {
                 debug!("Withdrawal processor stopped after draining submitted transactions");
-                return;
+                break;
             }
 
             self.update_sequencer_metrics().await;
+        }
+
+        if let Err(error) = drains.await {
+            error!(%error, "Token queue drain task failed");
         }
     }
 
@@ -612,12 +651,12 @@ impl WithdrawalProcessor {
                 return Ok(());
             }
 
+            let is_t15 = active_l1_hardfork(&self.provider, self.config.chain_spec.as_ref())
+                .await?
+                .is_t15();
             // TODO: remove after T15
             // Pre-T15 Portals cap unprocessed deposits, including bounce-backs.
-            let admitted = if active_l1_hardfork(&self.provider, self.config.chain_spec.as_ref())
-                .await?
-                .is_t15()
-            {
+            let admitted = if is_t15 {
                 remaining.len()
             } else {
                 let (deposit_count, last_processed_deposit_number): (u64, u64) = self
@@ -645,6 +684,7 @@ impl WithdrawalProcessor {
             let batches = build_withdrawal_batches(
                 &remaining[..admitted],
                 self.config.batch_limits.max_batch_gas,
+                is_t15,
             );
             let total_gas = batches
                 .iter()
@@ -840,6 +880,8 @@ impl WithdrawalProcessor {
                             .withdrawals_confirmed_total
                             .increment(batch.len() as u64);
                         self.metrics.batches_confirmed_total.increment(1);
+                        // The batch may have queued records, which capacity may already cover.
+                        self.drain_notify.notify_one();
                         info!(
                             slot,
                             nonce,
@@ -965,7 +1007,13 @@ pub fn spawn_withdrawal_processor(
     shutdown: sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let processor = WithdrawalProcessor::new(config, provider, store, notify, repair_notify);
+        let processor = Arc::new(WithdrawalProcessor::new(
+            config,
+            provider,
+            store,
+            notify,
+            repair_notify,
+        ));
         processor.run(&shutdown).await;
         info!("Withdrawal processor stopped");
     })
@@ -973,17 +1021,25 @@ pub fn spawn_withdrawal_processor(
 
 /// Return the gas reserved for one withdrawal inside a `processWithdrawals` transaction.
 ///
-/// Deposit bouncebacks and simple withdrawals use separate fixed allowances. Callback withdrawals
-/// add their requested callback gas directly. The callback portion is capped at
-/// [`MAX_WITHDRAWAL_GAS_LIMIT`], keeping legacy over-cap withdrawals submit-able while bounding
-/// the batcher's gas accounting.
-const fn process_withdrawal_item_gas(callback_gas_limit: u64, fallback_nonce: u64) -> u64 {
+/// Deposit bouncebacks and simple withdrawals use separate fixed allowances, the latter raised
+/// from T15 (`is_t15`) for token queues. Callback withdrawals add their requested callback gas
+/// directly. The callback portion is capped at [`MAX_WITHDRAWAL_GAS_LIMIT`], keeping legacy
+/// over-cap withdrawals submit-able while bounding the batcher's gas accounting.
+const fn process_withdrawal_item_gas(
+    callback_gas_limit: u64,
+    fallback_nonce: u64,
+    is_t15: bool,
+) -> u64 {
     if fallback_nonce == 0 {
         return PROCESS_DEPOSIT_BOUNCEBACK_ITEM_OVERHEAD_GAS;
     }
 
     if callback_gas_limit == 0 {
-        return PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS;
+        return if is_t15 {
+            T15_PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS
+        } else {
+            PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS
+        };
     }
 
     let bounded_callback_gas = if callback_gas_limit > MAX_WITHDRAWAL_GAS_LIMIT {
@@ -1015,6 +1071,7 @@ impl WithdrawalBatch {
 fn build_withdrawal_batches(
     withdrawals: &[abi::Withdrawal],
     max_batch_gas: u64,
+    is_t15: bool,
 ) -> Vec<WithdrawalBatch> {
     let mut batches = Vec::new();
     let mut start = 0;
@@ -1028,6 +1085,7 @@ fn build_withdrawal_batches(
             let next_gas = gas_limit.saturating_add(process_withdrawal_item_gas(
                 withdrawal.gasLimit,
                 withdrawal.fallbackNonce,
+                is_t15,
             ));
             if end > start && next_gas > max_batch_gas {
                 break;
@@ -1211,21 +1269,25 @@ mod tests {
     #[test]
     fn withdrawal_gas_limits_are_classified_and_bounded() {
         let at_cap = PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS
-            + process_withdrawal_item_gas(MAX_WITHDRAWAL_GAS_LIMIT, 1);
+            + process_withdrawal_item_gas(MAX_WITHDRAWAL_GAS_LIMIT, 1, true);
         let over_cap = PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS
-            + process_withdrawal_item_gas(MAX_WITHDRAWAL_GAS_LIMIT + 1, 1);
+            + process_withdrawal_item_gas(MAX_WITHDRAWAL_GAS_LIMIT + 1, 1, true);
 
         assert_eq!(over_cap, at_cap);
         assert_eq!(
-            process_withdrawal_item_gas(0, 1),
+            process_withdrawal_item_gas(0, 1, false),
             PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS
         );
         assert_eq!(
-            process_withdrawal_item_gas(0, 0),
+            process_withdrawal_item_gas(0, 1, true),
+            T15_PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS
+        );
+        assert_eq!(
+            process_withdrawal_item_gas(0, 0, true),
             PROCESS_DEPOSIT_BOUNCEBACK_ITEM_OVERHEAD_GAS
         );
         assert_eq!(
-            process_withdrawal_item_gas(3_000_000, 1),
+            process_withdrawal_item_gas(3_000_000, 1, true),
             PROCESS_CALLBACK_WITHDRAWAL_ITEM_OVERHEAD_GAS + 3_000_000
         );
         assert_eq!(
@@ -1247,8 +1309,11 @@ mod tests {
     fn batches_withdrawals_by_transaction_gas() {
         let withdrawals = simple_withdrawals(3);
         let one = PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS;
-        let batches =
-            build_withdrawal_batches(&withdrawals, PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS + 2 * one);
+        let batches = build_withdrawal_batches(
+            &withdrawals,
+            PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS + 2 * one,
+            false,
+        );
 
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].start, 0);
@@ -1261,12 +1326,55 @@ mod tests {
     fn oversized_withdrawal_is_a_singleton() {
         let mut withdrawals = simple_withdrawals(2);
         withdrawals[0].gasLimit = MAX_WITHDRAWAL_GAS_LIMIT;
-        let batches = build_withdrawal_batches(&withdrawals, 1_000_000);
+        let batches = build_withdrawal_batches(&withdrawals, 1_000_000, true);
 
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].start, 0);
         assert_eq!(batches[0].end, 1);
         assert!(batches[0].gas_limit > 1_000_000);
+    }
+
+    /// Every batch of queued TIP-1150 records fits the gas the planner reserves for it, using the
+    /// worst case measured on the T15 portal with no storage credits.
+    #[test]
+    fn t15_batches_fit_worst_case_queued_records() {
+        // A one-record batch, and each later record that also creates its token's queue slot.
+        const FIRST_PLAIN: u64 = 1_578_723;
+        const NEXT_PLAIN: u64 = 1_026_244;
+        const FIRST_BOUNCEBACK: u64 = 1_328_477;
+        const NEXT_BOUNCEBACK: u64 = 775_905;
+        const INTRINSIC: u64 = 21_000;
+        const CALLDATA_PER_ITEM: u64 = 2_800;
+
+        for max_batch_gas in [DEFAULT_MAX_WITHDRAWAL_BATCH_GAS, MAX_WITHDRAWAL_BATCH_GAS] {
+            for count in 1..=32 {
+                let mut withdrawals = simple_withdrawals(count);
+                for (i, withdrawal) in withdrawals.iter_mut().enumerate() {
+                    if i % 3 == 2 {
+                        withdrawal.fallbackNonce = 0;
+                    }
+                }
+                for batch in build_withdrawal_batches(&withdrawals, max_batch_gas, true) {
+                    let worst = withdrawals[batch.start..batch.end].iter().enumerate().fold(
+                        INTRINSIC,
+                        |total, (i, withdrawal)| {
+                            let (first, next) = if withdrawal.fallbackNonce == 0 {
+                                (FIRST_BOUNCEBACK, NEXT_BOUNCEBACK)
+                            } else {
+                                (FIRST_PLAIN, NEXT_PLAIN)
+                            };
+                            total + CALLDATA_PER_ITEM + if i == 0 { first } else { next }
+                        },
+                    );
+                    assert!(
+                        worst <= batch.gas_limit,
+                        "{} records need {worst} gas, planned {}",
+                        batch.len(),
+                        batch.gas_limit
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1570,8 +1678,11 @@ mod tests {
         l1.push_success(&successful_receipt(3));
 
         let withdrawals = simple_withdrawals(3);
-        let batches =
-            build_withdrawal_batches(&withdrawals, processor.config.batch_limits.max_batch_gas);
+        let batches = build_withdrawal_batches(
+            &withdrawals,
+            processor.config.batch_limits.max_batch_gas,
+            false,
+        );
         assert_eq!(batches.len(), 3);
 
         let shutdown = sync::CancellationToken::new();
@@ -1610,6 +1721,93 @@ mod tests {
             1,
             "the third response must remain unused because cancellation prevented a refill"
         );
+    }
+
+    #[tokio::test]
+    async fn confirmed_batch_wakes_the_token_queue_drain() {
+        let l1 = Asserter::new();
+        l1.push_success(&fee_history());
+        l1.push_success(&successful_receipt(1));
+        let mut processor = test_processor(
+            l1.clone(),
+            SharedWithdrawalStore::new(),
+            Arc::new(Notify::new()),
+        );
+        // T15 from genesis, so encoding withdrawals reads no L1 header.
+        processor.config.chain_spec = chain_spec_with_t15(0);
+        let withdrawals = simple_withdrawals(1);
+        let batches = build_withdrawal_batches(
+            &withdrawals,
+            processor.config.batch_limits.max_batch_gas,
+            true,
+        );
+
+        let outcome = processor
+            .submit_and_confirm_batches(
+                SubmitBatches {
+                    slot: 7,
+                    offset: 0,
+                    first_nonce: 10,
+                    withdrawals: &withdrawals,
+                    batches,
+                },
+                &sync::CancellationToken::new(),
+                || {},
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, SubmitOutcome::Confirmed));
+        timeout(Duration::from_millis(50), processor.drain_notify.notified())
+            .await
+            .expect("a confirmed batch should wake the token queue drain");
+        assert!(l1.read_q().is_empty());
+    }
+
+    /// The drain task runs a pass at start, on each wake and after each fallback interval
+    /// without one, here 1 second.
+    #[tokio::test]
+    async fn drain_passes_run_at_start_on_wakes_and_on_a_timer() {
+        let l1 = Asserter::new();
+        // Before T15 a pass reads only the latest L1 header.
+        for _ in 0..3 {
+            l1.push_success(&tempo_alloy::rpc::TempoHeaderResponse {
+                inner: alloy_rpc_types_eth::Header::new(tempo_primitives::TempoHeader::default()),
+                timestamp_millis: 0,
+            });
+        }
+        let processor = test_processor(
+            l1.clone(),
+            SharedWithdrawalStore::new(),
+            Arc::new(Notify::new()),
+        );
+        let shutdown = sync::CancellationToken::new();
+        let passes_reach = |unread: usize, within: Duration| {
+            let l1 = l1.clone();
+            async move {
+                timeout(within, async {
+                    while l1.read_q().len() != unread {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+            }
+        };
+
+        let checks = async {
+            passes_reach(2, Duration::from_millis(300))
+                .await
+                .expect("a pass should run at start");
+            processor.drain_notify.notify_one();
+            passes_reach(1, Duration::from_millis(300))
+                .await
+                .expect("a wake should run a pass");
+            passes_reach(0, Duration::from_secs(3))
+                .await
+                .expect("the timer should run a pass");
+            shutdown.cancel();
+        };
+        tokio::join!(processor.drain_token_queues(&shutdown), checks);
     }
 
     #[tokio::test]

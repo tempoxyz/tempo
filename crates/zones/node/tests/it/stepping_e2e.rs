@@ -374,6 +374,7 @@ async fn test_configured_short_l1_gap_submits_multiple_batch_boundaries() -> eyr
         l1.dev_signer(),
         anchor_config,
         zone_sequencer::WithdrawalBatchLimits::default(),
+        Duration::from_millis(500),
     )
     .await;
 

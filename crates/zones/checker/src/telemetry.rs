@@ -136,8 +136,8 @@ pub(crate) struct CheckerMetrics {
     pub(crate) recovery_rebuilds_total: Counter,
     /// Time from a deposit's Tempo block to the Zone block that processed it.
     pub(crate) deposit_latency_seconds: Histogram,
-    /// Time from a user withdrawal's Zone request to the Tempo block that processed it.
-    pub(crate) withdrawal_latency_seconds: Histogram,
+    /// Time from a user withdrawal's Zone request to the Tempo block of its first payout or bounce.
+    pub(crate) withdrawal_first_payout_latency_seconds: Histogram,
 }
 
 impl CheckerMetrics {
@@ -166,7 +166,7 @@ impl CheckerMetrics {
             self.deposit_latency_seconds.record(latency);
         }
         for &latency in &samples.withdrawals {
-            self.withdrawal_latency_seconds.record(latency);
+            self.withdrawal_first_payout_latency_seconds.record(latency);
         }
     }
 }

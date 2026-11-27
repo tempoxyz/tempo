@@ -68,6 +68,15 @@ crate::sol! {
             uint64 senderOrg;
         }
 
+        /// TIP-1150 token-queue entry: what its payout reads.
+        struct QueuedWithdrawal {
+            address to;
+            uint64 fallbackNonce;
+            bool partlyPaid;
+            bytes32 senderTag;
+            uint128 remaining;
+        }
+
         /// Deposit payload (ECIES-encrypted recipient and memo).
         struct DepositPayload {
             bytes32 ephemeralPubkeyX;
@@ -239,6 +248,21 @@ crate::sol! {
         event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
         event TransfersEnabledUpdated(bool enabled);
         event IdentityConfigUpdated(address registrar, bool enforced);
+        event WithdrawalLimitSet(address indexed token, uint128 maxAmount, uint64 period);
+        event WithdrawalQueued(
+            address indexed token,
+            uint256 indexed queueIndex,
+            address to,
+            uint128 amount,
+            bytes32 senderTag,
+            uint64 fallbackNonce
+        );
+        event QueuedWithdrawalPaid(
+            address indexed token,
+            uint256 indexed queueIndex,
+            uint128 paid,
+            uint128 remaining
+        );
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
 
         /// Emitted when block-production leadership transitions to a new sequencer.
@@ -298,6 +322,8 @@ crate::sol! {
         error DepositBlockCapacityExceeded(uint64 maximum);
         error InvalidCallbackTarget();
         error AccountNotAllowed(address account);
+        error WithdrawalLimitTightened();
+        error InvalidWithdrawalLimit();
         error InvalidLeader();
         error ActiveLeaderRemoved();
         error LeaderAlreadyUpdatedThisBlock();
@@ -376,6 +402,19 @@ crate::sol! {
         function depositBuckets(uint256 index) external view returns (bytes32 hash, uint64 cumulativeWeight);
         function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
         function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
+        function setWithdrawalLimit(address token, uint128 maxAmount, uint64 period) external;
+        function withdrawalLimit(address token)
+            external
+            view
+            returns (uint128 maxAmount, uint64 period, uint128 available);
+        function queuedWithdrawals(address token) external view returns (uint64 head, uint64 tail);
+        function queuedWithdrawalAt(address token, uint256 index)
+            external
+            view
+            returns (QueuedWithdrawal memory);
+        function processQueuedWithdrawals(address token, uint256 maxEntries)
+            external
+            returns (uint256 completed);
         function paused() external view returns (bool);
         function pauseExpiry() external view returns (uint64);
         function abdicationEffectiveAt(Capability capability) external view returns (uint64);
