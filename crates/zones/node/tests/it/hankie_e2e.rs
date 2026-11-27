@@ -1,4 +1,4 @@
-//! Live end-to-end test of a Tempo Zone running against real `hankie` and `hankie-rpc` binaries.
+//! Live end-to-end test of a Tempo Zone running against real `hankie` and `cloakroom` binaries.
 
 use std::{
     net::TcpListener,
@@ -13,15 +13,15 @@ use alloy_provider::{Provider, ProviderBuilder};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::{
     precompiles::{ITIP20, PATH_USD_ADDRESS},
-    zones::{ZoneFactory, ZonePortal},
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZoneFactory, ZonePortal},
 };
 use tempo_precompiles::zone_factory::portal_address;
 use zone_precompiles::{L1StorageReader as _, ecies};
 
 use crate::utils::{
-    L1_TIMEOUT, TIP20_TX_GAS, ZoneCreationConfig, ZoneGenesis, ZoneL1, ZoneLaunch, ZoneTestNode,
-    create_zone_request, l1_dev_signer, poll_until, portal_admin_signer, signer_at,
-    t15_hankie_test_genesis,
+    L1_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneCreationConfig, ZoneGenesis, ZoneL1,
+    ZoneLaunch, ZoneTestNode, create_zone_request, l1_dev_signer, poll_until, portal_admin_signer,
+    signer_at, t15_hankie_test_genesis,
 };
 
 struct ChildGuard(Vec<Child>);
@@ -44,16 +44,16 @@ fn free_port() -> u16 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires local hankie and hankie-rpc binaries"]
+#[ignore = "requires local hankie and cloakroom binaries"]
 async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let hankie_bin = PathBuf::from(
         std::env::var("HANKIE_BIN")
             .unwrap_or_else(|_| "/home/user/workspace/repo/target/debug/hankie".into()),
     );
-    let hankie_rpc_bin = PathBuf::from(
-        std::env::var("HANKIE_RPC_BIN")
-            .unwrap_or_else(|_| "/home/user/workspace/repo/target/debug/hankie-rpc".into()),
+    let cloakroom_bin = PathBuf::from(
+        std::env::var("CLOAKROOM_BIN")
+            .unwrap_or_else(|_| "/home/user/workspace/repo/target/debug/cloakroom".into()),
     );
     eyre::ensure!(
         hankie_bin.exists(),
@@ -61,64 +61,84 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
         hankie_bin.display()
     );
     eyre::ensure!(
-        hankie_rpc_bin.exists(),
-        "missing hankie-rpc binary at {}",
-        hankie_rpc_bin.display()
+        cloakroom_bin.exists(),
+        "missing cloakroom binary at {}",
+        cloakroom_bin.display()
     );
 
-    let dir = tempfile::tempdir()?;
+    // Kept after the test, so the logs of a failed run can be read.
+    let dir = tempfile::Builder::new()
+        .prefix("hankie-e2e")
+        .tempdir()?
+        .keep();
+    eprintln!("[hankie-e2e] logs in {}", dir.display());
     let genesis = t15_hankie_test_genesis()?;
-    let genesis_path = dir.path().join("genesis.json");
+    let genesis_path = dir.join("genesis.json");
     std::fs::write(&genesis_path, serde_json::to_vec_pretty(&genesis)?)?;
 
     let store_port = free_port();
+    let upload_port = free_port();
     let rpc_port = free_port();
     let node_port = free_port();
     let p2p_port = free_port();
+    let log = |name: &str| -> eyre::Result<(Stdio, Stdio)> {
+        let file = std::fs::File::create(dir.join(name))?;
+        Ok((Stdio::from(file.try_clone()?), Stdio::from(file)))
+    };
 
-    let rpc_log = std::fs::File::create(dir.path().join("hankie-rpc.log"))?;
-    let rpc_log_err = rpc_log.try_clone()?;
-    let node_log = std::fs::File::create(dir.path().join("hankie.log"))?;
-    let node_log_err = node_log.try_clone()?;
-
+    // Cloakroom runs the store in process, ingests what the validator uploads, executes it in its
+    // replica, serves RPC from the store, and forwards transactions to the validator's RPC.
     let mut children = ChildGuard(Vec::new());
+    let (stdout, stderr) = log("cloakroom.log")?;
     children.0.push(
-        Command::new(&hankie_rpc_bin)
+        Command::new(&cloakroom_bin)
             .args([
-                "--store",
-                dir.path().join("store").to_str().unwrap(),
-                "--store-listen",
+                "--simulator",
+                dir.join("store").to_str().unwrap(),
+                "--simulator-listen",
                 &format!("127.0.0.1:{store_port}"),
                 "--listen",
                 &format!("127.0.0.1:{rpc_port}"),
-                "--validator",
+                "--storage-dir",
+                dir.join("cloakroom").to_str().unwrap(),
+                "--upload-listen",
+                &format!("127.0.0.1:{upload_port}"),
+                "--seed",
+                "0",
+                "--validators",
+                "1",
+                "--genesis",
+                genesis_path.to_str().unwrap(),
+                "--producer",
                 &format!("http://127.0.0.1:{node_port}"),
-                "--chain-id",
-                "1337",
             ])
-            .stdout(Stdio::from(rpc_log))
-            .stderr(Stdio::from(rpc_log_err))
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()?,
     );
 
+    let (stdout, stderr) = log("hankie.log")?;
     children.0.push(
         Command::new(&hankie_bin)
             .args([
+                "node",
                 "--index",
                 "0",
                 "--peers",
                 &format!("127.0.0.1:{p2p_port}"),
+                "--seed",
+                "0",
                 "--rpc",
                 &format!("127.0.0.1:{node_port}"),
                 "--storage-dir",
-                dir.path().join("node").to_str().unwrap(),
+                dir.join("node").to_str().unwrap(),
                 "--genesis",
                 genesis_path.to_str().unwrap(),
                 "--indexer",
-                &format!("http://127.0.0.1:{store_port}"),
+                &format!("http://127.0.0.1:{upload_port}"),
             ])
-            .stdout(Stdio::from(node_log))
-            .stderr(Stdio::from(node_log_err))
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()?,
     );
 
@@ -129,11 +149,11 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
         .connect_http(http_url.clone())
         .erased();
 
-    // 1. Wait for hankie + hankie-rpc to produce and index blocks.
+    // 1. Wait for hankie to produce blocks and cloakroom to publish them.
     poll_until(
         Duration::from_secs(60),
         Duration::from_millis(200),
-        "hankie-rpc block >= 2",
+        "cloakroom block >= 2",
         || {
             let provider = l1_provider.clone();
             async move {
@@ -147,11 +167,11 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
     )
     .await?;
     eprintln!(
-        "[hankie-e2e] hankie-rpc up at block {}",
+        "[hankie-e2e] cloakroom up at block {}",
         l1_provider.get_block_number().await?
     );
 
-    // 2. Deploy a Zone portal on hankie through hankie-rpc.
+    // 2. Deploy a Zone portal on hankie through cloakroom.
     let dev_signer = l1_dev_signer();
     let admin_signer = portal_admin_signer();
     let user_signer = signer_at(1);
@@ -226,7 +246,7 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
     }
     eprintln!("[hankie-e2e] deployed ZonePortal at {portal}");
 
-    // 3. Start a real ZoneTestNode connected to hankie-rpc over WS + HTTP.
+    // 3. Start a real ZoneTestNode connected to cloakroom over WS + HTTP.
     let zone = ZoneTestNode::launch(ZoneLaunch {
         l1: ZoneL1::Portal {
             url: ws_url,
@@ -349,7 +369,7 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
     .await?;
     eprintln!("[hankie-e2e] Zone settled batch on hankie: blockHash={settled_hash}");
 
-    // 6. Fetch a real eth_getMultiProof from hankie-rpc and verify it with zone-spf QMDB mode.
+    // 6. Fetch a real eth_getMultiProof from cloakroom and verify it with zone-spf QMDB mode.
     let proof_block = l1_provider.get_block_number().await?;
     let block = l1_provider
         .get_block_by_number(proof_block.into())
@@ -385,8 +405,65 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
         .await?;
     assert_eq!(proved_slot, B256::from(rpc_slot));
     eprintln!(
-        "[hankie-e2e] zone-spf QMDB verified real hankie-rpc proof at block {proof_block}: slot0={proved_slot:#x}"
+        "[hankie-e2e] zone-spf QMDB verified real cloakroom proof at block {proof_block}: slot0={proved_slot:#x}"
     );
+
+    // 7. Withdraw back to hankie. The sequencer settles the batch with the withdrawal, then
+    // processes it with processWithdrawals, both from the sequencer's one L1 account.
+    let withdrawal_amount: u128 = 250_000;
+    let l2_provider = ProviderBuilder::new()
+        .wallet(user_signer.clone())
+        .connect_http(zone.http_url().clone())
+        .erased();
+    let approve_receipt = ITIP20::new(PATH_USD_ADDRESS, &l2_provider)
+        .approve(ZONE_OUTBOX_ADDRESS, U256::MAX)
+        .gas(TIP20_TX_GAS)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        approve_receipt.status(),
+        "outbox approval reverted on the zone"
+    );
+    let l1_token = ITIP20::new(PATH_USD_ADDRESS, &l1_provider);
+    let l1_before = l1_token.balanceOf(user_signer.address()).call().await?;
+    let request_receipt = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &l2_provider)
+        .requestWithdrawal_0(
+            PATH_USD_ADDRESS,
+            user_signer.address(),
+            withdrawal_amount,
+            B256::ZERO,
+            0,
+            user_signer.address(),
+            alloy_primitives::Bytes::new(),
+            alloy_primitives::Bytes::new(),
+        )
+        .gas(WITHDRAWAL_TX_GAS)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        request_receipt.status(),
+        "withdrawal request reverted on the zone"
+    );
+    eprintln!("[hankie-e2e] withdrawal of {withdrawal_amount} pathUSD requested on the zone");
+
+    let l1_token = &l1_token;
+    let user = user_signer.address();
+    let l1_after = poll_until(
+        Duration::from_secs(60),
+        Duration::from_millis(250),
+        "withdrawal paid out on hankie",
+        || async move {
+            let balance = l1_token.balanceOf(user).call().await?;
+            Ok((balance > l1_before).then_some(balance))
+        },
+    )
+    .await?;
+    assert_eq!(l1_after - l1_before, U256::from(withdrawal_amount));
+    eprintln!("[hankie-e2e] withdrawal of {withdrawal_amount} pathUSD paid out on hankie");
 
     Ok(())
 }
