@@ -1,13 +1,20 @@
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError};
 use alloy_contract::{CallBuilder, CallDecoder};
-use alloy_eips::Typed2718;
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_eips::{
+    Typed2718,
+    eip2930::AccessList,
+    eip4844::{Blob, BlobTransactionSidecar, Bytes48},
+    eip7594::BlobTransactionSidecarEip7594,
+    eip7702::SignedAuthorization,
+};
+use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_provider::Provider;
-use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
+use alloy_rpc_types_eth::{Transaction, TransactionInput, TransactionRequest, TransactionTrait};
 use core::num::NonZeroU64;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
+    serde_helpers::MapOnly,
     transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
@@ -16,16 +23,7 @@ use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
 #[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize,
-    derive_more::Deref,
-    derive_more::DerefMut,
+    Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, derive_more::Deref, derive_more::DerefMut,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct TempoTransactionRequest {
@@ -393,6 +391,183 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
         }
     }
 }
+
+impl<'de> Deserialize<'de> for TempoTransactionRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let TempoTransactionRequestFields {
+            from,
+            to,
+            gas_price,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            max_fee_per_blob_gas,
+            gas,
+            value,
+            input,
+            data,
+            nonce,
+            chain_id,
+            access_list,
+            transaction_type,
+            blob_versioned_hashes,
+            blobs,
+            commitments,
+            proofs,
+            cell_proofs,
+            authorization_list,
+            fee_token,
+            nonce_key,
+            calls,
+            key_type,
+            key_data,
+            key_id,
+            tempo_authorization_list,
+            key_authorization,
+            configurable_account_simulation,
+            key_authorization_simulation,
+            valid_before,
+            valid_after,
+            fee_payer_signature,
+        } = TempoTransactionRequestFields::deserialize(MapOnly(deserializer))?;
+
+        // Matches how `TransactionRequest` decodes its flattened sidecar.
+        let sidecar = match (blobs, commitments, proofs, cell_proofs) {
+            (Some(Blobs(blobs)), Some(commitments), Some(proofs), None) => Some(
+                BlobTransactionSidecar {
+                    blobs,
+                    commitments,
+                    proofs,
+                }
+                .into(),
+            ),
+            (Some(Blobs(blobs)), Some(commitments), None, Some(cell_proofs)) => Some(
+                BlobTransactionSidecarEip7594 {
+                    blobs,
+                    commitments,
+                    cell_proofs,
+                }
+                .into(),
+            ),
+            (_, _, Some(_), Some(_)) => {
+                return Err(D::Error::custom(
+                    "Both 'cellProofs' and 'proofs' cannot be present",
+                ));
+            }
+            _ => None,
+        };
+
+        Ok(Self {
+            inner: TransactionRequest {
+                from,
+                to,
+                gas_price,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+                max_fee_per_blob_gas,
+                gas,
+                value,
+                input: TransactionInput { input, data },
+                nonce,
+                chain_id,
+                access_list,
+                transaction_type,
+                blob_versioned_hashes,
+                sidecar,
+                authorization_list,
+            },
+            fee_token,
+            nonce_key,
+            calls,
+            key_type,
+            key_data,
+            key_id,
+            tempo_authorization_list,
+            key_authorization,
+            configurable_account_simulation,
+            key_authorization_simulation,
+            valid_before,
+            valid_after,
+            fee_payer_signature,
+        })
+    }
+}
+
+/// The fields of a [`TempoTransactionRequest`] as encoded, decoded without the buffering of
+/// `#[serde(flatten)]`.
+///
+/// The [`TransactionRequest`] fields keep its serde attributes, with its flattened
+/// [`TransactionInput`] and blob sidecar fields inlined.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", expecting = "struct TempoTransactionRequest")]
+struct TempoTransactionRequestFields {
+    #[serde(default)]
+    from: Option<Address>,
+    #[serde(default)]
+    to: Option<TxKind>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    gas_price: Option<u128>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    max_fee_per_gas: Option<u128>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    max_priority_fee_per_gas: Option<u128>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    max_fee_per_blob_gas: Option<u128>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    gas: Option<u64>,
+    #[serde(default)]
+    value: Option<U256>,
+    #[serde(default)]
+    input: Option<Bytes>,
+    #[serde(default)]
+    data: Option<Bytes>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    nonce: Option<u64>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    chain_id: Option<ChainId>,
+    #[serde(default)]
+    access_list: Option<AccessList>,
+    #[serde(default, rename = "type", with = "alloy_serde::quantity::opt")]
+    transaction_type: Option<u8>,
+    #[serde(default)]
+    blob_versioned_hashes: Option<Vec<B256>>,
+    blobs: Option<Blobs>,
+    commitments: Option<Vec<Bytes48>>,
+    proofs: Option<Vec<Bytes48>>,
+    cell_proofs: Option<Vec<Bytes48>>,
+    #[serde(default)]
+    authorization_list: Option<Vec<SignedAuthorization>>,
+    #[serde(default)]
+    fee_token: Option<Address>,
+    #[serde(default)]
+    nonce_key: Option<U256>,
+    #[serde(default)]
+    calls: Vec<Call>,
+    #[serde(default)]
+    key_type: Option<SignatureType>,
+    #[serde(default)]
+    key_data: Option<Bytes>,
+    #[serde(default)]
+    key_id: Option<Address>,
+    #[serde(default, rename = "aaAuthorizationList")]
+    tempo_authorization_list: Vec<TempoSignedAuthorization>,
+    #[serde(default)]
+    key_authorization: Option<SignedKeyAuthorization>,
+    #[serde(default)]
+    configurable_account_simulation: Option<ConfigurableAccountSimulationSpec>,
+    #[serde(default)]
+    key_authorization_simulation: Option<ConfigurableAccountSimulationSpec>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    valid_before: Option<NonZeroU64>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    valid_after: Option<NonZeroU64>,
+    #[serde(default)]
+    fee_payer_signature: Option<Signature>,
+}
+
+/// Blobs of a sidecar, decoded like `TransactionRequest` decodes them.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct Blobs(#[serde(deserialize_with = "alloy_eips::eip4844::deserialize_blobs")] Vec<Blob>);
 
 pub trait FeeToken {
     fn fee_token(&self) -> Option<Address>;
@@ -911,5 +1086,229 @@ mod tests {
             roundtrip.calls, batch,
             "multi-call AA must not gain phantom calls on round-trip"
         );
+    }
+
+    mod serde_flatten {
+        use super::*;
+        use alloy_primitives::Signature;
+        use proptest::{prelude::*, test_runner::TestRunner};
+        use proptest_arbitrary_interop::arb;
+        use tempo_primitives::serde_helpers::test_utils::{mutate_object, without_position};
+
+        /// [`TempoTransactionRequest`] decoded by the `#[serde(flatten)]` derive it used before.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", expecting = "struct TempoTransactionRequest")]
+        struct FlattenedTempoTransactionRequest {
+            #[serde(flatten)]
+            inner: TransactionRequest,
+            #[serde(default)]
+            fee_token: Option<Address>,
+            #[serde(default)]
+            nonce_key: Option<U256>,
+            #[serde(default)]
+            calls: Vec<Call>,
+            #[serde(default)]
+            key_type: Option<SignatureType>,
+            #[serde(default)]
+            key_data: Option<Bytes>,
+            #[serde(default)]
+            key_id: Option<Address>,
+            #[serde(default, rename = "aaAuthorizationList")]
+            tempo_authorization_list: Vec<TempoSignedAuthorization>,
+            #[serde(default)]
+            key_authorization: Option<SignedKeyAuthorization>,
+            #[serde(default)]
+            configurable_account_simulation: Option<ConfigurableAccountSimulationSpec>,
+            #[serde(default)]
+            key_authorization_simulation: Option<ConfigurableAccountSimulationSpec>,
+            #[serde(default, with = "alloy_serde::quantity::opt")]
+            valid_before: Option<NonZeroU64>,
+            #[serde(default, with = "alloy_serde::quantity::opt")]
+            valid_after: Option<NonZeroU64>,
+            #[serde(default)]
+            fee_payer_signature: Option<Signature>,
+        }
+
+        const KEYS: &[&str] = &[
+            "from",
+            "to",
+            "gasPrice",
+            "maxFeePerGas",
+            "maxPriorityFeePerGas",
+            "maxFeePerBlobGas",
+            "gas",
+            "value",
+            "input",
+            "data",
+            "nonce",
+            "chainId",
+            "accessList",
+            "type",
+            "blobVersionedHashes",
+            "blobs",
+            "commitments",
+            "proofs",
+            "cellProofs",
+            "authorizationList",
+            "feeToken",
+            "nonceKey",
+            "calls",
+            "keyType",
+            "keyData",
+            "keyId",
+            "aaAuthorizationList",
+            "keyAuthorization",
+            "configurableAccountSimulation",
+            "keyAuthorizationSimulation",
+            "validBefore",
+            "validAfter",
+            "feePayerSignature",
+        ];
+
+        fn decode_flattened(json: &str) -> Result<TempoTransactionRequest, String> {
+            serde_json::from_str::<FlattenedTempoTransactionRequest>(json)
+                .map(|request| TempoTransactionRequest {
+                    inner: request.inner,
+                    fee_token: request.fee_token,
+                    nonce_key: request.nonce_key,
+                    calls: request.calls,
+                    key_type: request.key_type,
+                    key_data: request.key_data,
+                    key_id: request.key_id,
+                    tempo_authorization_list: request.tempo_authorization_list,
+                    key_authorization: request.key_authorization,
+                    configurable_account_simulation: request.configurable_account_simulation,
+                    key_authorization_simulation: request.key_authorization_simulation,
+                    valid_before: request.valid_before,
+                    valid_after: request.valid_after,
+                    fee_payer_signature: request.fee_payer_signature,
+                })
+                .map_err(|err| without_position(&err))
+        }
+
+        fn decode(json: &str) -> Result<TempoTransactionRequest, String> {
+            serde_json::from_str::<TempoTransactionRequest>(json)
+                .map_err(|err| without_position(&err))
+        }
+
+        type TempoFields = (
+            Option<Address>,
+            Option<U256>,
+            Vec<Call>,
+            Option<SignatureType>,
+            Option<Bytes>,
+            Option<Address>,
+        );
+
+        type TempoAuthFields = (
+            Vec<TempoSignedAuthorization>,
+            Option<SignedKeyAuthorization>,
+            Option<u64>,
+            Option<u64>,
+            Option<Signature>,
+        );
+
+        fn arb_request() -> impl Strategy<Value = TempoTransactionRequest> {
+            (
+                arb::<TransactionRequest>(),
+                arb::<TempoFields>(),
+                arb::<TempoAuthFields>(),
+            )
+                .prop_map(
+                    |(
+                        inner,
+                        (fee_token, nonce_key, calls, key_type, key_data, key_id),
+                        (
+                            tempo_authorization_list,
+                            key_authorization,
+                            valid_before,
+                            valid_after,
+                            fee_payer_signature,
+                        ),
+                    )| TempoTransactionRequest {
+                        inner,
+                        fee_token,
+                        nonce_key,
+                        calls,
+                        key_type,
+                        key_data,
+                        key_id,
+                        tempo_authorization_list,
+                        key_authorization,
+                        configurable_account_simulation: None,
+                        key_authorization_simulation: None,
+                        valid_before: valid_before.and_then(NonZeroU64::new),
+                        valid_after: valid_after.and_then(NonZeroU64::new),
+                        fee_payer_signature,
+                    },
+                )
+        }
+
+        #[test]
+        fn request_serde_matches_flattened_derive() {
+            let strategy = (
+                arb_request(),
+                proptest::collection::vec(any::<(u8, u8, u8)>(), 0..16),
+            );
+            // Generating arbitrary requests in a debug build needs more than the default test stack.
+            std::thread::Builder::new()
+                .stack_size(16 << 20)
+                .spawn(move || {
+                    TestRunner::new(ProptestConfig::default())
+                        .run(&strategy, |(request, edits)| {
+                            let json = serde_json::to_string(&request).unwrap();
+                            let decoded = decode(&json);
+                            prop_assert!(decoded.is_ok(), "{decoded:?}");
+                            prop_assert_eq!(decoded, decode_flattened(&json));
+
+                            let mutated =
+                                mutate_object(&serde_json::from_str(&json).unwrap(), KEYS, &edits);
+                            prop_assert_eq!(decode(&mutated).ok(), decode_flattened(&mutated).ok());
+                            Ok(())
+                        })
+                        .unwrap();
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+
+        #[test_case::test_case("{}")]
+        #[test_case::test_case(
+            r#"{"input":"0x01","data":"0x02","gas":21000,"value":1,"type":"0x76"}"#
+        )]
+        #[test_case::test_case(
+            r#"{"to":null,"chainId":"0x1","nonce":"0x1","feeToken":null,"x":[0,[],{}]}"#
+        )]
+        #[test_case::test_case(r#"{"from":"0x0000000000000000000000000000000000000001","from":"0x0000000000000000000000000000000000000001"}"#)]
+        #[test_case::test_case(r#"{"calls":[{"to":null,"value":"0x0","data":"0x01"}],"nonceKey":"0x1","validBefore":"0x0"}"#)]
+        #[test_case::test_case(r#"{"blobs":[],"commitments":[],"proofs":[]}"#)]
+        #[test_case::test_case(r#"{"blobs":[],"commitments":[],"cellProofs":[]}"#)]
+        #[test_case::test_case(r#"{"blobs":[],"commitments":[],"proofs":[],"cellProofs":[]}"#)]
+        #[test_case::test_case(r#"{"blobs":null,"commitments":[]}"#)]
+        #[test_case::test_case(r#"{"blobs":["0x00"],"commitments":[],"proofs":[]}"#)]
+        #[test_case::test_case(r#"{"gasPrice":"0x"}"#)]
+        #[test_case::test_case(r#"[null,null]"#)]
+        #[test_case::test_case("null")]
+        fn request_serde_edge_cases_match_flattened_derive(json: &str) {
+            assert_eq!(decode(json), decode_flattened(json));
+        }
+
+        #[test_case::test_case("proofs")]
+        #[test_case::test_case("cellProofs")]
+        fn request_serde_sidecar_matches_flattened_derive(proofs_key: &str) {
+            let blob = format!("\"0x{}\"", "00".repeat(alloy_eips::eip4844::BYTES_PER_BLOB));
+            let bytes48 = format!("\"0x{}\"", "00".repeat(48));
+            let json = format!(
+                r#"{{"blobs":[{blob}],"commitments":[{bytes48}],"{proofs_key}":[{bytes48}]}}"#
+            );
+            let decoded = decode(&json);
+            assert!(
+                decoded
+                    .as_ref()
+                    .is_ok_and(|request| request.sidecar.is_some())
+            );
+            assert_eq!(decoded, decode_flattened(&json));
+        }
     }
 }

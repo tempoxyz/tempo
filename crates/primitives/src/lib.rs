@@ -11,6 +11,8 @@ pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
 pub mod crypto;
 pub mod ed25519;
 pub mod gas;
+#[cfg(feature = "serde")]
+pub mod serde_helpers;
 
 #[cfg(feature = "evm")]
 mod block;
