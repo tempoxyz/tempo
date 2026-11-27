@@ -35,7 +35,7 @@ use commonware_storage::{
         self,
         any::{batch::Slot, ordered::fixed::Update},
         current::{
-            batch::{MerkleizedBatch, Staged},
+            batch::{MerkleizedBatch, PendingGraftSpeculation, Staged},
             ordered::fixed::partitioned,
         },
     },
@@ -101,6 +101,14 @@ static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| 
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
 });
+/// Whether staging hashes the grafted leaves its writes are predicted to change ahead of
+/// merkleize; set `TEMPO_QMDB_GRAFT_SPECULATION=0` to stop it.
+static GRAFT_SPECULATION: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("TEMPO_QMDB_GRAFT_SPECULATION").map_or(true, |v| v != "0")
+});
+/// Staged keys a speculation waits for before extending the previous one: at least this many,
+/// and at least an eighth more than it covered.
+const SPECULATION_MIN_KEYS: usize = 256;
 /// Lowest Merkle node height kept in memory: the bitmap grafts at height 8 (256-bit chunks), so
 /// nodes below it are only rebuilt for proofs. `TEMPO_QMDB_RESIDENT_HEIGHT` overrides it.
 static RESIDENT_HEIGHT: std::sync::LazyLock<ResidentHeight> = std::sync::LazyLock::new(|| {
@@ -908,6 +916,11 @@ struct StagedDb<const N: usize> {
     index: alloy_primitives::map::HashMap<Key, usize>,
     /// Floor-walk candidates already read ahead for this stage.
     floor_read: usize,
+    /// The latest grafted-leaf speculation on the staged reads, which merkleize then hashes only
+    /// the mispredicted chunks of.
+    speculation: Option<PendingGraftSpeculation<Family, <Sha256 as Hasher>::Digest, Rayon, CHUNK>>,
+    /// The staged keys when `speculation` started.
+    speculated: usize,
 }
 
 /// The staged reads of a block on `parent_hash`.
@@ -1247,11 +1260,15 @@ impl Actor {
                     staged: accounts,
                     index: Default::default(),
                     floor_read: 0,
+                    speculation: None,
+                    speculated: 0,
                 },
                 StagedDb {
                     staged: slots,
                     index: Default::default(),
                     floor_read: 0,
+                    speculation: None,
+                    speculated: 0,
                 },
             )),
         };
@@ -1676,7 +1693,17 @@ async fn merkleize_db<const N: usize, const P: usize>(
     writes: Vec<Write<FixedBytes<N>>>,
     number: Option<u64>,
 ) -> Result<Batch<N>, Error> {
-    if let Some(StagedDb { staged, index, .. }) = staged {
+    if let Some(StagedDb {
+        staged,
+        index,
+        speculation,
+        ..
+    }) = staged
+    {
+        let staged = match speculation {
+            Some(speculation) => staged.with_graft_speculation(speculation),
+            None => staged,
+        };
         let mut slots: Vec<Slot<FixedBytes<N>>> = std::iter::repeat_with(|| Slot::Keep)
             .take(staged.len())
             .collect();
@@ -1720,6 +1747,8 @@ async fn stage_db<const N: usize, const P: usize>(
         staged,
         mut index,
         mut floor_read,
+        mut speculation,
+        mut speculated,
     } = staged;
     let mut new = Vec::new();
     for key in keys {
@@ -1733,6 +1762,8 @@ async fn stage_db<const N: usize, const P: usize>(
             staged,
             index,
             floor_read,
+            speculation,
+            speculated,
         });
     }
     let (staged, range, values) = staged.expand(&new, db).await?;
@@ -1757,10 +1788,28 @@ async fn stage_db<const N: usize, const P: usize>(
             .await?;
         floor_read = floor_target;
     }
+    // Hash the grafted leaves the staged writes will change while the block still executes,
+    // extending the previous speculation once it finished and enough keys have arrived since.
+    if *GRAFT_SPECULATION && index.len() >= speculated + SPECULATION_MIN_KEYS.max(speculated / 8) {
+        let previous = match speculation.take().map(PendingGraftSpeculation::try_resolve) {
+            None => Some(None),
+            Some(Ok(done)) => Some(Some(done)),
+            Some(Err(running)) => {
+                speculation = Some(running);
+                None
+            }
+        };
+        if let Some(previous) = previous {
+            speculation = Some(staged.speculate_grafts(db, previous));
+            speculated = index.len();
+        }
+    }
     Ok(StagedDb {
         staged,
         index,
         floor_read,
+        speculation,
+        speculated,
     })
 }
 
@@ -1987,6 +2036,56 @@ mod tests {
             )
             .unwrap();
         store
+    }
+
+    fn wide(key: u32, value: Option<u64>) -> Write<SlotValue> {
+        let mut bytes = [0xaa; 32];
+        bytes[..4].copy_from_slice(&key.to_be_bytes());
+        Write {
+            key: Key::new(bytes),
+            value: value.map(|value| layout::slot_value(U256::from(value))),
+        }
+    }
+
+    #[test]
+    fn speculated_builds_match_plain_builds() {
+        let (dir, plain_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let open = |path: &std::path::Path| {
+            let store = Store::open(config(path, 8)).unwrap();
+            let slots = (0..4096u32)
+                .map(|i| wide(i, Some(i.into())))
+                .collect::<Vec<_>>();
+            store
+                .import_chunk(slots.into(), Some((0, B256::ZERO)))
+                .unwrap();
+            store
+        };
+        let (store, plain) = (open(dir.path()), open(plain_dir.path()));
+
+        // Rounds large enough to start and extend speculations, with a third of the staged keys
+        // left unwritten, some deleted, and unstaged creates.
+        let stage = store.open_stage(B256::ZERO, false).unwrap();
+        for round in 0..4u32 {
+            let keys = (round * 600..(round + 1) * 600)
+                .map(|i| wide(i, None).key)
+                .collect();
+            store.stage(stage, Vec::new(), keys).unwrap();
+        }
+        let writes = || -> Writes {
+            (0..2400u32)
+                .filter(|i| i % 3 != 0)
+                .map(|i| wide(i, (i % 7 != 0).then(|| u64::from(i) + 1)))
+                .chain((5000..5100).map(|i| wide(i, Some(1))))
+                .collect::<Vec<_>>()
+                .into()
+        };
+        assert_eq!(
+            store
+                .build_staged(block(1, 1, 0), writes(), Some(stage))
+                .unwrap()
+                .root(),
+            plain.build(block(1, 1, 0), writes()).unwrap().root()
+        );
     }
 
     #[test]
