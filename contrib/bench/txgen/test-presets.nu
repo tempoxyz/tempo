@@ -540,4 +540,16 @@ with-env {TXGEN_NEOBANK_SHAPES_GZ_B64: "bm90IGd6aXA="} {
     assert (try { txgen-neobank-inline-shapes $inline_dir; false } catch { true })
 }
 rm -rf $inline_dir
+# Standalone vault presets keep the vault fixture barrier on keyed prepare_user steps.
+for vault_preset in ["vault-deposit" "vault-withdraw"] {
+    let vault_spec = ($multi_spec.spec_path | path dirname | path join $"($vault_preset).yml")
+    let vault_setup_ids = ((open ([ ($vault_spec | path dirname) "vault" "setup.yml" ] | path join)).setup.steps | get id)
+    let prepared_vault_path = (txgen-prepare-vault-preset $vault_spec 3 1337)
+    let prepared_vault = (open $prepared_vault_path)
+    let prep_steps = $prepared_vault.append.setup.steps
+    assert equal ($prep_steps | get id) ["prepare_user_0" "prepare_user_1" "prepare_user_2"]
+    assert equal ($prep_steps | get tx.nonce_key) [1 2 3]
+    assert ($prep_steps | all { |step| $vault_setup_ids | all { |dep| $dep in $step.depends_on } })
+    rm -rf ($prepared_vault_path | path dirname)
+}
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

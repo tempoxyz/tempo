@@ -1059,12 +1059,13 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     let operation = ($spec_path | path basename | str replace "vault-" "" | str replace ".yml" "")
     let template_path = ([ ($spec_path | path dirname) "vault" $"user-($operation).yml" ] | path join)
     let template = (open $template_path).setup.steps.0
-    let steps = (0..<$accounts | each { |index|
+    let vault_setup = (open ([ ($template_path | path dirname) "setup.yml" ] | path join)).setup.steps
+    let steps = (txgen-after-vault (0..<$accounts | each { |index|
         $template
             | update id $"($template.id)_($index)"
             | update bindings.user.account.select.index $index
             | upsert tx.nonce_key ($index + 1)
-    })
+    }) $vault_setup)
     let base = (open ([ ($template_path | path dirname) "base.yml" ] | path join))
     let workload = ($base.templates | get $"vault_($operation)")
     let templates = (0..<$accounts | each { |index|
