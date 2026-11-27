@@ -20,15 +20,17 @@ sol! {
 pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
-/// Strict decoding starts at T11; T12 additionally permits trailing bytes.
+///
+/// Decoding is strict on every hardfork. Trailing bytes are permitted before T11 and from T12,
+/// and rejected in between.
 #[inline]
 pub const fn abi_decoder_config_for_spec(
     spec: TempoHardfork,
 ) -> alloy::sol_types::abi::AbiDecoderConfig {
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
-        .strict(spec.is_t11())
-        .validate_allow_trailing_bytes(spec.is_t12())
+        .strict(true)
+        .validate_allow_trailing_bytes(!spec.is_t11() || spec.is_t12())
 }
 
 pub mod typed {
@@ -267,6 +269,10 @@ mod tests {
             function setValues(uint256[] values) external;
         }
 
+        interface ITestAliasDispatch {
+            function setPair(uint256[] a, uint256[] b) external;
+        }
+
         error CustomTypedError(uint256 code);
     }
 
@@ -285,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+    fn decoding_is_strict_and_trailing_bytes_follow_the_fork() -> eyre::Result<()> {
         let canonical = ITestMemoryDispatch::setValuesCall {
             values: vec![U256::ONE, U256::from(2)],
         }
@@ -299,9 +305,10 @@ mod tests {
             TempoHardfork::T13,
         ] {
             let config = abi_decoder_config_for_spec(spec);
-            assert_eq!(config.get_strict(), spec.is_t11());
-            assert_eq!(config.get_validate(), spec.is_t11());
-            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+            let allows_trailing = !spec.is_t11() || spec.is_t12();
+            assert!(config.get_strict());
+            assert!(config.get_validate());
+            assert_eq!(config.get_validate_allow_trailing_bytes(), allows_trailing);
             assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
 
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
@@ -320,7 +327,7 @@ mod tests {
                         }
                     )
                 });
-                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+                let expected_success = suffix_len == 0 || allows_trailing;
                 assert_eq!(output.is_ok(), expected_success, "{spec:?}, {suffix_len}");
             }
 
@@ -328,9 +335,31 @@ mod tests {
             let mut gapped = canonical.clone();
             gapped[4..36].copy_from_slice(B256::with_last_byte(64).as_slice());
             gapped.splice(36..36, [0u8; 32]);
-            assert_eq!(
-                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
-                !spec.is_t11(),
+            assert!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config)
+                    .is_err(),
+                "{spec:?}"
+            );
+
+            // Overlapping dynamic data is rejected on every hardfork.
+            let aliased = ITestAliasDispatch::setPairCall {
+                a: vec![U256::ONE],
+                b: vec![U256::ONE],
+            }
+            .abi_encode();
+            let mut aliased = aliased;
+            // Point the second array at the first array's data.
+            let first_offset = aliased[4..36].to_vec();
+            aliased[36..68].copy_from_slice(&first_offset);
+            assert!(
+                ITestAliasDispatch::setPairCall::abi_decode_with_config(
+                    &aliased,
+                    alloy::sol_types::abi::AbiDecoderConfig::new()
+                )
+                .is_ok()
+            );
+            assert!(
+                ITestAliasDispatch::setPairCall::abi_decode_with_config(&aliased, config).is_err(),
                 "{spec:?}"
             );
             assert!(

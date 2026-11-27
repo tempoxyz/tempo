@@ -122,8 +122,10 @@ fn key_expiry(storage: &mut HashMapStorageProvider, key_id: Address) -> u64 {
     })
 }
 
-/// Before T14, key type 3 reverts exactly like an unknown key type (4) on every
-/// authorization entrypoint: same status, bytes and gas.
+/// Before T14, key type 3 reverts like an unknown key type (4) on every authorization
+/// entrypoint. From T11 the two reverts are identical: same status, bytes and gas. Before T11
+/// the strict decoder rejects the unknown type before the handler sees it, so only the status
+/// matches.
 #[test]
 fn key_type_reverts_like_an_unknown_type_before_t14() {
     let configurable_type = SignatureType::ConfigurableAccount as u8;
@@ -148,7 +150,11 @@ fn key_type_reverts_like_an_unknown_type_before_t14() {
                     let unknown = run(unknown_type);
                     assert!(unknown.is_revert(), "{case}");
                     assert!(unknown.gas_used > 0, "{case}");
-                    assert_eq!(configurable, unknown, "{case}");
+                    if spec.is_t11() {
+                        assert_eq!(configurable, unknown, "{case}");
+                    } else {
+                        assert!(configurable.is_revert(), "{case}");
+                    }
                 }
             }
         }
