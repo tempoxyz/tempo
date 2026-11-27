@@ -802,6 +802,17 @@ impl AccountKeychain {
         if transaction_key.is_zero() {
             return Ok(());
         }
+        Self::authorize_transfer_with_key(transaction_key, account, token, amount)
+    }
+
+    /// Like [`Self::authorize_transfer_direct`], using a non-zero `transaction_key` already loaded via `tload`.
+    #[inline]
+    pub fn authorize_transfer_with_key(
+        transaction_key: Address,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         let tx_origin =
             crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
                 .t_read()?;
@@ -809,6 +820,28 @@ impl AccountKeychain {
             return Ok(());
         }
         Self::new().verify_and_update_spending(account, transaction_key, token, amount)
+    }
+
+    /// Like [`Self::authorize_approve`], using a non-zero `transaction_key` already loaded via `tload`.
+    #[inline]
+    pub fn authorize_approve_with_key(
+        transaction_key: Address,
+        account: Address,
+        token: Address,
+        old_approval: U256,
+        new_approval: U256,
+    ) -> Result<()> {
+        let tx_origin =
+            crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+        let approval_increase = new_approval.saturating_sub(old_approval);
+        if approval_increase.is_zero() {
+            return Ok(());
+        }
+        Self::new().verify_and_update_spending(account, transaction_key, token, approval_increase)
     }
 
     /// Fast path for `refund_spending_limit` that skips constructing `AccountKeychain` for main-key txs.
@@ -824,6 +857,17 @@ impl AccountKeychain {
         if transaction_key.is_zero() {
             return Ok(());
         }
+        Self::refund_spending_limit_with_key(transaction_key, account, token, amount)
+    }
+
+    /// Like [`Self::refund_spending_limit_direct`], using a non-zero `transaction_key` already loaded via `tload`.
+    #[inline]
+    pub fn refund_spending_limit_with_key(
+        transaction_key: Address,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         let tx_origin =
             crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
                 .t_read()?;

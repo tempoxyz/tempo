@@ -1,9 +1,48 @@
 //! A state-aware iterator over the best transactions in the tempo pool.
 
 use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{Address, U256};
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
 
-type BalanceMap = HashMap<(Address, U256), U256>;
+/// Fast hasher for `(token_address, keccak256_slot)` keys: the slot is already a Keccak-256 hash.
+#[derive(Default)]
+struct SlotKeyHasher(u64);
+
+impl Hasher for SlotKeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Address is written as 20 bytes; mix its last 8 bytes (unique token ID suffix).
+        if bytes.len() >= 8 {
+            let n = bytes.len();
+            let v = u64::from_ne_bytes([
+                bytes[n - 8],
+                bytes[n - 7],
+                bytes[n - 6],
+                bytes[n - 5],
+                bytes[n - 4],
+                bytes[n - 3],
+                bytes[n - 2],
+                bytes[n - 1],
+            ]);
+            self.0 = self.0.wrapping_mul(0x9e3779b97f4a7c15) ^ v;
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = self.0.wrapping_mul(0x9e3779b97f4a7c15) ^ i;
+    }
+}
+
+type BalanceMap = HashMap<(Address, U256), U256, BuildHasherDefault<SlotKeyHasher>>;
 pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;

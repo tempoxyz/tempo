@@ -1332,8 +1332,11 @@ impl TIP20Token {
                     Err(e) => return Some(e.into_precompile_result()),
                 };
                 if !tx_key_word.is_zero() {
+                    let tx_key = Address::from_word(tx_key_word.into());
                     let res = StorageCtx::enter(storage, || {
-                        AccountKeychain::authorize_transfer_direct(caller, address, amount)
+                        AccountKeychain::authorize_transfer_with_key(
+                            tx_key, caller, address, amount,
+                        )
                     });
                     if let Err(err) = res {
                         return Some(err.into_precompile_result());
@@ -1439,38 +1442,27 @@ impl TIP20Token {
             {
                 return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
             }
-            match storage.tip20_is_initialized(address) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Some(
-                        TempoPrecompileError::from(TIP20Error::uninitialized())
-                            .into_precompile_result(),
-                    );
-                }
-                Err(e) => return Some(e.into_precompile_result()),
-            }
             let allowance_slot = spender.mapping_slot(caller.mapping_slot(slots::ALLOWANCES));
-            let old_allowance = match storage.sload_direct(address, allowance_slot) {
-                Ok(v) => v,
-                Err(e) => return Some(e.into_precompile_result()),
-            };
-            let tx_key_word = match storage.tload_direct(
-                crate::ACCOUNT_KEYCHAIN_ADDRESS,
-                crate::account_keychain::slots::TRANSACTION_KEY,
-            ) {
-                Ok(v) => v,
-                Err(e) => return Some(e.into_precompile_result()),
-            };
-            if !tx_key_word.is_zero() {
-                let res = StorageCtx::enter(storage, || {
-                    AccountKeychain::new().authorize_approve(caller, address, old_allowance, amount)
-                });
-                if let Err(err) = res {
-                    return Some(err.into_precompile_result());
+            match storage.tip20_approve_fast(address, allowance_slot, amount) {
+                Ok(None) => {}
+                Ok(Some((tx_key, old_allowance))) => {
+                    let res = StorageCtx::enter(storage, || {
+                        AccountKeychain::authorize_approve_with_key(
+                            tx_key,
+                            caller,
+                            address,
+                            old_allowance,
+                            amount,
+                        )
+                    });
+                    if let Err(err) = res {
+                        return Some(err.into_precompile_result());
+                    }
+                    if let Err(err) = storage.sstore_direct(address, allowance_slot, amount) {
+                        return Some(err.into_precompile_result());
+                    }
                 }
-            }
-            if let Err(err) = storage.sstore_direct(address, allowance_slot, amount) {
-                return Some(err.into_precompile_result());
+                Err(err) => return Some(err.into_precompile_result()),
             }
             if let Err(err) = storage.emit_event_direct(
                 address,

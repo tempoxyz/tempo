@@ -34,7 +34,6 @@ use evm2::{
     registry::{HandlerError, HandlerResult, TxRequest},
     version::{GasId, GasParams},
 };
-use std::cmp::Ordering;
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError,
@@ -46,8 +45,7 @@ use tempo_precompiles::{
     },
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
-    nonce::{INonce::getNonceCall, NonceManager},
-    storage::{Handler as _, StorageCtx, account_config_commitment},
+    storage::{StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, validate_calls,
@@ -1193,74 +1191,226 @@ fn apply_nonce(
         let timestamp = host.block().timestamp.saturating_to::<u64>();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
         let capacity = spec.expiring_nonce_set_capacity();
-        return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            let mut nonces = NonceManager::new();
-            let previous_pointer = if let Some(index) = aa.expiring_nonce_idx() {
-                let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(nonce_error)?;
-                nonces
-                    .expiring_nonce_ring_ptr
-                    .write((pointer + index as u32) % capacity)
-                    .map_err(nonce_error)?;
-                Some(pointer)
-            } else {
-                None
-            };
-            nonces
-                .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                .map_err(|error| match error {
-                    TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
-                    TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {
-                        let max_allowed = timestamp.saturating_add(max_expiry_secs);
-                        if valid_before <= timestamp {
-                            TempoInvalidTransaction::NonceManagerError(format!(
-                                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
-                            )).into()
-                        } else {
-                            TempoInvalidTransaction::NonceManagerError(format!(
-                                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
-                            )).into()
-                        }
-                    }
-                    TempoPrecompileError::NonceError(NonceError::ExpiringNonceReplay(_)) => {
-                        TempoInvalidTransaction::ExpiringNonceReplay.into()
-                    }
-                    error => nonce_error(error),
-                })?;
-            if let Some(pointer) = previous_pointer {
-                nonces
-                    .expiring_nonce_ring_ptr
-                    .write(pointer)
-                    .map_err(nonce_error)?;
+        let max_allowed = timestamp.saturating_add(max_expiry_secs);
+        if valid_before <= timestamp {
+            return Err(TempoInvalidTransaction::NonceManagerError(format!(
+                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
+            ))
+            .into());
+        }
+        if valid_before > max_allowed {
+            return Err(TempoInvalidTransaction::NonceManagerError(format!(
+                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
+            ))
+            .into());
+        }
+        use tempo_precompiles::{
+            NONCE_PRECOMPILE_ADDRESS,
+            nonce::slots as nonce_slots,
+            storage::{StorageAction, StorageKey as _},
+        };
+        let seen_key = replay_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN);
+        let ring_ptr_key = nonce_slots::EXPIRING_NONCE_RING_PTR;
+        let expiring_idx = aa.expiring_nonce_idx();
+        let actions = host.ext().actions.clone();
+        let mut account = host.state_mut().account(&NONCE_PRECOMPILE_ADDRESS)?;
+        account.warm();
+
+        let (previous_pointer, ptr) = if let Some(index) = expiring_idx {
+            let mut slot = account.storage().into_slot(ring_ptr_key)?;
+            slot.warm();
+            let orig_word = slot.current();
+            let orig_ptr = orig_word.as_limbs()[0] as u32;
+            actions.record(StorageAction::Sload(
+                NONCE_PRECOMPILE_ADDRESS,
+                ring_ptr_key,
+                orig_word,
+            ));
+            let offset_ptr = (orig_ptr.wrapping_add(index as u32)) % capacity;
+            let offset_word = U256::from(offset_ptr);
+            slot.write(offset_word);
+            actions.record(StorageAction::Sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                ring_ptr_key,
+                orig_word,
+                offset_word,
+            ));
+            (Some((orig_ptr, orig_word)), offset_ptr)
+        } else {
+            (None, 0u32)
+        };
+
+        let seen_word = {
+            let mut slot = account.storage().into_slot(seen_key)?;
+            slot.warm();
+            slot.current()
+        };
+        actions.record(StorageAction::Sload(
+            NONCE_PRECOMPILE_ADDRESS,
+            seen_key,
+            seen_word,
+        ));
+        let seen_expiry = seen_word.as_limbs()[0];
+        if seen_expiry != 0 && seen_expiry > timestamp {
+            return Err(TempoInvalidTransaction::ExpiringNonceReplay.into());
+        }
+
+        let (ptr, ptr_word) = if previous_pointer.is_some() {
+            let w = U256::from(ptr);
+            actions.record(StorageAction::Sload(
+                NONCE_PRECOMPILE_ADDRESS,
+                ring_ptr_key,
+                w,
+            ));
+            (ptr, w)
+        } else {
+            let mut slot = account.storage().into_slot(ring_ptr_key)?;
+            slot.warm();
+            let w = slot.current();
+            actions.record(StorageAction::Sload(
+                NONCE_PRECOMPILE_ADDRESS,
+                ring_ptr_key,
+                w,
+            ));
+            (w.as_limbs()[0] as u32, w)
+        };
+
+        let ring_key = ptr.mapping_slot(nonce_slots::EXPIRING_NONCE_RING);
+        let old_hash_word = {
+            let mut slot = account.storage().into_slot(ring_key)?;
+            slot.warm();
+            slot.current()
+        };
+        actions.record(StorageAction::Sload(
+            NONCE_PRECOMPILE_ADDRESS,
+            ring_key,
+            old_hash_word,
+        ));
+        if !old_hash_word.is_zero() {
+            let old_hash = B256::from(old_hash_word.to_be_bytes::<32>());
+            let old_seen_key = old_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN);
+            let mut old_seen_slot = account.storage().into_slot(old_seen_key)?;
+            old_seen_slot.warm();
+            let old_expiry_word = old_seen_slot.current();
+            actions.record(StorageAction::Sload(
+                NONCE_PRECOMPILE_ADDRESS,
+                old_seen_key,
+                old_expiry_word,
+            ));
+            let old_expiry = old_expiry_word.as_limbs()[0];
+            if old_expiry != 0 && old_expiry > timestamp {
+                return Err(nonce_error(NonceError::expiring_nonce_set_full().into()));
             }
-            Ok::<_, HandlerError>(protocol_nonce)
-        });
+            old_seen_slot.write(U256::ZERO);
+            actions.record(StorageAction::Sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                old_seen_key,
+                old_expiry_word,
+                U256::ZERO,
+            ));
+        }
+
+        let new_hash_word = U256::from_be_bytes(replay_hash.0);
+        {
+            let mut slot = account.storage().into_slot(ring_key)?;
+            slot.write(new_hash_word);
+        }
+        actions.record(StorageAction::Sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            ring_key,
+            old_hash_word,
+            new_hash_word,
+        ));
+        let valid_before_word = U256::from(valid_before);
+        {
+            let mut slot = account.storage().into_slot(seen_key)?;
+            slot.write(valid_before_word);
+        }
+        actions.record(StorageAction::Sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            seen_key,
+            seen_word,
+            valid_before_word,
+        ));
+        let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
+        let next_word = U256::from(next);
+        actions.record(StorageAction::Sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            ring_ptr_key,
+            ptr_word,
+            next_word,
+        ));
+        if let Some((_orig_ptr, orig_word)) = previous_pointer {
+            let mut slot = account.storage().into_slot(ring_ptr_key)?;
+            slot.write(orig_word);
+            actions.record(StorageAction::Sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                ring_ptr_key,
+                next_word,
+                orig_word,
+            ));
+        } else {
+            let mut slot = account.storage().into_slot(ring_ptr_key)?;
+            slot.write(next_word);
+        }
+        return Ok(protocol_nonce);
     }
 
-    // 2D nonce transaction
-    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        let mut nonces = NonceManager::new();
-        if nonce_check {
-            let state = nonces
-                .get_nonce(getNonceCall {
-                    account: caller,
-                    nonceKey: tx.nonce_key,
-                })
-                .map_err(nonce_error)?;
-            match tx.nonce.cmp(&state) {
-                Ordering::Less | Ordering::Greater => {
+    // 2D nonce transaction (zero-TLS single-AccountHandle fast path)
+    {
+        use alloy_primitives::{IntoLogData as _, Log};
+        use tempo_contracts::precompiles::NonceEvent;
+        use tempo_precompiles::{
+            NONCE_PRECOMPILE_ADDRESS,
+            storage::{StorageAction, StorageKey as _},
+        };
+        let outer_slot = host.ext_mut().sender_slot_cache.nonce_outer_slot(caller);
+        let nonce_slot = tx.nonce_key.mapping_slot(outer_slot);
+        let actions = host.ext().actions.clone();
+        let new_nonce = {
+            let mut account = host.state_mut().account(&NONCE_PRECOMPILE_ADDRESS)?;
+            account.warm();
+            let mut slot = account.storage().into_slot(nonce_slot)?;
+            slot.warm();
+            let current_word = slot.current();
+            let current = current_word.as_limbs()[0];
+            if nonce_check {
+                actions.record(StorageAction::Sload(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce_slot,
+                    current_word,
+                ));
+                if tx.nonce != current {
                     return Err(HandlerError::InvalidNonce {
-                        expected: state,
+                        expected: current,
                         got: tx.nonce,
                     });
                 }
-                Ordering::Equal => {}
             }
-        }
-        nonces
-            .increment_nonce(caller, tx.nonce_key)
-            .map_err(nonce_error)?;
-        Ok::<_, HandlerError>(protocol_nonce)
-    })
+            actions.record(StorageAction::Sload(
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce_slot,
+                current_word,
+            ));
+            let new_nonce = current
+                .checked_add(1)
+                .ok_or_else(|| nonce_error(NonceError::nonce_overflow().into()))?;
+            let new_word = U256::from(new_nonce);
+            slot.write(new_word);
+            actions.record(StorageAction::Sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce_slot,
+                current_word,
+                new_word,
+            ));
+            new_nonce
+        };
+        host.log(Log {
+            address: NONCE_PRECOMPILE_ADDRESS,
+            data: NonceEvent::nonce_incremented(caller, tx.nonce_key, new_nonce).to_log_data(),
+        });
+        Ok(protocol_nonce)
+    }
 }
 
 /// Provides atomic batch execution for AA transactions with multiple calls:
@@ -1314,8 +1464,10 @@ fn execute_batch(
         ..TxEnv::<TempoEvmTypes>::default()
     };
 
-    for call in calls {
-        if let TxKind::Call(address) = call.to {
+    for (call_idx, call) in calls.iter().enumerate() {
+        if call_idx > 0
+            && let TxKind::Call(address) = call.to
+        {
             host.state_mut().prewarm(&address);
         }
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir);
@@ -1734,6 +1886,9 @@ fn execute_aa(
     result.state_gas_spent = result.state_gas_spent.saturating_sub(state_refund);
     Ok(result)
 }
+
+#[cfg(test)]
+use tempo_precompiles::{nonce::NonceManager, storage::Handler as _};
 
 #[cfg(test)]
 mod tests;

@@ -205,14 +205,6 @@ where
         Ok(())
     }
 
-    #[inline]
-    pub(crate) fn tip20_is_initialized(
-        &mut self,
-        address: Address,
-    ) -> Result<bool, TempoPrecompileError> {
-        self.with_account_info_only(address, |info| !info.is_empty_code_hash())
-    }
-
     /// Single-account batched TIP-20 init + PAUSED check using one State::account_with_skip lookup.
     /// Returns `(initialized, paused)`.
     #[inline]
@@ -919,6 +911,138 @@ where
                 .record_refund(self.version.gas_params.sstore_refund(true, &inc_sstore));
         }
         Ok(Ok(actual_spending))
+    }
+
+    /// Single-account batched TIP-20 `approve`: checks init, reads `allowance_slot`, charges
+    /// `tload(TRANSACTION_KEY)` gas, and when `transaction_key == 0` writes `amount` on the
+    /// same `AccountHandle`.
+    /// Returns `Ok(None)` when completed in-place, or `Ok(Some((tx_key, old_allowance)))` when
+    /// an access key is active and caller must run `AccountKeychain::authorize_approve_with_key`
+    /// followed by `sstore_direct`.
+    #[inline]
+    pub(crate) fn tip20_approve_fast(
+        &mut self,
+        address: Address,
+        allowance_slot: U256,
+        amount: U256,
+    ) -> Result<Option<(Address, U256)>, TempoPrecompileError> {
+        self.ensure_not_static()?;
+        let is_t4 = self.spec.is_t4();
+        let is_t12 = self.spec.is_t12();
+        let eip2929 = self.version.feature(EvmFeatures::EIP2929);
+        let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let cold_acct_cost = self.version.gas_params.cold_account_additional_cost();
+        let cold_slot_cost = self
+            .version
+            .gas_params
+            .get(GasId::ColdStorageAdditionalCost);
+        let sstore_static = self.version.gas_params.get(GasId::SstoreStatic);
+        let call_stipend = self.version.gas_params.get(GasId::CallStipend);
+
+        // Peek transient transaction_key without charging gas yet (no warming/actions side effects).
+        let tx_key_word = self.evm.state_mut().tload(
+            &crate::ACCOUNT_KEYCHAIN_ADDRESS,
+            &crate::account_keychain::slots::TRANSACTION_KEY,
+        );
+
+        let skip_cold_acct = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_acct_cost
+        } else {
+            false
+        };
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, skip_cold_acct)?;
+        let acct_cold = eip2929 && account.warm();
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+        }
+        if acct_cold {
+            self.gas_tracker.deduct_gas(cold_acct_cost)?;
+        }
+        if account.is_empty_code_hash() {
+            return Err(tempo_contracts::precompiles::TIP20Error::uninitialized().into());
+        }
+
+        let skip_cold_sload = if is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+            self.gas_tracker.remaining() < cold_slot_cost
+        } else {
+            false
+        };
+        let (old_allowance, sload_cold) = {
+            let storage = account.storage();
+            let (slot, is_cold) = if eip2929 {
+                storage.into_slot_with_skip_and_warm(allowance_slot, skip_cold_sload)?
+            } else {
+                (
+                    storage.into_slot_with_skip(allowance_slot, skip_cold_sload)?,
+                    false,
+                )
+            };
+            (slot.current(), is_cold)
+        };
+        self.actions
+            .record(StorageAction::Sload(address, allowance_slot, old_allowance));
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(warm_cost)?;
+        }
+        if sload_cold || self.cold_pricing {
+            self.gas_tracker.deduct_gas(cold_slot_cost)?;
+        }
+
+        // Charge tload(TRANSACTION_KEY) gas identically to tload_direct.
+        self.gas_tracker.deduct_gas(warm_cost)?;
+        if !tx_key_word.is_zero() {
+            return Ok(Some((
+                Address::from_word(tx_key_word.into()),
+                old_allowance,
+            )));
+        }
+
+        // Perform sstore(allowance_slot, amount) on the same AccountHandle (slot is already warm).
+        if is_t12 && self.gas_tracker.remaining() <= call_stipend {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        if is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        let sstore = {
+            let storage = account.storage();
+            let mut slot = storage.into_slot(allowance_slot)?;
+            let (original_value, present_value) = slot.write(amount);
+            SStore {
+                original_value,
+                present_value,
+                new_value: amount,
+                is_cold: false,
+                _non_exhaustive: (),
+            }
+        };
+        drop(account);
+        self.actions.record(StorageAction::Sstore(
+            address,
+            allowance_slot,
+            sstore.present_value,
+            amount,
+        ));
+        if !is_t4 {
+            self.gas_tracker.deduct_gas(sstore_static)?;
+        }
+        if self.tip1060_storage_credits_enabled {
+            sstore_storage_credits(self, address, Some(allowance_slot), &sstore)?;
+        }
+        self.gas_tracker
+            .deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &sstore))?;
+        self.gas_tracker
+            .deduct_state_gas(self.version.gas_params.sstore_state_gas(&sstore))?;
+        if is_t4 {
+            self.gas_tracker
+                .record_refund(self.version.gas_params.sstore_refund(true, &sstore));
+        }
+        Ok(None)
     }
 
     /// Sets the storage actions for this provider.

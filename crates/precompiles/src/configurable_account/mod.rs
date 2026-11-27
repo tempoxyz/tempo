@@ -44,7 +44,7 @@ impl ConfigurableAccount {
         directly_authorized: Address,
         upgrade_eligibility: UpgradeEligibility,
     ) -> Result<()> {
-        use crate::storage::{FromWord as _, PrecompileStorageProvider as _, StorageCtx};
+        use crate::storage::{FromWord as _, StorageCtx};
         use alloy::primitives::U256;
         const {
             assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT_OFFSET == 0);

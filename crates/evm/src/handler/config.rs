@@ -131,7 +131,10 @@ const SENDER_SLOT_CACHE_MASK: usize = SENDER_SLOT_CACHE_LEN - 1;
 struct SenderSlotEntry {
     addr: Address,
     valid: bool,
+    has_balance: bool,
+    has_nonce_outer: bool,
     balance_slot: U256,
+    nonce_outer_slot: U256,
 }
 
 /// Per-EVM direct-mapped cache for frequent sender mapping slots.
@@ -160,9 +163,36 @@ impl SenderSlotCache {
             use tempo_precompiles::storage::StorageKey as _;
             e.addr = addr;
             e.valid = true;
+            e.has_balance = true;
+            e.has_nonce_outer = false;
+            e.balance_slot = addr.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
+        } else if !e.has_balance {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.has_balance = true;
             e.balance_slot = addr.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
         }
         e.balance_slot
+    }
+
+    #[inline]
+    pub(crate) fn nonce_outer_slot(&mut self, addr: Address) -> U256 {
+        let table = self
+            .entries
+            .get_or_insert_with(|| Box::new([SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN]));
+        let e = &mut table[Self::idx(addr)];
+        if !e.valid || e.addr != addr {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.addr = addr;
+            e.valid = true;
+            e.has_balance = false;
+            e.has_nonce_outer = true;
+            e.nonce_outer_slot = addr.mapping_slot(tempo_precompiles::nonce::slots::NONCES);
+        } else if !e.has_nonce_outer {
+            use tempo_precompiles::storage::StorageKey as _;
+            e.has_nonce_outer = true;
+            e.nonce_outer_slot = addr.mapping_slot(tempo_precompiles::nonce::slots::NONCES);
+        }
+        e.nonce_outer_slot
     }
 }
 

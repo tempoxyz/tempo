@@ -216,9 +216,10 @@ impl TipFeeManager {
                 return Err(TIP20Error::contract_paused().into());
             }
             if !tx_key_word.is_zero() {
+                let tx_key = Address::from_word(tx_key_word.into());
                 StorageCtx::enter(storage, || {
-                    crate::account_keychain::AccountKeychain::authorize_transfer_direct(
-                        fee_payer, user_token, max_amount,
+                    crate::account_keychain::AccountKeychain::authorize_transfer_with_key(
+                        tx_key, fee_payer, user_token, max_amount,
                     )
                 })?;
             }
@@ -297,8 +298,10 @@ impl TipFeeManager {
                 crate::account_keychain::slots::TRANSACTION_KEY,
             )?;
             if !tx_key_word.is_zero() {
+                let tx_key = Address::from_word(tx_key_word.into());
                 StorageCtx::enter(storage, || {
-                    crate::account_keychain::AccountKeychain::refund_spending_limit_direct(
+                    crate::account_keychain::AccountKeychain::refund_spending_limit_with_key(
+                        tx_key,
                         fee_payer,
                         fee_token,
                         refund_amount,
