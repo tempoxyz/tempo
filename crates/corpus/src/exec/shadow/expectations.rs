@@ -246,7 +246,6 @@ mod tests {
         }
     }
 
-    /// Whether `rule` accepts a code difference of `field` between pre-block changes.
     fn accepts_pre_block(
         rule: &Expectation,
         field: &Field,

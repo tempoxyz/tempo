@@ -3,7 +3,6 @@
 mod backfill;
 mod base_fee;
 mod block_building;
-mod corpus_shadow_replay;
 mod createx;
 mod engine;
 mod eth_call;

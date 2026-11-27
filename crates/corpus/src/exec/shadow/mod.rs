@@ -53,7 +53,7 @@ pub enum ReplayOutcome {
     Match,
     /// Every difference was accepted and all boundaries were compared.
     Expected,
-    /// No unexplained finding, but subsequent comparisons could not be trusted.
+    /// No unexplained finding, but some boundary could not be compared.
     Inconclusive,
     /// At least one difference or execution failure remains unexplained.
     Findings,
@@ -230,7 +230,7 @@ impl ShadowReplayer {
     }
 }
 
-/// A transaction the candidate executed differently, with what each arm observed.
+/// What one arm observed of a transaction the candidate executed differently.
 #[derive(Debug, Default)]
 struct ObservedTx {
     /// Whether execution succeeded and why it stopped. Gas is compared only through fee effects.
@@ -241,7 +241,7 @@ struct ObservedTx {
     receipt_logs_hash: B256,
     /// Hash of the transaction's output bytes (empty when there is no output).
     output_hash: B256,
-    /// Full receipt hash with only the validated post-fee amount zeroed.
+    /// Hash of the ordered logs with only the verified post-fee transfer amount zeroed.
     fee_normalized: Option<B256>,
     /// The storage actions the transaction recorded, fee hook markers included.
     actions: Vec<StorageAction>,
@@ -287,21 +287,6 @@ enum TxEvidence {
     Failed(eyre::Report),
 }
 
-/// Whether execution failed because it read state the corpus did not capture, so the boundary
-/// cannot be compared.
-fn uncaptured(error: &eyre::Report) -> bool {
-    // Transactions report database failures as `HandlerError::Database`, pre- and post-block
-    // system calls as the `DatabaseError` itself.
-    error
-        .downcast_ref::<BlockExecutionError>()
-        .and_then(BlockExecutionError::as_internal)
-        .and_then(|error| match error.downcast_evm::<HandlerError>() {
-            Some(HandlerError::Database(error)) => Some(error),
-            _ => error.downcast_other::<DatabaseError>(),
-        })
-        .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
-}
-
 /// A logical execution boundary whose committed effects can be compared independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Boundary {
@@ -310,7 +295,7 @@ enum Boundary {
     PostBlock,
 }
 
-/// The candidate's failure at the first boundary it did not complete.
+/// Why the candidate's pre- or post-block changes failed.
 #[derive(Debug)]
 struct Failure {
     boundary: Boundary,
@@ -333,6 +318,21 @@ impl Evidence {
         self.failure = Some(Failure { boundary, error });
         self
     }
+}
+
+/// Whether execution failed because it read state the corpus did not capture, so the boundary
+/// cannot be compared.
+fn uncaptured(error: &eyre::Report) -> bool {
+    // Transactions report database failures as `HandlerError::Database`, pre- and post-block
+    // system calls as the `DatabaseError` itself.
+    error
+        .downcast_ref::<BlockExecutionError>()
+        .and_then(BlockExecutionError::as_internal)
+        .and_then(|error| match error.downcast_evm::<HandlerError>() {
+            Some(HandlerError::Database(error)) => Some(error),
+            _ => error.downcast_other::<DatabaseError>(),
+        })
+        .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
 }
 
 /// Only the post-fee hook's expected TIP-20 transfer amount can be normalized. Every other

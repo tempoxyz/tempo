@@ -14749,7 +14749,6 @@ dependencies = [
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
- "tempo-corpus",
  "tempo-evm",
  "tempo-payload-builder",
  "tempo-payload-types",

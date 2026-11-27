@@ -225,7 +225,7 @@ impl ReplayCommand {
                 |input: &Arc<Input>, block: &RecoveredBlock<Block>, executed: &Executed| {
                     shadow
                         .as_ref()
-                        .map_or(Ok(()), |shadow| shadow.check(input, block, executed))
+                        .map_or(Ok(()), |shadow| shadow.replay(input, block, executed))
                 };
             match blocks {
                 Some(blocks) => replay::run_blocks(
@@ -257,7 +257,7 @@ struct Shadow {
 }
 
 impl Shadow {
-    fn check(
+    fn replay(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,

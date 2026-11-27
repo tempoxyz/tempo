@@ -270,7 +270,9 @@ pub(super) struct StepChanges(pub(super) BTreeMap<Address, AccountChange>);
 /// One account's state before and after a boundary.
 #[derive(Debug, Default)]
 pub(super) struct AccountChange {
+    /// The account before the boundary, `None` if it did not exist.
     pub before: Option<AccountInfo>,
+    /// The account after the boundary, `None` if it did not exist.
     pub after: Option<AccountInfo>,
     /// Whether the boundary cleared the account's storage by creating or destroying it.
     pub storage_reset: bool,
@@ -288,10 +290,8 @@ impl StepChanges {
                 .iter()
                 .map(|(address, change)| {
                     let change = Change {
-                        info: change.info.clone(),
-                        created: change.created,
-                        storage: change.storage.clone(),
                         code: None,
+                        ..change.clone()
                     };
                     (*address, change)
                 })
@@ -370,7 +370,7 @@ mod tests {
     use super::*;
     use crate::{
         code,
-        exec::db::tests::{change, commit, input},
+        exec::db::tests::{change, commit, info, input},
         types::{CodeChange, InfoChange},
     };
     use alloy_primitives::{KECCAK256_EMPTY, keccak256};
@@ -378,11 +378,7 @@ mod tests {
 
     #[test]
     fn step_changes_pair_each_written_value_with_its_previous_one() {
-        let (changed, created, destroyed) = (
-            Address::repeat_byte(1),
-            Address::repeat_byte(2),
-            Address::repeat_byte(3),
-        );
+        let [changed, created, destroyed] = [1, 2, 3].map(Address::repeat_byte);
         let account = Account {
             nonce: 1,
             balance: U256::from(10),
@@ -397,29 +393,22 @@ mod tests {
             ],
             &[(changed, slot, U256::from(5))],
         ));
-        let balance = InfoChange {
-            nonce: None,
-            balance: Some(U256::from(7).to_be_bytes()),
-            code: CodeChange::Keep,
-        };
-        let mut delta = commit(changed, change(balance, &[(slot, U256::from(9))]));
+        let balance = change(info(None, Some(7)), &[(slot, U256::from(9))]);
+        let mut delta = commit(changed, balance);
         let runtime = b"step changes leave this runtime uncached";
         let code_hash = keccak256(runtime);
-        let mut creation = change(
-            InfoChange {
-                nonce: Some(1),
-                balance: None,
-                code: CodeChange::Hash(Some(code_hash.0)),
-            },
-            &[(slot, U256::from(3))],
-        );
-        creation.created = true;
-        creation.code = Some(runtime.to_vec());
+        let created_info = InfoChange {
+            code: CodeChange::Hash(Some(code_hash.0)),
+            ..info(Some(1), None)
+        };
+        let creation = Change {
+            created: true,
+            code: Some(runtime.to_vec()),
+            ..change(created_info, &[(slot, U256::from(3))])
+        };
         let destruction = Change {
             info: None,
-            created: false,
-            storage: BTreeMap::new(),
-            code: None,
+            ..change(info(None, None), &[])
         };
         delta.0[0].insert(created.into_array(), creation);
         delta.0.push([(destroyed.into_array(), destruction)].into());

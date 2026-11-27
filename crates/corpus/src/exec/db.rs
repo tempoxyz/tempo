@@ -62,7 +62,6 @@ pub struct Overlay {
 #[derive(Debug)]
 pub struct View<'p> {
     pub input: Arc<Input>,
-    /// The view this one's changes are layered on, if any.
     parent: Option<&'p Self>,
     pub overlay: Overlay,
 }
@@ -352,9 +351,17 @@ pub(crate) mod tests {
         })
     }
 
-    /// One commit changing `address`.
     pub(crate) fn commit(address: Address, change: Change) -> Delta {
         Delta(vec![[(address.into_array(), change)].into()])
+    }
+
+    /// An account change that keeps its code.
+    pub(crate) fn info(nonce: Option<u64>, balance: Option<u64>) -> InfoChange {
+        InfoChange {
+            nonce,
+            balance: balance.map(|balance| U256::from(balance).to_be_bytes()),
+            code: CodeChange::Keep,
+        }
     }
 
     pub(crate) fn change(info: InfoChange, storage: &[(U256, U256)]) -> Change {
@@ -384,20 +391,15 @@ pub(crate) mod tests {
         ));
         let mut child = parent.child();
         let balance = InfoChange {
-            nonce: None,
-            balance: Some(U256::from(7).to_be_bytes()),
             code: CodeChange::Hash(Some([2; 32])),
+            ..info(None, Some(7))
         };
         child
             .apply(&commit(address, change(balance, &[(slot, U256::from(9))])))
             .unwrap();
         // A canonical change keeps the fields it does not set, such as a candidate's code.
-        let nonce = InfoChange {
-            nonce: Some(2),
-            balance: None,
-            code: CodeChange::Keep,
-        };
-        child.apply(&commit(address, change(nonce, &[]))).unwrap();
+        let nonce = change(info(Some(2), None), &[]);
+        child.apply(&commit(address, nonce)).unwrap();
 
         let changed = child.account(&address).unwrap().unwrap();
         assert_eq!(
@@ -419,15 +421,10 @@ pub(crate) mod tests {
 
         // Creating the account in a child hides the parent's storage from the child only.
         let mut created = parent.child();
-        let mut recreate = change(
-            InfoChange {
-                nonce: Some(1),
-                balance: None,
-                code: CodeChange::Keep,
-            },
-            &[],
-        );
-        recreate.created = true;
+        let recreate = Change {
+            created: true,
+            ..change(info(Some(1), None), &[])
+        };
         created.apply(&commit(address, recreate)).unwrap();
         assert_eq!(created.storage(&address, &slot).unwrap(), U256::ZERO);
         assert_eq!(created.storage(&address, &other_slot).unwrap(), U256::ZERO);
