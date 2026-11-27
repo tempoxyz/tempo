@@ -6,31 +6,35 @@
 use std::{
     collections::HashSet,
     fs::File,
-    io::BufReader,
+    io::{BufReader, Read},
     path::PathBuf,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
-use crate::format::{read_entry, read_header};
+use crate::{
+    contracts::{CONTRACTS_FLAG, ContractRange},
+    format::{read_entry, read_header},
+};
 use alloy_primitives::{
     B256, U256, keccak256,
     map::{AddressMap, Entry},
 };
 use clap::Parser;
 use eyre::{Context as _, ensure};
+use rayon::prelude::*;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
-    cursor::{DbCursorRO, DbDupCursorRW},
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
     models::{CompactU256, StorageBeforeTx, storage_sharded_key::StorageShardedKey},
     table::Decompress,
     tables,
     transaction::{DbTx, DbTxMut},
 };
 use reth_etl::Collector;
-use reth_primitives_traits::{Account, StorageEntry};
+use reth_primitives_traits::{Account, Bytecode, StorageEntry};
 use reth_provider::{
     BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, RocksDBProviderFactory,
     StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader, StorageSettingsCache,
@@ -52,6 +56,9 @@ const WORKER_CHUNK_SIZE: usize = 100;
 
 /// Bounded channel depth for the hashing worker thread.
 const HASH_WORKER_QUEUE_DEPTH: usize = 256;
+
+/// Synthetic contracts whose code is built in parallel per write batch.
+const CONTRACT_WRITE_CHUNK: usize = 4096;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -108,6 +115,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let mut total_entries = 0u64;
         let mut total_blocks = 0u64;
+        let mut contract_ranges = Vec::new();
 
         // Track addresses and their account data for hashing
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
@@ -159,7 +167,18 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             });
 
         // Process blocks from binary file
-        while let Some((address, pair_count)) = read_header(&mut reader)? {
+        while let Some((address, pair_count, flags)) = read_header(&mut reader)? {
+            if flags == CONTRACTS_FLAG {
+                let mut entry = [0u8; 64];
+                reader
+                    .read_exact(&mut entry)
+                    .wrap_err("truncated contract range entry")?;
+                let range = ContractRange::decode(&entry)?;
+                info!(target: "tempo::cli", ?range, "Queued synthetic contract range");
+                contract_ranges.push(range);
+                total_blocks += 1;
+                continue;
+            }
             info!(
                 target: "tempo::cli",
                 %address,
@@ -329,6 +348,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 .map(|(addr, account)| (*addr, Some(account.clone()))),
         )?;
 
+        for range in &contract_ranges {
+            write_contracts(provider_rw.tx_ref(), range)?;
+        }
+
         storage_changeset_worker
             .join()
             .map_err(|_| eyre::eyre!("storage changeset worker panicked"))??;
@@ -404,6 +427,80 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         Ok(())
     }
+}
+
+/// Create the accounts and code of a synthetic contract range.
+///
+/// Like the storage above, contracts join the block-0 state root through hashed state
+/// and `Bytecodes`, but get no account changesets or history.
+fn write_contracts<TX: DbTxMut + DbTx>(tx: &TX, range: &ContractRange) -> eyre::Result<()> {
+    let start = Instant::now();
+    info!(target: "tempo::cli", ?range, "Hashing synthetic contract code");
+
+    // Hash every code first so Bytecodes and HashedAccounts are written in key order.
+    let mut codes: Vec<(B256, u64)> = (0..range.count)
+        .into_par_iter()
+        .map(|index| (keccak256(range.code(index)), index))
+        .collect();
+    codes.par_sort_unstable();
+    ensure!(
+        codes.windows(2).all(|pair| pair[0].0 != pair[1].0),
+        "synthetic contracts must have distinct code"
+    );
+
+    let total = codes.len();
+    let mut bytecodes = tx.cursor_write::<tables::Bytecodes>()?;
+    let mut last_log = Instant::now();
+    for (done, chunk) in codes.chunks(CONTRACT_WRITE_CHUNK).enumerate() {
+        let bytecode: Vec<Bytecode> = chunk
+            .par_iter()
+            .map(|(_, index)| Bytecode::new_raw(range.code(*index)))
+            .collect();
+        for ((hash, _), bytecode) in chunk.iter().zip(&bytecode) {
+            bytecodes.upsert(*hash, bytecode)?;
+        }
+        if last_log.elapsed() >= Duration::from_secs(5) {
+            let written = (done + 1) * CONTRACT_WRITE_CHUNK;
+            info!(
+                target: "tempo::cli",
+                progress = format_args!("{}/{total}", written.min(total)),
+                elapsed = ?start.elapsed(),
+                "Writing synthetic contract code"
+            );
+            last_log = Instant::now();
+        }
+    }
+    drop(bytecodes);
+
+    let mut accounts: Vec<(B256, B256)> = codes
+        .par_iter()
+        .map(|(code_hash, index)| (keccak256(range.address(*index)), *code_hash))
+        .collect();
+    drop(codes);
+    accounts.par_sort_unstable();
+    let mut hashed_accounts = tx.cursor_write::<tables::HashedAccounts>()?;
+    for (hashed_address, code_hash) in accounts {
+        ensure!(
+            hashed_accounts.seek_exact(hashed_address)?.is_none(),
+            "synthetic contract collides with existing account {hashed_address}"
+        );
+        hashed_accounts.upsert(
+            hashed_address,
+            &Account {
+                nonce: 1,
+                bytecode_hash: Some(code_hash),
+                ..Default::default()
+            },
+        )?;
+    }
+
+    info!(
+        target: "tempo::cli",
+        contracts = total,
+        elapsed = ?start.elapsed(),
+        "Synthetic contracts written"
+    );
+    Ok(())
 }
 
 fn write_storage_changesets<P>(

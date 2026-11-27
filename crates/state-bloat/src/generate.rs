@@ -5,8 +5,9 @@
 //!
 //! Uses chunked streaming to keep memory bounded regardless of target file size.
 
+use crate::contracts::{CONTRACTS_FLAG, ContractRange, MAX_CONTRACT_SIZE, default_contract_seed};
 use alloy::{
-    primitives::{Address, U256, keccak256},
+    primitives::{Address, B256, U256, keccak256},
     signers::{
         local::coins_bip39::{English, Mnemonic},
         utils::secret_key_to_address,
@@ -86,6 +87,20 @@ pub struct GenerateStateBloat {
     /// Number of entries to process per chunk. Controls peak memory usage.
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
+
+    /// Number of synthetic contracts with distinct code to add, for cold-call benchmarks.
+    ///
+    /// The dump stores only the range; init-from-binary-dump creates the accounts and code.
+    #[arg(long, default_value_t = 0)]
+    contracts: u64,
+
+    /// Code size of each synthetic contract in bytes.
+    #[arg(long, default_value_t = MAX_CONTRACT_SIZE)]
+    contract_size: u64,
+
+    /// Seed of synthetic contract addresses (defaults to keccak256("tempo-state-bloat-contracts")).
+    #[arg(long, default_value_t = default_contract_seed())]
+    contract_seed: B256,
 }
 
 impl GenerateStateBloat {
@@ -102,7 +117,20 @@ impl GenerateStateBloat {
             balance,
             signable_count,
             chunk_size,
+            contracts,
+            contract_size,
+            contract_seed,
         } = self;
+        let contracts = (contracts > 0)
+            .then(|| {
+                let range = ContractRange {
+                    seed: contract_seed,
+                    count: contracts,
+                    size: contract_size,
+                };
+                range.validate().map(|()| range)
+            })
+            .transpose()?;
 
         let mnemonic = if let Some(path) = mnemonic_file {
             let mnemonic = std::fs::read_to_string(&path)
@@ -165,6 +193,16 @@ impl GenerateStateBloat {
                 f64::from(capacity) * 128.0 / (1024.0 * 1024.0)
             ),
             None => println!("  Nonce ring: omitted"),
+        }
+        match contracts {
+            Some(range) => println!(
+                "  Contracts: {} x {} bytes ({:.2} MiB of code), seed {}",
+                range.count,
+                range.size,
+                (range.count * range.size) as f64 / (1024.0 * 1024.0),
+                range.seed
+            ),
+            None => println!("  Contracts: none"),
         }
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
@@ -261,6 +299,9 @@ impl GenerateStateBloat {
         }
 
         pb.finish_with_message("done");
+        if let Some(range) = contracts {
+            write_contract_range(&mut writer, &range)?;
+        }
         if let Some(capacity) = ring_capacity {
             write_nonce_ring(&mut writer, 0..capacity)?;
         }
@@ -275,6 +316,17 @@ impl GenerateStateBloat {
 
         Ok(())
     }
+}
+
+/// Write a synthetic contract range block for the importer to expand.
+fn write_contract_range(writer: &mut impl Write, range: &ContractRange) -> eyre::Result<()> {
+    writer.write_all(MAGIC)?;
+    writer.write_all(&VERSION.to_be_bytes())?;
+    writer.write_all(&CONTRACTS_FLAG.to_be_bytes())?;
+    writer.write_all(Address::ZERO.as_slice())?;
+    writer.write_all(&1u64.to_be_bytes())?;
+    writer.write_all(&range.encode())?;
+    Ok(())
 }
 
 /// Populate both mappings so the first transaction evicts an existing, expired nonce.
@@ -342,7 +394,7 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::{primitives::B256, signers::local::MnemonicBuilder};
+    use alloy::signers::local::MnemonicBuilder;
     use clap::Parser;
     use std::io::{BufReader, Seek};
     use tempo_precompiles::storage::{
@@ -489,6 +541,61 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[tokio::test]
+    async fn contracts_add_one_range_block() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("state.bin");
+        GeneratorCli::parse_from([
+            "generate",
+            "--size",
+            "1",
+            "--signable-count",
+            "1",
+            "--no-nonce-ring",
+            "--contracts",
+            "5",
+            "--contract-size",
+            "100",
+            "--out",
+            output.to_str().unwrap(),
+        ])
+        .args
+        .run()
+        .await
+        .unwrap();
+        let dump = std::fs::read(&output).unwrap();
+        // read_dump serves importers without contract support.
+        assert!(crate::read_dump(dump.as_slice(), |_, _, _| Ok(())).is_err());
+        let block = &dump[dump.len() - 104..];
+        let mut reader = block;
+        let (address, pairs, flags) = crate::format::read_header(&mut reader).unwrap().unwrap();
+        assert_eq!((address, pairs, flags), (Address::ZERO, 1, CONTRACTS_FLAG));
+        let range = ContractRange::decode(reader.try_into().unwrap()).unwrap();
+        assert_eq!(
+            range,
+            ContractRange {
+                seed: default_contract_seed(),
+                count: 5,
+                size: 100
+            }
+        );
+        assert!(
+            GeneratorCli::parse_from([
+                "generate",
+                "--contracts",
+                "1",
+                "--contract-size",
+                "24577",
+                "--out",
+                output.to_str().unwrap(),
+            ])
+            .args
+            .run()
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]

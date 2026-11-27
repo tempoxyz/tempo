@@ -1,0 +1,60 @@
+# Worst-case cold contract calls: random contracts across the whole bloat, so most
+# account reads and bytecode loads miss every cache and go to disk.
+# Each transaction spends its 10M gas on cold calls to the state bloat's synthetic
+# contracts (generate-state-bloat --contracts, 24,576-byte distinct code each), through
+# the StateCaller fixture: every call reads a cold account and loads its bytecode
+# (~3.4K gas per call at today's 2,600 cold-call price). The workflow caps tempo-node at
+# 16 GB (systemd MemoryMax, page cache included), so code loads come from disk.
+# Requires bloat with 2,000,000 contracts under the default contract seed: the range
+# below must match it, or calls hit empty accounts. Senders are the bloat's signable
+# accounts, whose pathUSD pays the fees, so keep --accounts at or below 10000.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  StateCaller: ../state-call/StateCaller.json
+
+setup:
+  steps:
+    - id: caller
+      deploy:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        artifact: StateCaller
+        gas_limit: 5000000
+        constructor_args: []
+
+templates:
+  state_call:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 10000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: {var: setup.caller.address}
+      abi: StateCaller
+      function: callRandom
+      args:
+        # keccak256("tempo-state-bloat-contracts"): the bloat's default contract seed.
+        - "0xe47fd8ab264df307fbaa9bfe4bb40188582c4b546e357f5231626d41280e7976"
+        - 0
+        - 2000000
+        - {random_bytes: 32}
+        - 30000
+
+mix:
+  - template: state_call
+    weight: 100
