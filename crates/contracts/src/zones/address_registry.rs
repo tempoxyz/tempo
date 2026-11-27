@@ -10,11 +10,11 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     interface IZoneAddressRegistry {
         /// Register `recipient` and return its master ID. Repeating a (recipient, salt) request
-        /// returns the original ID.
+        /// returns the original ID. On a zone, `recipient` must be the caller.
         function registerMaster(address recipient, bytes32 salt) external returns (bytes4 masterId);
 
         /// Emitted the first time a master ID is assigned. The redacted RPC serves it only to
-        /// `recipient`, so a recipient registered by someone else can find its master IDs.
+        /// `recipient`.
         event MasterRegistered(address indexed recipient, bytes4 indexed masterId);
 
         error InvalidMasterAddress();

@@ -6,15 +6,16 @@
 use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, FixedBytes};
-use alloy_sol_types::SolEvent;
+use alloy_sol_types::{SolError, SolEvent, SolInterface};
 use evm2::precompiles::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
-    IZoneAddressRegistry, ZONE_ADDRESS_REGISTRY_ADDRESS, ZVDA_MASTER_REQUEST_DOMAIN,
+    IZoneAddressRegistry, Unauthorized, ZONE_ADDRESS_REGISTRY_ADDRESS, ZVDA_MASTER_REQUEST_DOMAIN,
     ZoneAddressRegistryError,
 };
 use tempo_precompiles::{
     charge_input_cost, dispatch,
+    dispatch::abi_decoder_config_for_spec,
     storage::{Handler, Mapping, StorageCtx},
 };
 use tempo_precompiles_macros::contract;
@@ -22,11 +23,35 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ZoneResult,
+    execution::{CallCheck, CallRules},
     storage::{L1State, L1StorageReader},
 };
 
 /// Exclusive upper bound of the 4-byte master ID space; also the exhausted counter value.
 pub const MASTER_ID_SPACE: u64 = 1 << 32;
+
+/// Zone-specific rules applied before dispatching to [`ZoneAddressRegistry`].
+pub(crate) struct ZoneAddressRegistryRules;
+
+impl CallRules for ZoneAddressRegistryRules {
+    /// Only the recipient registers itself. A registration for another account would show the
+    /// submitter, from its gas and from the sequential IDs around it, whether that account had
+    /// already registered the salt.
+    fn admit(&self, data: &[u8], caller: Address) -> CallCheck {
+        match IZoneAddressRegistry::IZoneAddressRegistryCalls::abi_decode_with_config(
+            data,
+            abi_decoder_config_for_spec(StorageCtx::default().spec()),
+        ) {
+            Ok(IZoneAddressRegistry::IZoneAddressRegistryCalls::registerMaster(call))
+                if call.recipient != caller =>
+            {
+                CallCheck::Revert(Unauthorized {}.abi_encode().into())
+            }
+            // Preserve the upstream ABI error for malformed calldata.
+            _ => CallCheck::Continue,
+        }
+    }
+}
 
 /// Zone-side TIP-1094 registry. Deployed at the T15 boundary.
 #[contract(addr = ZONE_ADDRESS_REGISTRY_ADDRESS)]
@@ -133,6 +158,11 @@ fn request_hash(zone_id: u32, recipient: Address, salt: B256) -> tempo_precompil
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::test_utils::{
+        MockL1Reader, call_precompile, test_context_with_hardfork, test_precompiles,
+    };
+    use alloy_primitives::Bytes;
+    use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 
@@ -222,5 +252,51 @@ pub(crate) mod tests {
             assert_ne!(base, request_hash(7, Address::repeat_byte(2), salt)?);
             Ok(())
         })
+    }
+
+    #[test]
+    fn register_master_only_registers_the_caller() -> eyre::Result<()> {
+        let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
+        let mut precompiles =
+            test_precompiles(&ctx, L1State::new(MockL1Reader::default(), Address::ZERO));
+        let (acme, bob) = (Address::repeat_byte(0xac), Address::repeat_byte(0xb0));
+        let mut register = |caller: Address, recipient: Address| {
+            let calldata = IZoneAddressRegistry::registerMasterCall {
+                recipient,
+                salt: B256::ZERO,
+            }
+            .abi_encode();
+            call_precompile(
+                &mut ctx,
+                &mut precompiles,
+                caller,
+                &calldata,
+                1_000_000,
+                false,
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+            )
+        };
+
+        // Registering another account reverts, whether or not it is registered.
+        for _ in 0..2 {
+            let output = register(acme, bob)?;
+            assert!(output.is_revert());
+            assert_eq!(output.bytes, Bytes::from(Unauthorized {}.abi_encode()));
+            let output = register(bob, bob)?;
+            assert!(output.is_success());
+            assert_eq!(
+                IZoneAddressRegistry::registerMasterCall::abi_decode_returns(&output.bytes)?,
+                FixedBytes::from([0, 0, 0, 0])
+            );
+        }
+
+        // The refused calls assigned nothing, so the next caller gets the next ID.
+        let output = register(acme, acme)?;
+        assert_eq!(
+            IZoneAddressRegistry::registerMasterCall::abi_decode_returns(&output.bytes)?,
+            FixedBytes::from([0, 0, 0, 1])
+        );
+        Ok(())
     }
 }

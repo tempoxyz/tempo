@@ -19,6 +19,7 @@ use crate::utils::{
     L1TestNode, TIP20_TX_GAS, ZoneAccount, ZoneLaunch, ZoneTestNode, build_auth_token, signer_at,
     spawn_sequencer,
 };
+use alloy_signer_local::PrivateKeySigner;
 use zone_node::{DepositAllowlist, DepositAllowlistAdmin};
 
 const L1_TIMEOUT: Duration = Duration::from_secs(30);
@@ -34,6 +35,38 @@ fn deposit_address(zone_id: u32, master_id: [u8; 4], tag: u16) -> Address {
         ciphertext: zone_precompiles::ff1::encrypt(&KEY.0, 1, zone_id, plaintext).into(),
     }
     .encode()
+}
+
+/// Allows and funds `signer` on the zone and has it register itself under `salt`, returning its master ID.
+async fn register_self(
+    l1: &L1TestNode,
+    zone: &ZoneTestNode,
+    portal_address: Address,
+    signer: PrivateKeySigner,
+    salt: B256,
+) -> eyre::Result<FixedBytes<4>> {
+    let mut account = ZoneAccount::with_signer(signer, l1, zone, portal_address);
+    l1.fund_user(account.address(), 10_000_000).await?;
+    zone.set_allowed_account(account.address(), true).await?;
+    account.deposit(1_000_000, L1_TIMEOUT, zone).await?;
+    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, account.l2_provider());
+    let master_id = registry
+        .registerMaster(account.address(), salt)
+        .call()
+        .await?;
+    let receipt = registry
+        .registerMaster(account.address(), salt)
+        .gas(TIP20_TX_GAS * 10)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        receipt.status(),
+        "registerMaster failed (gas used: {})",
+        receipt.gas_used
+    );
+    Ok(master_id)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -58,25 +91,18 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
     l1.fund_user(sender.address(), 10_000_000).await?;
     sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
 
-    // Register a fresh recipient; the registry returns its master ID.
-    let recipient = Address::repeat_byte(0xbe);
-    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
-    let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
-        .call()
-        .await?;
-    let receipt = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
-        .gas(TIP20_TX_GAS * 10)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(
-        receipt.status(),
-        "registerMaster failed (gas used: {})",
-        receipt.gas_used
-    );
+    // A fresh recipient registers itself; the registry returns its master ID.
+    let recipient_signer = signer_at(4);
+    let recipient = recipient_signer.address();
+    let master_id = register_self(
+        &l1,
+        &zone,
+        portal_address,
+        recipient_signer,
+        B256::repeat_byte(1),
+    )
+    .await?;
+    let before = zone.balance_of(ZONE_TOKEN_ADDRESS, recipient).await?;
 
     // A plain TIP-20 transfer on L1 to the recipient's deposit address.
     let amount = 2_000_000u128;
@@ -95,7 +121,7 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
     zone.wait_for_balance(
         ZONE_TOKEN_ADDRESS,
         recipient,
-        U256::from(amount - fee),
+        before + U256::from(amount - fee),
         L1_TIMEOUT,
     )
     .await?;
@@ -176,20 +202,17 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
     l1.fund_user(sender.address(), 10_000_000).await?;
     sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
 
-    let recipient = Address::repeat_byte(0xbe);
-    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
-    let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
-        .call()
-        .await?;
-    let receipt = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
-        .gas(TIP20_TX_GAS * 10)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(receipt.status(), "registerMaster failed");
+    let recipient_signer = signer_at(4);
+    let recipient = recipient_signer.address();
+    let master_id = register_self(
+        &l1,
+        &zone,
+        portal_address,
+        recipient_signer,
+        B256::repeat_byte(1),
+    )
+    .await?;
+    let recipient_before = zone.balance_of(ZONE_TOKEN_ADDRESS, recipient).await?;
 
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
     allowlist.replace(vec![sender.address()])?;
@@ -219,7 +242,7 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
     .await?;
     assert_eq!(
         zone.balance_of(ZONE_TOKEN_ADDRESS, recipient).await?,
-        U256::ZERO
+        recipient_before
     );
 
     // Once the recipient is listed, the same transfer is credited.
@@ -234,7 +257,7 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
     zone.wait_for_balance(
         ZONE_TOKEN_ADDRESS,
         recipient,
-        U256::from(amount - fee),
+        recipient_before + U256::from(amount - fee),
         L1_TIMEOUT,
     )
     .await?;
@@ -293,23 +316,26 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
         }
     };
 
-    // Someone else registers the recipient and passes on the returned master ID.
+    // Nobody else can register the recipient, so it registers itself.
     let mut sender = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
     l1.fund_user(sender.address(), 10_000_000).await?;
     sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
-    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
-    let master_id: FixedBytes<4> = registry
+    let refused = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider())
         .registerMaster(recipient.address(), B256::repeat_byte(2))
         .call()
+        .await;
+    eyre::ensure!(refused.is_err(), "registering another account must revert");
+    let master_id = register_self(
+        &l1,
+        &zone,
+        portal_address,
+        recipient.clone(),
+        B256::repeat_byte(2),
+    )
+    .await?;
+    let recipient_before = zone
+        .balance_of(ZONE_TOKEN_ADDRESS, recipient.address())
         .await?;
-    let receipt = registry
-        .registerMaster(recipient.address(), B256::repeat_byte(2))
-        .gas(TIP20_TX_GAS * 10)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(receipt.status(), "registerMaster failed");
 
     // Derivation waits for the registration to settle on Tempo.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
@@ -369,7 +395,7 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
     zone.wait_for_balance(
         ZONE_TOKEN_ADDRESS,
         recipient.address(),
-        U256::from(amount - fee),
+        recipient_before + U256::from(amount - fee),
         L1_TIMEOUT,
     )
     .await?;
@@ -421,20 +447,17 @@ async fn test_second_key_version_is_initialized_and_used() -> eyre::Result<()> {
     l1.fund_user(sender.address(), 10_000_000).await?;
     sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
 
-    let recipient = Address::repeat_byte(0xc7);
-    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
-    let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient, B256::repeat_byte(3))
-        .call()
-        .await?;
-    let receipt = registry
-        .registerMaster(recipient, B256::repeat_byte(3))
-        .gas(TIP20_TX_GAS * 10)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(receipt.status(), "registerMaster failed");
+    let recipient_signer = signer_at(4);
+    let recipient = recipient_signer.address();
+    let master_id = register_self(
+        &l1,
+        &zone,
+        portal_address,
+        recipient_signer,
+        B256::repeat_byte(3),
+    )
+    .await?;
+    let recipient_before = zone.balance_of(ZONE_TOKEN_ADDRESS, recipient).await?;
 
     let initialized: Vec<u8> = zone
         .provider()
@@ -480,7 +503,7 @@ async fn test_second_key_version_is_initialized_and_used() -> eyre::Result<()> {
     zone.wait_for_balance(
         ZONE_TOKEN_ADDRESS,
         recipient,
-        U256::from(amount - fee),
+        recipient_before + U256::from(amount - fee),
         L1_TIMEOUT,
     )
     .await?;
