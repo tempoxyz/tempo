@@ -5,7 +5,7 @@
 //! proving guest.
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use evm2::evm::{CacheDB, Db};
 use reth_chainspec::EthChainSpec as _;
 use reth_evm::{DynDatabase as _, execute::BlockAssemblerInput};
@@ -26,6 +26,23 @@ mod types;
 pub use execution::database::{TempoWitnessDatabase, WitnessDatabase, WitnessDatabaseError};
 pub use mpt::StatelessSparseTrieError;
 pub use types::*;
+
+/// Checks that `node_pool` proves every target account and slot from `state_root` as the SPF does.
+pub fn verify_tempo_reads<'a>(
+    state_root: B256,
+    node_pool: impl IntoIterator<Item = &'a Bytes>,
+    targets: &[(Address, Vec<B256>)],
+) -> Result<(), StatelessSparseTrieError> {
+    let nodes = mpt::WitnessNodes::decode(node_pool)?;
+    let reader = mpt::WitnessPathReader::new(state_root, &nodes);
+    for (account, slots) in targets {
+        reader.account(*account)?;
+        for slot in slots {
+            reader.storage(*account, (*slot).into())?;
+        }
+    }
+    Ok(())
+}
 
 /// Execute a Zone batch witness and return its public commitments.
 ///

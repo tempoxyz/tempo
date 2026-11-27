@@ -393,8 +393,12 @@ pub(crate) struct WitnessNodes(B256Map<TrieNode>);
 impl WitnessNodes {
     /// Hash, deduplicate and decode a flat witness node pool in one pass,
     /// rejecting duplicate nodes and any node that is not exact RLP.
-    pub(crate) fn decode(node_pool: &[Bytes]) -> Result<Self, StatelessSparseTrieError> {
-        let mut nodes = B256Map::with_capacity_and_hasher(node_pool.len(), Default::default());
+    pub(crate) fn decode<'a>(
+        node_pool: impl IntoIterator<Item = &'a Bytes>,
+    ) -> Result<Self, StatelessSparseTrieError> {
+        let node_pool = node_pool.into_iter();
+        let mut nodes =
+            B256Map::with_capacity_and_hasher(node_pool.size_hint().0, Default::default());
         for bytes in node_pool {
             let node_hash = keccak256(bytes);
             let Entry::Vacant(entry) = nodes.entry(node_hash) else {

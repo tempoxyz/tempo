@@ -19,7 +19,7 @@ use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
 use alloy_primitives::{
     Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, keccak256, map as alloy_map,
 };
-use alloy_provider::{DynProvider, Provider};
+use alloy_provider::{DynProvider, Provider, transport::TransportError};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
     Filter, FilterChanges, FilterId, Log, TransactionRequest,
@@ -603,48 +603,72 @@ async fn collect_tempo_witness(
         // An account-only read still needs the account proof, which every target carries.
         targets.entry(read.account).or_default().extend(read.slot);
     }
-    // The L1 RPC may balance connections across nodes whose heads differ by a few
-    // milliseconds, so the node serving this request can lack a block the subscriber already
-    // saw finalized. Retry only that answer (`block not found`); return every other error.
+    let state_root = tempo_header.state_root();
+    // A load-balanced L1 RPC can route a chunk to a node that lacks the finalized block
+    // (`block not found`) or has not finished importing its state. Retry only that chunk on
+    // either and return every other error.
     let nodes = futures::stream::iter(multi_proof_chunks(targets))
-        .map(|chunk| {
-            (move || {
-                provider
-                    .client()
-                    .request::<_, Vec<EIP1186AccountProofResponse>>(
-                        "eth_getMultiProof",
-                        (chunk.clone(), BlockId::number(tempo_block_number)),
-                    )
-            })
-            .retry(
-                ConstantBuilder::default()
-                    .with_delay(MULTI_PROOF_RETRY_DELAY)
-                    .with_max_times(MULTI_PROOF_RETRIES),
-            )
-            .when(|error| {
-                error.as_error_resp().is_some_and(|response| {
-                    response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+        .map(|chunk| async move {
+            (|| fetch_verified_proofs(provider, &chunk, tempo_block_number, state_root))
+                .retry(
+                    ConstantBuilder::default()
+                        .with_delay(MULTI_PROOF_RETRY_DELAY)
+                        .with_max_times(MULTI_PROOF_RETRIES),
+                )
+                .when(|error| {
+                    matches!(
+                        error.downcast_ref(),
+                        Some(
+                            zone_spf::StatelessSparseTrieError::IncompleteAccountProof { .. }
+                                | zone_spf::StatelessSparseTrieError::IncompleteStorageProof { .. }
+                        )
+                    ) || error
+                        .downcast_ref::<TransportError>()
+                        .and_then(TransportError::as_error_resp)
+                        .is_some_and(|response| {
+                            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                        })
                 })
-            })
+                .await
         })
         .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
-        // Merge responses as they arrive.
-        .try_fold(BTreeMap::new(), |mut nodes, proofs| {
-            for proof in proofs {
-                for node in proof.account_proof.into_iter().chain(
-                    proof
-                        .storage_proof
-                        .into_iter()
-                        .flat_map(|proof| proof.proof),
-                ) {
-                    nodes.entry(keccak256(&node)).or_insert(node);
-                }
-            }
+        .try_fold(BTreeMap::new(), |mut nodes, chunk| {
+            nodes.extend(chunk);
             futures::future::ready(Ok(nodes))
         })
         .await
         .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
     Ok((initial_header, nodes.into_values().collect()))
+}
+
+/// Fetches one chunk's Tempo proofs at `block`, keyed by node hash, failing unless every target
+/// links to `state_root` as the SPF reads it.
+async fn fetch_verified_proofs(
+    provider: &DynProvider<TempoNetwork>,
+    chunk: &[(Address, Vec<B256>)],
+    block: u64,
+    state_root: B256,
+) -> eyre::Result<BTreeMap<B256, Bytes>> {
+    let nodes = provider
+        .client()
+        .request::<_, Vec<EIP1186AccountProofResponse>>(
+            "eth_getMultiProof",
+            (chunk, BlockId::number(block)),
+        )
+        .await?
+        .into_iter()
+        .flat_map(|proof| {
+            proof.account_proof.into_iter().chain(
+                proof
+                    .storage_proof
+                    .into_iter()
+                    .flat_map(|proof| proof.proof),
+            )
+        })
+        .map(|node| (keccak256(&node), node))
+        .collect::<BTreeMap<_, _>>();
+    zone_spf::verify_tempo_reads(state_root, nodes.values(), chunk)?;
+    Ok(nodes)
 }
 
 /// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
@@ -2252,7 +2276,17 @@ mod tests {
         block["transactions"] = serde_json::json!([]);
         block["uncles"] = serde_json::json!([]);
         module.register_method("eth_getBlockByNumber", move |_, _| block.clone())?;
-        module.register_method("eth_getMultiProof", |params, ctx| {
+        let account = Address::repeat_byte(0xaa);
+        let slot = B256::repeat_byte(0xbb);
+        // A single-leaf state trie: the account proof is the root, and empty storage proves the slot.
+        let leaf = Bytes::from(alloy_rlp::encode(reth_trie_common::TrieNode::Leaf(
+            reth_trie_common::LeafNode::new(
+                reth_trie_common::Nibbles::unpack(keccak256(account)),
+                alloy_rlp::encode(reth_trie_common::TrieAccount::default()),
+            ),
+        )));
+        let proof_leaf = leaf.clone();
+        module.register_method("eth_getMultiProof", move |params, ctx| {
             let params: serde_json::Value = params.parse()?;
             ctx.0.lock().unwrap().push(params.clone());
             if ctx.1.load(Ordering::Relaxed) {
@@ -2262,16 +2296,21 @@ mod tests {
                     None::<()>,
                 ));
             }
-            let proofs = params[0].as_array().unwrap().iter().map(|target| {
-                serde_json::json!({
-                    "address": target[0], "balance": "0x0", "nonce": "0x0",
-                    "codeHash": B256::ZERO, "storageHash": B256::ZERO,
-                    "accountProof": ["0x01"],
-                    "storageProof": target[1].as_array().unwrap().iter().map(|slot| {
-                        serde_json::json!({"key": slot, "value": "0x0", "proof": ["0x01", "0x02"]})
-                    }).collect::<Vec<_>>()
+            let proofs = params[0]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|target| {
+                    serde_json::json!({
+                        "address": target[0], "balance": "0x0", "nonce": "0x0",
+                        "codeHash": B256::ZERO, "storageHash": B256::ZERO,
+                        "accountProof": [proof_leaf],
+                        "storageProof": target[1].as_array().unwrap().iter().map(|slot| {
+                            serde_json::json!({"key": slot, "value": "0x0", "proof": []})
+                        }).collect::<Vec<_>>()
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
             Ok::<_, ErrorObjectOwned>(proofs)
         })?;
         let server = jsonrpsee::server::ServerBuilder::default()
@@ -2282,28 +2321,35 @@ mod tests {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http(format!("http://{address}").parse()?)
             .erased();
-        let account = Address::repeat_byte(0xaa);
-        let slot = B256::repeat_byte(0xbb);
         let reads = HashSet::from([zone_evm::TempoStorageRead {
             account,
             slot: Some(slot),
         }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;
-        let first_tx_input = IZoneInbox::advanceTempoCall {
-            header: alloy_rlp::encode(&checkpoint).into(),
-            deposits: Vec::new(),
-            decryptions: Vec::new(),
-            enabledTokens: Vec::new(),
-        }
-        .abi_encode();
+        checkpoint.inner.state_root = B256::repeat_byte(0xcc);
+        let advance = |checkpoint: &TempoHeader| {
+            IZoneInbox::advanceTempoCall {
+                header: alloy_rlp::encode(checkpoint).into(),
+                deposits: Vec::new(),
+                decryptions: Vec::new(),
+                enabledTokens: Vec::new(),
+            }
+            .abi_encode()
+        };
+        // Proofs against another root never verify, so collection refetches, then fails.
+        let error = collect_tempo_witness(&provider, initial, Some(&advance(&checkpoint)), &reads)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("incomplete account proof"));
+        assert_eq!(requests.lock().unwrap().len(), 1 + MULTI_PROOF_RETRIES);
+        requests.lock().unwrap().clear();
+        checkpoint.inner.state_root = keccak256(&leaf);
+        let first_tx_input = advance(&checkpoint);
         let (actual_header, nodes) =
             collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads).await?;
         assert_eq!(actual_header, header);
-        assert_eq!(
-            nodes.into_iter().collect::<BTreeSet<_>>(),
-            BTreeSet::from([Bytes::from(vec![1]), Bytes::from(vec![2])])
-        );
+        assert_eq!(nodes, vec![leaf.clone()]);
         {
             let requests = requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
@@ -2350,7 +2396,7 @@ mod tests {
             .collect::<HashSet<_>>();
         let (_, nodes) =
             collect_tempo_witness(&provider, initial, Some(&first_tx_input), &many_reads).await?;
-        assert_eq!(nodes, vec![Bytes::from(vec![1])]);
+        assert_eq!(nodes, vec![leaf]);
         {
             let requests = requests.lock().unwrap();
             assert_eq!(requests.len(), 3);
