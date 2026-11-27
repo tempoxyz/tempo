@@ -33,6 +33,9 @@ eyre = { workspace = true, optional = true }
 serde_json = { workspace = true, default-features = true }
 thiserror = { version = "2", default-features = false }
 
+[dev-dependencies]
+test-case.workspace = true
+
 [features]
 default = []
 cli = ["dep:eyre", "dep:reth-cli", "tempo-primitives/reth-codec"]

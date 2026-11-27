@@ -15096,6 +15096,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-state-bloat",
  "tempo-validator-config",
+ "test-case",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "yaml_serde",
@@ -17290,6 +17291,7 @@ dependencies = [
  "serde_json",
  "tempo-chainspec",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "zone-primitives",
 ]

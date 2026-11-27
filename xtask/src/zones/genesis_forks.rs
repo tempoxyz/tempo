@@ -6,8 +6,13 @@ use eyre::{WrapErr as _, ensure, eyre};
 use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::ForkSchedule};
-use tempo_chainspec::{cli::TempoHardforkArgs, hardfork::TempoHardfork};
+use tempo_chainspec::{
+    cli::TempoHardforkArgs,
+    hardfork::TempoHardfork,
+    spec::{TempoHardforks as _, chainspec_from_chain_id},
+};
 use tokio::time::timeout;
+use zone_chainspec::tempo_chain_spec_for_l1;
 use zone_primitives::constants::decode_l1_chain_id;
 
 #[derive(Debug)]
@@ -57,7 +62,7 @@ impl ResolvedForks {
             activations,
         };
         ensure!(
-            forks.hardfork_at(timestamp).ok() == Some(active),
+            forks.hardfork_at(timestamp)? == active,
             "L1 fork schedule does not match the sampled head; retry genesis generation"
         );
         Ok(forks)
@@ -84,12 +89,33 @@ impl ResolvedForks {
         Ok(forks)
     }
 
+    /// Returns the Tempo fork active at `timestamp`.
+    ///
+    /// Zones on mainnet and testnet run with the parent schedule compiled into the node, so the
+    /// L1 RPC must report the same fork there; otherwise genesis would be built under one fork
+    /// and loaded under another.
     pub(crate) fn hardfork_at(&self, timestamp: u64) -> eyre::Result<TempoHardfork> {
-        self.activations
+        let fork = self
+            .activations
             .iter()
             .rev()
             .find_map(|(&fork, &time)| (time <= timestamp).then_some(fork))
-            .ok_or_else(|| eyre!("no Tempo fork is active at genesis anchor timestamp {timestamp}"))
+            .ok_or_else(|| {
+                eyre!("no Tempo fork is active at genesis anchor timestamp {timestamp}")
+            })?;
+        if let Some((chain_id, parent)) = self
+            .parent_chain_id
+            .and_then(|id| Some((id, chainspec_from_chain_id(id)?)))
+        {
+            let compiled = parent.tempo_hardfork_at(timestamp);
+            ensure!(
+                fork == compiled,
+                "L1 RPC reports Tempo fork {fork:?} at timestamp {timestamp}, but this binary's \
+                 schedule for chain {chain_id} has {compiled:?}; use an L1 RPC and xtask from the \
+                 same Tempo release"
+            );
+        }
+        Ok(fork)
     }
 
     pub(crate) fn validate_chain_id(&self, chain_id: u64) -> eyre::Result<()> {
@@ -103,14 +129,40 @@ impl ResolvedForks {
         Ok(())
     }
 
+    /// Writes Tempo fork activations into a Zone genesis config.
+    ///
+    /// Zones on mainnet and testnet get no fork fields and follow the parent schedule compiled
+    /// into the node, so a fork rescheduled in a later release needs no genesis change. Zones on
+    /// other RPC-resolved parents get the forks the L1 has scheduled and omit the rest, so offline
+    /// tools execute with the schedule as of generation; nodes replace forks pending at genesis
+    /// with the L1's current `tempo_forkSchedule` at startup. Zones on local dev parents, and
+    /// offline caps, write `null` for disabled forks, because an omitted field there would inherit
+    /// the compiled DEV schedule.
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
+        let public_parent = self
+            .parent_chain_id
+            .is_some_and(|id| chainspec_from_chain_id(id).is_some());
+        let custom_parent = self
+            .parent_chain_id
+            .is_some_and(|id| tempo_chain_spec_for_l1(id).is_none());
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
-                let value = self
-                    .activations
-                    .get(&fork)
-                    .map_or(Value::Null, |&time| Value::from(time));
-                config.extra_fields.insert(key.to_owned(), value);
+                match self.activations.get(&fork) {
+                    _ if public_parent => {
+                        config.extra_fields.remove(key);
+                    }
+                    Some(&time) => {
+                        config
+                            .extra_fields
+                            .insert(key.to_owned(), Value::from(time));
+                    }
+                    None if custom_parent => {
+                        config.extra_fields.remove(key);
+                    }
+                    None => {
+                        config.extra_fields.insert(key.to_owned(), Value::Null);
+                    }
+                }
             }
         }
     }
@@ -150,6 +202,7 @@ mod tests {
     use alloy::{providers::ProviderBuilder, transports::mock::Asserter};
     use serde_json::json;
     use tempo_alloy::rpc::ForkInfo;
+    use test_case::test_case;
 
     fn schedule() -> ForkSchedule {
         serde_json::from_value(json!({ "active": "T11", "schedule": [
@@ -160,11 +213,63 @@ mod tests {
         .unwrap()
     }
 
+    // With the anchor at 100, T11 is active, T12 is pending at 200 and T13 is unscheduled.
+    // A custom parent records scheduled forks and omits the rest, and a dev parent disables the
+    // rest.
+    #[test_case(31_318 => [Some(json!(20)), Some(json!(200)), None])]
+    #[test_case(1337 => [Some(json!(20)), Some(json!(200)), Some(Value::Null)])]
+    fn rpc_schedule_fork_fields(parent_chain_id: u64) -> [Option<Value>; 3] {
+        let forks = ResolvedForks::from_schedule(parent_chain_id, 100, schedule()).unwrap();
+        let mut config = ChainConfig::default();
+        config.extra_fields.insert("t13Time".to_owned(), json!(0));
+        forks.write_to(&mut config);
+        ["t11Time", "t12Time", "t13Time"].map(|key| config.extra_fields.get(key).cloned())
+    }
+
+    // Mainnet and testnet zones follow the compiled schedule and get no fork fields, so an L1 RPC
+    // reporting a different schedule, such as one from an older release, is rejected.
+    #[test_case(4217)]
+    #[test_case(42431)]
+    fn public_parent_requires_compiled_schedule(parent_chain_id: u64) {
+        let parent = chainspec_from_chain_id(parent_chain_id).unwrap();
+        let mut entries = TempoHardfork::VARIANTS
+            .iter()
+            .filter(|&&fork| fork != TempoHardfork::Genesis)
+            .filter_map(|&fork| {
+                let time = parent.tempo_fork_activation(fork).as_timestamp()?;
+                Some(ForkInfo {
+                    name: format!("{fork:?}"),
+                    activation_time: time,
+                    active: true,
+                    fork_id: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        let head = entries.last().unwrap().activation_time;
+        let compiled = ForkSchedule {
+            active: entries.last().unwrap().name.clone(),
+            schedule: entries.clone(),
+        };
+        let forks = ResolvedForks::from_schedule(parent_chain_id, head, compiled).unwrap();
+        let mut config = ChainConfig::default();
+        config.extra_fields.insert("t0Time".to_owned(), json!(0));
+        forks.write_to(&mut config);
+        assert!(config.extra_fields.is_empty());
+
+        entries.pop();
+        let older_release = ForkSchedule {
+            active: entries.last().unwrap().name.clone(),
+            schedule: entries,
+        };
+        let error = ResolvedForks::from_schedule(parent_chain_id, head, older_release).unwrap_err();
+        assert!(error.to_string().contains("same Tempo release"), "{error}");
+    }
+
     #[tokio::test]
     async fn rpc_fork_resolution_fails_closed() {
         let mut unknown_active = schedule();
         unknown_active.active = "T999".to_owned();
-        assert!(ResolvedForks::from_schedule(4217, 100, unknown_active).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 100, unknown_active).is_err());
         let mut unknown_future = schedule();
         unknown_future.schedule.push(ForkInfo {
             name: "T999".to_owned(),
@@ -172,21 +277,21 @@ mod tests {
             active: false,
             fork_id: None,
         });
-        assert!(ResolvedForks::from_schedule(4217, 100, unknown_future).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 100, unknown_future).is_err());
         let mut duplicate = schedule();
         duplicate.schedule.push(duplicate.schedule[1].clone());
-        assert!(ResolvedForks::from_schedule(4217, 100, duplicate).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 100, duplicate).is_err());
         let mut out_of_order = schedule();
         out_of_order.schedule[2].activation_time = 15;
         out_of_order.schedule[2].active = true;
-        assert!(ResolvedForks::from_schedule(4217, 100, out_of_order).is_err());
-        assert!(ResolvedForks::from_schedule(4217, 9, schedule()).is_err());
-        assert!(ResolvedForks::from_schedule(4217, 200, schedule()).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 100, out_of_order).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 9, schedule()).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 200, schedule()).is_err());
         let empty = ForkSchedule {
             active: "T0".to_owned(),
             schedule: Vec::new(),
         };
-        assert!(ResolvedForks::from_schedule(4217, 100, empty).is_err());
+        assert!(ResolvedForks::from_schedule(31_318, 100, empty).is_err());
 
         let asserter = Asserter::new();
         asserter.push_success(&"0x1079");
