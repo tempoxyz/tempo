@@ -15,7 +15,7 @@ use crate::{
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags,
-        account_config_commitment,
+        StorageCheckpoint, account_config_commitment,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
@@ -257,14 +257,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn amsterdam_eip8037_enabled(&self) -> bool {
-        self.amsterdam_eip8037_enabled
+        self.amsterdam_eip8037_enabled || self.spec.is_t17()
     }
 
     fn is_static(&self) -> bool {
         self.is_static
     }
 
-    fn checkpoint(&mut self) -> StateCheckpoint {
+    fn checkpoint(&mut self) -> StorageCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             accounts: self.accounts.clone(),
@@ -272,25 +272,32 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             transient: self.transient.clone(),
             events: self.events.clone(),
         });
-        StateCheckpoint::new(idx, 0)
+        StorageCheckpoint {
+            state: StateCheckpoint::new(idx, 0),
+            gas: None,
+        }
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit (expected top of stack)"
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert (expected top of stack)"
         );
-        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_len()..).next() {
+        if let Some(snapshot) = self
+            .snapshots
+            .drain(checkpoint.state.journal_len()..)
+            .next()
+        {
             self.accounts = snapshot.accounts;
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
@@ -340,6 +347,10 @@ impl StorageCreditsBackend for HashMapStorageProvider {
 
     fn gas_params(&self) -> &GasParams {
         &self.gas_params
+    }
+
+    fn state_gas_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled()
     }
 
     fn gas_tracker(&mut self) -> &mut GasTracker {
@@ -494,5 +505,23 @@ impl HashMapStorageProvider {
     /// Overrides the static-call context.
     pub fn set_is_static(&mut self, is_static: bool) {
         self.is_static = is_static;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evm2::version::GasId;
+
+    #[test_case::test_matrix([TempoHardfork::T15, TempoHardfork::T16, TempoHardfork::T17], [false, true])]
+    fn tip1016_flag_matches_the_gas_schedule(spec: TempoHardfork, explicit: bool) {
+        let provider =
+            HashMapStorageProvider::new_with_spec(1, spec).with_amsterdam_eip8037_enabled(explicit);
+        let enabled = explicit || spec.is_t17();
+        assert_eq!(provider.amsterdam_eip8037_enabled(), enabled);
+        assert_eq!(
+            provider.gas_params[GasId::CodeDepositCost],
+            if enabled { 200 } else { 1_000 }
+        );
     }
 }

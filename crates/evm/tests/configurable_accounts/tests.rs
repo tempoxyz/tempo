@@ -365,6 +365,12 @@ fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
 fn activation_config() -> TempoEvmConfig {
     let mut genesis = DEV.genesis().clone();
     genesis.config.chain_id = 1;
+    for fork in ["t16Time", "t17Time"] {
+        genesis
+            .config
+            .extra_fields
+            .insert(fork.into(), serde_json::Value::Null);
+    }
     for (field, value) in [
         ("t12Time", 0),
         ("t13Time", 0),

@@ -109,6 +109,19 @@ macro_rules! tempo_hardfork {
             use alloy_hardforks::Hardfork;
 
             #[test]
+            fn unreleased_forks_are_unscheduled_on_public_networks() {
+                for fork in [T15, T16, T17] {
+                    assert_eq!(fork.mainnet_activation_block(), None);
+                    assert_eq!(fork.mainnet_activation_timestamp(), None);
+                    assert_eq!(fork.moderato_activation_block(), None);
+                    assert_eq!(fork.moderato_activation_timestamp(), None);
+                    for chain in [4217, 42431] {
+                        assert_ne!(TempoHardfork::from_chain_and_timestamp(chain, u64::MAX), Some(fork));
+                    }
+                }
+            }
+
+            #[test]
             fn test_hardfork_name() {
                 assert_eq!(Genesis.name(), "Genesis");
                 $(assert_eq!($variant.name(), stringify!($variant));)*
@@ -249,10 +262,14 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
         T14,
-        /// T15 hardfork.
+        /// T15 hardfork. No public-network activation is scheduled.
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t15>.
         T15,
+        /// T16 hardfork. No public-network activation is scheduled.
+        T16,
+        /// T17 hardfork activates TIP-1016. No public-network activation is scheduled.
+        T17,
     }
 );
 
@@ -314,9 +331,14 @@ impl TempoHardfork {
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    /// - T17+: EIP-7825 Osaka limit again; TIP-1016 pays state creation from
+    ///   the reservoir, outside the execution budget.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        if self.is_t17() {
+            return Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
         if self.is_t1a() {
             return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
         }
@@ -410,7 +432,7 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
-            Self::T15 => None,
+            Self::T15 | Self::T16 | Self::T17 => None,
         }
     }
 
@@ -437,7 +459,7 @@ impl TempoHardfork {
             Self::T12 => Some(MAINNET_T12_TIMESTAMP),
             Self::T13 => Some(MAINNET_T13_TIMESTAMP),
             Self::T14 => Some(MAINNET_T14_TIMESTAMP),
-            Self::T15 => None,
+            Self::T15 | Self::T16 | Self::T17 => None,
         }
     }
 
@@ -464,7 +486,7 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
-            Self::T15 => None,
+            Self::T15 | Self::T16 | Self::T17 => None,
         }
     }
 
@@ -491,7 +513,7 @@ impl TempoHardfork {
             Self::T12 => Some(MODERATO_T12_TIMESTAMP),
             Self::T13 => Some(MODERATO_T13_TIMESTAMP),
             Self::T14 => Some(MODERATO_T14_TIMESTAMP),
-            Self::T15 => None,
+            Self::T15 | Self::T16 | Self::T17 => None,
         }
     }
 }
@@ -517,5 +539,22 @@ impl From<SpecId> for TempoHardfork {
         // Default to the default hardfork when converting from SpecId.
         // The actual hardfork should be passed explicitly where needed.
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::*;
+
+    #[test]
+    fn tx_gas_limit_cap_drops_back_to_osaka_at_t17() {
+        assert_eq!(
+            TempoHardfork::T16.tx_gas_limit_cap(),
+            Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP)
+        );
+        assert_eq!(
+            TempoHardfork::T17.tx_gas_limit_cap(),
+            Some(MAX_TX_GAS_LIMIT_OSAKA)
+        );
     }
 }

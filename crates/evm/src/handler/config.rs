@@ -149,7 +149,8 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
     }
 }
 
-/// Builds an EVM2 execution config for Tempo's ERC-20 fee model.
+/// Builds an EVM2 execution config for Tempo's ERC-20 fee model, including
+/// TIP-1016's execution/state gas split from T17.
 pub fn tempo_execution_config(
     tempo_spec: TempoHardfork,
     chain_id: u64,
@@ -206,16 +207,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             return Ok(());
         }
 
-        let (nonce, zero_nonce_authorizations) = match envelope.evm_tx() {
-            TempoEvmTx::Legacy { transaction, .. } => (transaction.nonce, 0),
-            TempoEvmTx::Eip2930(transaction) => (transaction.nonce, 0),
-            TempoEvmTx::Eip1559(transaction) => (transaction.nonce, 0),
+        let (nonce, zero_nonce_authorizations, authorizations) = match envelope.evm_tx() {
+            TempoEvmTx::Legacy { transaction, .. } => (transaction.nonce, 0, 0),
+            TempoEvmTx::Eip2930(transaction) => (transaction.nonce, 0, 0),
+            TempoEvmTx::Eip1559(transaction) => (transaction.nonce, 0, 0),
             TempoEvmTx::Eip7702(transaction) => (
                 transaction.nonce,
                 transaction
                     .authorizations()
                     .filter(|authorization| authorization.nonce() == 0)
                     .count() as u64,
+                transaction.authorizations().len() as u64,
             ),
             TempoEvmTx::AA(_) => return Ok(()),
         };
@@ -232,7 +234,31 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         *initial_state_gas = initial_state_gas.saturating_add(
             new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
         );
+        if host.feature(EvmFeatures::EIP8037) {
+            *initial_state_gas = initial_state_gas.saturating_add(
+                authorizations.saturating_mul(
+                    host.version()
+                        .gas_params
+                        .new_account_state_gas()
+                        .saturating_add(
+                            host.version().gas_params.get(GasId::TxEip7702PerAuthState),
+                        ),
+                ),
+            );
+        }
         Ok(())
+    }
+
+    fn eip7702_auth_gas_policy(
+        host: &Evm<'_, TempoEvmTypes>,
+        _envelope: &TempoTxEnv,
+    ) -> eip7702::AuthGasPolicy {
+        if host.feature(EvmFeatures::EIP8037) {
+            // TIP-1016 charges every authorization intrinsically, including redelegation.
+            eip7702::AuthGasPolicy::Intrinsic
+        } else {
+            eip7702::AuthGasPolicy::Ethereum
+        }
     }
 
     fn before_execution(
@@ -480,9 +506,12 @@ fn settle_storage_credit_refunds(
         }
         Ok::<_, TempoPrecompileError>(settled)
     })?;
-    result
-        .gas
-        .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    let refund = settled.saturating_mul(STORAGE_CREDIT_VALUE as i64);
+    if host.feature(EvmFeatures::EIP8037) {
+        result.gas.refill_reservoir(refund as u64);
+    } else {
+        result.gas.record_refund(refund);
+    }
     Ok(())
 }
 

@@ -222,7 +222,7 @@ settlement run through the production execution path:
 
 ## TIP-1010: Mainnet Gas Parameters (Block Limits)
 
-TIP-1010 defines Tempo's mainnet block gas parameters, including a 500M total block gas limit with a 30M general lane and 470M payment lane allocation.
+TIP-1010 defines Tempo's mainnet block gas parameters, including a 500M block gas limit with a 30M general lane and 470M payment lane allocation. From T17, TIP-1016 applies protocol gas limits to execution gas only, excluding state gas.
 
 ### Block Gas Invariants (BlockGasLimits.t.sol)
 
@@ -230,15 +230,18 @@ Tested via `vmExec.executeTransaction()` and constant assertions:
 
 - **TEMPO-BLOCK1**: Block total gas limit = 500,000,000. (constant assertion)
 - **TEMPO-BLOCK2**: General lane gas limit = 30,000,000. (constant assertion)
-- **TEMPO-BLOCK3**: Transaction gas cap = 30,000,000.
-  - Handler submits tx at cap (30M) and over cap (30M+)
-  - Invariant: over-cap transactions must be rejected
+- **TEMPO-BLOCK3**: Fork-aware transaction gas cap.
+  - Before T17: total gas limit = 30,000,000; transactions at the cap succeed and above it are rejected specifically by gas-cap validation without consuming a nonce.
+  - From T17 (TIP-1016): execution gas limit = 16,777,216; total gas above 30M is accepted, while `GAS` exposes exactly the execution budget excluding the reservoir.
+  - A T17 boundary test exhausts exactly the execution cap successfully, then requires an execution out-of-gas halt for one additional gas despite a 40M total budget.
+  - A separate T17 access-list transaction exceeds the cap in intrinsic execution gas alone; it must fail validation without consuming a nonce, not halt during runtime.
 
 - **TEMPO-BLOCK4**: Base fee = 20 gwei (T1), 10 gwei (T0). (constant assertion)
 - **TEMPO-BLOCK5**: Payment lane minimum = 470M. (constant assertion)
 - **TEMPO-BLOCK6**: Max contract deployment (24KB) fits within tx gas cap.
   - Handler deploys contracts at 50-100% of max size
-  - Invariant: max size deployment must succeed within tx cap
+  - Invariant: every tested deployment succeeds with exactly the requested runtime size.
+  - T17 uses 2,500 gas/byte code deposit pricing and permits a total budget above 30M; only execution gas is capped.
 
 ### Protocol-Level Invariants (Rust)
 
