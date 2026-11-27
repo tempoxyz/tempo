@@ -39,6 +39,7 @@ pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoFeeManager,
+    fee_token_inference_target,
 };
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -737,16 +738,12 @@ mod tests {
             PrecompileCacheMap::default(),
             false,
         );
-        let precompiles = evm
-            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
-            .unwrap();
         assert!(
-            precompiles
-                .downcast_ref::<TempoPrecompiles<
-                    TempoEvmTypes,
-                    CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
-                >>()
-                .is_some()
+            evm.precompiles_as::<TempoPrecompiles<
+                TempoEvmTypes,
+                CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
+            >>()
+            .is_some()
         );
 
         let evm_config =
@@ -759,9 +756,6 @@ mod tests {
             PrecompileCacheMap::default(),
             false,
         );
-        let precompiles = evm
-            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
-            .unwrap();
-        assert!(precompiles.downcast_ref::<NoPrecompiles>().is_some());
+        assert!(evm.precompiles_as::<NoPrecompiles>().is_some());
     }
 }

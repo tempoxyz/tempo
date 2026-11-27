@@ -17,8 +17,10 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::TryFutureExt;
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
-use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
-use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
+use reth_primitives_traits::{
+    HeaderTy, Recovered, RecoveredBlock, SealedHeaderFor, TransactionMeta, WithEncoded,
+};
+use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcBlock, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
@@ -41,7 +43,7 @@ use reth_ethereum::tasks::{
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx, RpcNodeCoreFor};
-use reth_provider::{ChainSpecProvider, ProviderError, StateProvider as _};
+use reth_provider::{ChainSpecProvider, ProviderBlock, ProviderError, StateProvider as _};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -453,16 +455,7 @@ where
         overrides: EvmOverrides,
     ) -> Result<U256, Self::Error> {
         let (evm_env, at) = self.evm_env_at(at).await?;
-        let mut fee_payer_access = 0;
-        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER) && evm_env.spec.is_t14()
-        {
-            fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
-            request.fee_payer_signature = None;
-            request.inner.gas = request
-                .inner
-                .gas
-                .map(|limit| limit.saturating_sub(fee_payer_access));
-        }
+        let fee_payer_access = strip_fee_payer_marker(&mut request, &evm_env);
         let estimate = self
             .spawn_blocking_io_with_state(at, move |this, state| {
                 this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
@@ -475,8 +468,52 @@ where
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EthBlocks for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    /// Recovers keychain key IDs on the shared block before it is converted.
+    ///
+    /// `clone_into_rpc_block` hands the converter clones of the transactions, so serializing the
+    /// response would fill the `keyId` cache of the clones only. Recovering the key ID on the
+    /// borrowed block lets the cached block keep it and spares the next request a signature
+    /// verification per keychain transaction.
+    fn convert_block(
+        &self,
+        block: &RecoveredBlock<ProviderBlock<Self::Provider>>,
+        full: bool,
+    ) -> Result<RpcBlock<Self::NetworkTypes>, Self::Error> {
+        if full {
+            for tx in block.body().transactions() {
+                if let Some(aa) = tx.as_aa() {
+                    aa.populate_key_id();
+                }
+            }
+        }
+
+        Ok(block.clone_into_rpc_block(
+            full.into(),
+            |tx, tx_info| self.converter().fill(tx, tx_info),
+            |header, block_size| self.converter().convert_header(header, Some(block_size)),
+        )?)
+    }
+}
+
+impl<N> LoadTransaction for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    fn recover_raw_pooled_transaction(
+        &self,
+        tx: &[u8],
+    ) -> Result<Recovered<TempoTxEnvelope>, EthApiError> {
+        let transaction = self.inner.recover_raw_pooled_transaction(tx)?;
+        if transaction.inner().is_system_tx() {
+            return Err(EthApiError::InvalidTransactionSignature);
+        }
+        Ok(transaction)
+    }
+}
 
 impl<N> EthTransactions for TempoEthApi<N>
 where
@@ -624,6 +661,21 @@ where
 
         Ok(TempoEthApi::new(eth_api))
     }
+}
+
+/// Strips a T14+ [`FEE_PAYER_SIGNATURE_MARKER`] from `request` and lowers its gas limit to match.
+/// Returns the fee payer's access gas to add to the estimate, or zero.
+pub fn strip_fee_payer_marker(request: &mut TempoTransactionRequest, evm_env: &TempoEvmEnv) -> u64 {
+    if request.fee_payer_signature != Some(FEE_PAYER_SIGNATURE_MARKER) || !evm_env.spec.is_t14() {
+        return 0;
+    }
+    let fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
+    request.fee_payer_signature = None;
+    request.inner.gas = request
+        .inner
+        .gas
+        .map(|limit| limit.saturating_sub(fee_payer_access));
+    fee_payer_access
 }
 
 /// Returns the next lane nonce, accounting for pending transactions without regressing state.

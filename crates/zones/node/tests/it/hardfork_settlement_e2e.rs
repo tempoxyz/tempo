@@ -569,6 +569,7 @@ pub(crate) async fn batch_witness(
                 .map(|call| call.encryptedSenders)
                 .unwrap_or_default(),
             transactions,
+            virtual_address_key: None,
         });
     }
     let zone_id = ZonePortal::new(portal, l1.provider())

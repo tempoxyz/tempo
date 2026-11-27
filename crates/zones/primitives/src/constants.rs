@@ -1,7 +1,7 @@
 //! Zone protocol constants shared between host and guest.
 
 pub use tempo_contracts::zones::{
-    MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, MAX_WITHDRAWAL_GAS_LIMIT,
+    DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, MAX_WITHDRAWAL_GAS_LIMIT,
     NO_QUEUE_INDEX, TEMPO_STATE_ADDRESS, ZONE_FEE_MANAGER_ADDRESS, ZONE_IDENTITY_ADDRESS,
     ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS,
 };
@@ -14,9 +14,6 @@ pub const MAX_WS_FRAME_AND_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
 /// Maximum number of Tempo headers authenticated by one checkpoint-only Zone block.
 pub const MAX_TEMPO_HEADERS_PER_ZONE_BLOCK: usize = 1024;
-
-/// Capacity reserved for one maximum-size withdrawal batch to bounce back.
-pub const WITHDRAWAL_BOUNCEBACK_RESERVE: usize = 20;
 
 /// Maximum RLP-encoded block size.
 ///

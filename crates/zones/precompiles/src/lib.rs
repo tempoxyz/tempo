@@ -26,7 +26,7 @@
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.
 //! - **Zone TIP-20** ([`ztip20`]) — upstream TIP-20 with zone call rules.
-//! - **ZoneIdentity** ([`zone_identity`]) — orgs, members and per-token edges on shared zones.
+//! - **ZoneIdentity** ([`zone_identity`]) — orgs, members, per-token edges and Tempo targets on shared zones.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::too_many_arguments)]
@@ -54,9 +54,11 @@ macro_rules! zone_precompile {
 pub mod error;
 pub use error::{Result, ZonePrecompileError, ZoneResult};
 
+pub mod address_registry;
 mod aes_gcm;
 mod chaum_pedersen;
 pub mod ecies;
+pub mod ff1;
 pub mod outbox;
 
 /// Zone dispatch helpers for generic typed operations.
@@ -72,6 +74,7 @@ mod configurable_account;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
+mod signature_verifier;
 pub mod storage;
 mod storage_credits;
 pub mod tempo_state;
@@ -104,7 +107,9 @@ use evm2::{
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
+use tempo_contracts::zones::{
+    TEMPO_STATE_ADDRESS, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_INBOX_ADDRESS,
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -243,6 +248,17 @@ where
                 execution::NoCallRules,
                 |data, caller| ZoneInbox::new().call(&self.l1, data, caller),
             )
+        } else if address == ZONE_ADDRESS_REGISTRY_ADDRESS && self.env.spec().is_t15() {
+            execution::execute_precompile(
+                evm,
+                message,
+                gas,
+                &self.env,
+                execution::NoCallRules,
+                |data, caller| {
+                    address_registry::ZoneAddressRegistry::new().call(&self.l1, data, caller)
+                },
+            )
         } else if address == ZONE_FEE_MANAGER_ADDRESS {
             zone_precompile!(evm, message, gas, &self.env, ZoneFeeManager)
         } else if address == ZONE_IDENTITY_ADDRESS && self.env.spec().is_t15() {
@@ -309,7 +325,14 @@ where
                 configurable_account::ConfigurableAccountRules
             )
         } else if address == SIGNATURE_VERIFIER_ADDRESS && self.env.spec().is_t14() {
-            zone_precompile!(evm, message, gas, &self.env, SignatureVerifier)
+            zone_precompile!(
+                evm,
+                message,
+                gas,
+                &self.env,
+                SignatureVerifier,
+                signature_verifier::SignatureVerifierRules
+            )
         } else {
             #[cfg(feature = "std")]
             if address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS {
@@ -355,7 +378,7 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
         | STORAGE_CREDITS_ADDRESS => true,
         // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
         CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
-        ZONE_IDENTITY_ADDRESS => spec.is_t15(),
+        ZONE_IDENTITY_ADDRESS | ZONE_ADDRESS_REGISTRY_ADDRESS => spec.is_t15(),
         _ => false,
     }
 }

@@ -262,7 +262,7 @@ jobs:
               method: 'POST',
               headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                channel: 'C09KA1JNJ02',
+                channel: 'C0AGD5Z83T6', // #eng-bench-alerts
                 text,
                 unfurl_links: false,
                 unfurl_media: false,

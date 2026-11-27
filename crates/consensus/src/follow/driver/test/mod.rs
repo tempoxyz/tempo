@@ -1293,6 +1293,66 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
     });
 }
 
+/// After a boundary rotates the network identity, epochs without a registered
+/// scheme must fall back to the rotated identity, not the one it replaced.
+#[test_traced]
+fn rotation_boundary_retires_the_previous_identity_fallback() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let rig = start_rig(&mut context).await;
+        let rotated = dkg_fixture(&mut context, Epoch::new(1));
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let boundary = strategy.last(Epoch::zero()).unwrap();
+
+        let (ack, waiter) = Exact::handle();
+        let _ = rig.mailbox.to_marshal_reporter().report(Update::Block(
+            make_block(boundary.get(), Some(&rotated.outcome)).into(),
+            ack,
+        ));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("boundary acknowledgement deadline")
+            .expect("rotation boundary should be acknowledged");
+        assert!(
+            rig.schemes.scoped(Epoch::new(2)).is_none(),
+            "epoch two must fall back to the network identity",
+        );
+
+        // Epoch two is signed with the retired identity's shares: it must be
+        // dropped and the driver must ask for epoch one's boundary instead.
+        let block = make_block(EPOCH_LENGTH.get() * 2, None);
+        let forged = make_finalization(&block, Epoch::new(2), &rig.fixture.schemes);
+        let mut reporter = rig.mailbox.to_event_reporter();
+        assert!(
+            reporter
+                .report(Event::Finalized {
+                    block: make_certified_block(block.clone(), &forged),
+                    seen: 0,
+                })
+                .accepted()
+        );
+        wait_until(&context, || !rig.marshal.hints().is_empty()).await;
+        assert_eq!(
+            rig.marshal.hints(),
+            vec![strategy.last(Epoch::new(1)).unwrap()]
+        );
+        assert!(rig.marshal.certified().is_empty());
+
+        // The same block signed with the rotated identity verifies.
+        let finalization = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+        assert!(
+            reporter
+                .report(Event::Finalized {
+                    block: make_certified_block(block.clone(), &finalization),
+                    seen: 0,
+                })
+                .accepted()
+        );
+        wait_until(&context, || rig.marshal.certified().len() == 1).await;
+        assert_eq!(rig.marshal.certified()[0].1, block);
+    });
+}
+
 #[test_traced]
 fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
     deterministic::Runner::default().start(|mut context| async move {
@@ -1859,5 +1919,53 @@ fn startup_rejects_a_floor_past_the_epoch_after_the_tip_behind_a_lagging_executi
             "{error:#}"
         );
         assert!(provider.header_reads().is_empty());
+    });
+}
+
+/// A processed floor exactly at an epoch's last block carries the next epoch's
+/// scheme. Startup must restore it even when execution lags one epoch behind.
+#[test_traced]
+fn startup_restores_the_scheme_carried_by_an_exact_boundary_floor() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let first = dkg_fixture(&mut context, Epoch::new(1));
+        let second = dkg_fixture(&mut context, Epoch::new(2));
+        let execution_boundary = strategy.last(Epoch::zero()).unwrap();
+        let floor = strategy.last(Epoch::new(1)).unwrap();
+        let floor_block = make_block(floor.get(), Some(&second.outcome));
+
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(execution_boundary.get());
+        provider.add_header(&make_block(execution_boundary.get(), Some(&first.outcome)));
+        let marshal = StubMarshal::default();
+        marshal.add_block(floor_block.clone());
+        let schemes = SchemeProvider::new();
+        let (actor, _mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: schemes.clone(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 1,
+                    identity: *first.outcome.network_identity(),
+                },
+                last_finalized_height: floor,
+                finalized_tip: Some((
+                    floor,
+                    make_finalization(&floor_block, Epoch::new(1), &first.schemes),
+                )),
+                partition_prefix: "test".into(),
+                marshal: marshal.clone(),
+                epoch_strategy: strategy,
+            },
+        )
+        .await
+        .unwrap();
+        let _handle = actor.start();
+
+        wait_until(&context, || schemes.scoped(Epoch::new(2)).is_some()).await;
+        assert!(schemes.scoped(Epoch::new(1)).is_some());
+        assert!(schemes.scoped(Epoch::new(2)).is_some());
+        assert_eq!(marshal.block_reads(), vec![floor]);
     });
 }

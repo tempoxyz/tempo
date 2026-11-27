@@ -30,11 +30,19 @@ tempo-hardfork.workspace = true
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["rand"] }
+serde_json.workspace = true
+test-case.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
 default = ["std", "rpc"]
-std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std", "tempo-hardfork/std"]
+std = [
+    "alloy-primitives/std",
+    "alloy-sol-types/std",
+    "serde?/std",
+    "serde_json/std",
+    "tempo-hardfork/std",
+]
 rpc = [
     "dep:alloy-contract",
     "dep:alloy-network",

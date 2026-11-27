@@ -31,7 +31,9 @@ use tokio::{
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use tracing::{debug, error, info, warn};
 use zone_chainspec::ZoneChainSpec;
-use zone_l1::{DepositQueue, EncryptionKeyRing, L1BlockTracker, TempoStateExt as _};
+use zone_l1::{
+    DepositQueue, EncryptionKeyRing, L1BlockTracker, TempoStateExt as _, state::L1StateProvider,
+};
 use zone_p2p::{
     BackfillCommand, BackfillRequest, BackfillResponse, LeadershipSchedule, P2pCommand, P2pEvent,
     P2pPeerId,
@@ -86,6 +88,8 @@ pub(crate) struct RoleControllerContext<P, Pool> {
     pub attestation: AttestationContext,
     pub settlements: Option<SettlementManager>,
     pub portal_address: Address,
+    /// Cached L1 state shared with the EVM.
+    pub l1_state: L1StateProvider,
     /// Sequencer resources constructed unconditionally at startup; activation is gated by
     /// the leader generation. `None` means this node can never lead.
     pub sequencer: Option<LeaderSequencerDeps>,
@@ -1075,7 +1079,7 @@ fn build_engine<P, Pool>(
     last_header: SealedHeader<TempoHeader>,
 ) -> ZoneEngine
 where
-    P: Clone,
+    P: reth_storage_api::StateProviderFactory + Clone + Send + Sync + 'static,
 {
     ZoneEngine::new(
         context.chain_spec.clone(),
@@ -1087,6 +1091,7 @@ where
         sequencer.config.sequencer_signer.address(),
         context.encryption_keys.clone(),
         context.portal_address,
+        context.l1_state.clone(),
         sequencer.proof_collector.clone(),
     )
     .with_production_permit(ProductionPermit::new(
@@ -1094,6 +1099,7 @@ where
         context.local_ed25519_public_key.clone(),
     ))
     .with_deposit_allowlist(sequencer.config.deposit_allowlist.clone())
+    .with_zone_state(crate::engine::zone_state_reader(context.provider.clone()))
 }
 
 #[cfg(test)]

@@ -418,7 +418,7 @@ impl Context {
         }
         let l1_from_block = self.l1.get_block_number().await?;
         let receipt = outbox
-            .requestWithdrawal(
+            .requestWithdrawal_0(
                 PATH_USD_ADDRESS,
                 to,
                 amount,
@@ -690,7 +690,7 @@ impl Context {
             tag: encrypted.tag.into(),
         };
         let receipt = portal
-            .deposit(
+            .deposit_0(
                 PATH_USD_ADDRESS,
                 amount,
                 key_index,

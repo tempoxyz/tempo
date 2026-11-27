@@ -65,6 +65,26 @@ impl FinalizationVerifier {
         &self.network_identity
     }
 
+    /// Retire the current fallback in favor of an identity authenticated by a finalized boundary.
+    ///
+    /// Only an identity with a different key that starts after the current fallback replaces it,
+    /// so replaying an older boundary cannot reinstate a retired identity. Returns whether the
+    /// fallback changed.
+    ///
+    /// The caller is responsible for ensuring the identity came from a boundary block on a chain
+    /// authenticated by a previously verified finalization.
+    pub(crate) fn advance_network_identity(&mut self, identity: NetworkIdentity) -> bool {
+        if identity.from_epoch <= self.network_identity.from_epoch
+            || identity.identity == self.network_identity.identity
+        {
+            return false;
+        }
+
+        self.network_scheme = Arc::new(Scheme::certificate_verifier(NAMESPACE, identity.identity));
+        self.network_identity = identity;
+        true
+    }
+
     /// Install the identity encoded in a finalized epoch-boundary block.
     ///
     /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain

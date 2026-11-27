@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - "crates/zones/contracts/**"
+      - "crates/contracts/src/zones.rs"
+      - "crates/contracts/src/zones/**"
+      - "crates/contracts/src/precompiles/zone_factory.rs"
       - ".github/workflows/zones-contracts.yml"
       - ".gitmodules"
   merge_group:
@@ -30,6 +33,7 @@ jobs:
       pull-requests: read
     outputs:
       should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'zones_contracts') }}
+      runtimes_changed: ${{ contains(fromJSON(steps.filter.outputs.changes), 'zone_runtimes') }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -45,6 +49,13 @@ jobs:
             zones_contracts:
               - 'crates/zones/contracts/**'
               - '.gitmodules'
+              - '.github/workflows/zones-contracts.yml'
+            zone_runtimes:
+              - 'crates/zones/contracts/**'
+              - '.gitmodules'
+              - 'crates/contracts/src/zones.rs'
+              - 'crates/contracts/src/zones/**'
+              - 'crates/contracts/src/precompiles/zone_factory.rs'
               - '.github/workflows/zones-contracts.yml'
 
   build:
@@ -343,6 +354,42 @@ jobs:
             --label generated/ZonePortal.json \
             "$expected_layout" "$generated_layout"
 
+  runtime-bytecode:
+    needs: check-zones-contracts-changes
+    if: needs.check-zones-contracts-changes.outputs.runtimes_changed == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    name: Latest zone runtimes match Solidity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Run Forge build
+        working-directory: crates/zones/contracts
+        run: forge build --skip test
+
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          key: zones-runtime-bytecode
+
+      # Compares the runtimes the latest hardfork installs with the artifacts built above.
+      - name: Check latest zone runtimes
+        run: |
+          cargo test -p tempo-contracts --lib --no-default-features --features std             -- --ignored latest_zone_runtime_matches_solidity
+
   contracts-success:
     permissions:
       contents: read
@@ -356,6 +403,7 @@ jobs:
       - lint
       - test
       - storage-layout
+      - runtime-bytecode
     timeout-minutes: 5
     steps:
       - name: Secure runner
@@ -364,5 +412,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
-          allowed-skips: build,lint,test,storage-layout
+          allowed-skips: build,lint,test,storage-layout,runtime-bytecode
           jobs: ${{ toJSON(needs) }}

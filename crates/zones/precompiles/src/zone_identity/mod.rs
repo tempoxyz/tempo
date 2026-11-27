@@ -1,20 +1,6 @@
-//! Zone-native org registry for shared zones.
-//!
-//! [`ZoneIdentity`] is the source of truth for which org each address belongs to and which TIP-20s
-//! each org may send to each other org. An org is a set of addresses with one admin; an address in
-//! no org is in org 0, whose admin is the registrar. Org A may send token T to org B only when A's
-//! admin allows T outbound to B and B's admin allows T inbound from A.
-//!
-//! The portal admin configures it on Tempo: `ZonePortal.setIdentityConfig` sets the registrar and
-//! whether the zone enforces edges, and the zone reads both from finalized Tempo state, so a
-//! multisig admin never has to act on the zone.
-//!
-//! Execution enforces it: zone TIP-20 transfers revert, `ZoneOutbox::requestWithdrawal` reverts and
-//! `ZoneInbox` bounces a deposit when [`ZoneIdentity::allows`] denies the move. The
-//! enforcement flag shares a Tempo slot with the transfer opt-in TIP-20 already reads; on the zone
-//! the check reads at most three slots (both members and one per-token edge) whatever the
-//! number of orgs, tokens or edges, and a transfer inside an org costs the same as one between
-//! orgs.
+//! Zone org registry (TIP-1180): orgs, their members, per-token edges between orgs, and each org's
+//! Tempo deposit and withdrawal rules. Org 0 holds every address in no org and has no admin; it
+//! can't send, receive or be deposited to within the zone, only withdraw to Tempo.
 
 mod dispatch;
 
@@ -26,7 +12,6 @@ pub use reads::{DelegatedRead, audit_reads};
 use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
-    address_registry::AddressRegistry,
     error::TempoPrecompileError,
     storage::{Handler, Mapping},
 };
@@ -39,10 +24,6 @@ use crate::{
     storage::{L1State, L1StorageReader},
 };
 
-use tempo_contracts::zones::IZoneIdentity::OrgKey;
-
-/// Org registry and per-token edges between orgs.
-///
 /// Field order is the storage layout; append new fields only.
 #[contract(addr = ZONE_IDENTITY_ADDRESS)]
 pub struct ZoneIdentity {
@@ -50,25 +31,20 @@ pub struct ZoneIdentity {
     pub org_count: u64,
     /// Each org's configuration, keyed by org ID.
     pub orgs: Mapping<u64, Org>,
-    /// Each address's membership.
-    pub members: Mapping<Address, Member>,
+    /// The org each Zone address belongs to; 0 for an address in no org.
+    pub members: Mapping<Address, u64>,
 }
 
 impl ZoneIdentity {
-    /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
-    /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
-    pub fn enforced<P: L1StorageReader>(l1: &L1State<P>) -> ZoneResult<bool> {
+    /// The portal's `identityEnforced` flag; false before T15.
+    pub fn enforced<P: L1StorageReader>(l1: &L1State<P>) -> tempo_precompiles::Result<bool> {
         if !tempo_precompiles::storage::StorageCtx.spec().is_t15() {
             return Ok(false);
         }
-        Ok(l1.read_portal(|portal| &portal.identity_enforced)?)
+        l1.read_portal(|portal| &portal.identity_enforced)
     }
 
-    /// Whether `token` may move from `from` to `to`. `enforced` is the portal's flag; when it is off
-    /// nothing is read. Otherwise neither address may be frozen, and the edge between their sides
-    /// must allow the token: Zone to Zone for a transfer, the sender's Tempo side to the Zone for a
-    /// deposit, and the Zone to the recipient's Tempo side for a withdrawal. A deposit or
-    /// withdrawal that misses falls back to org 0's Tempo side, meaning any address on Tempo.
+    /// Whether `token` may move from `from` to `to`.
     pub fn allows(
         &self,
         enforced: bool,
@@ -76,40 +52,36 @@ impl ZoneIdentity {
         from: Address,
         to: Address,
         kind: TransferKind,
-    ) -> ZoneResult<bool> {
+    ) -> tempo_precompiles::Result<bool> {
         if !enforced {
             return Ok(true);
         }
-        // TIP-20 credits a TIP-1022 virtual recipient's master, so the master's org decides. The
-        // registry is mirrored from Tempo, so this also resolves Tempo-side withdrawal recipients.
-        // An unregistered virtual recipient is denied rather than an error, so a deposit to one
-        // bounces instead of failing the whole block.
-        let to = if to.is_virtual() {
-            match AddressRegistry::new().resolve_virtual_address(to)? {
-                master if master.is_zero() => return Ok(false),
-                master => master,
+        // TODO: Resolve virtual addresses through `AddressRegistry` precompile once it activates.
+        // Same cold reads for every outcome, so gas reveals nothing.
+        self.storage.with_cold_pricing(|| match kind {
+            TransferKind::InZone => {
+                let sender = self.members[from].read()?;
+                let recipient = self.members[to].read()?;
+                let edge = self.orgs[sender].edges[recipient][token].read()?;
+                Ok(edge.allows_between(sender, recipient))
             }
-        } else {
-            to
-        };
-        // From here the reads depend only on `kind`, which the caller chose, and are priced as
-        // cold: the gas shows neither the orgs involved nor whether the move is allowed.
-        self.storage.with_cold_pricing(|| {
-            let sender = self.members[from].read()?;
-            let recipient = self.members[to].read()?;
-            let edge = |from: u64, to: u64| -> ZoneResult<bool> {
-                Ok(self.orgs[from].edges[to][token].read()?.allows(kind))
-            };
-            let direct = edge(sender.org, recipient.org)?;
-            // A deposit or withdrawal that misses falls back to org 0's Tempo side: any address
-            // there.
-            let fallback = match kind {
-                TransferKind::InZone => false,
-                TransferKind::Deposit => edge(0, recipient.org)?,
-                TransferKind::Withdrawal => edge(sender.org, 0)?,
-            };
-            Ok(!sender.frozen && !recipient.frozen && (direct || fallback))
+            TransferKind::Deposit => {
+                let recipient = self.members[to].read()?;
+                let (policy, target) = self.l1_rules(recipient, token, from)?;
+                Ok(recipient != 0 && (policy.open_deposit || target.deposit_from))
+            }
+            TransferKind::Withdrawal => {
+                let sender = self.members[from].read()?;
+                let (policy, target) = self.l1_rules(sender, token, to)?;
+                Ok(sender == 0 || policy.open_withdrawal || target.withdraw_to)
+            }
         })
+    }
+
+    /// The org `account` is in, priced as cold.
+    pub fn member_org(&self, account: Address) -> tempo_precompiles::Result<u64> {
+        self.storage
+            .with_cold_pricing(|| self.members[account].read())
     }
 
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
@@ -149,7 +121,7 @@ impl ZoneIdentity {
         Ok(org)
     }
 
-    /// Replaces an org's admin. Org 0 is always administered by the registrar.
+    /// Replaces an org's admin. Org 0 has no admin.
     pub fn set_org_admin(
         &mut self,
         caller: Address,
@@ -163,152 +135,176 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         self.orgs[org].admin.write(admin)?;
-        let epoch = self.orgs[org].admin_epoch.read()?.checked_add(1);
-        self.orgs[org]
-            .admin_epoch
-            .write(epoch.ok_or_else(TempoPrecompileError::under_overflow)?)?;
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
-    /// Adds `accounts`, each in no org, to `org`. Reverts, adding none, if any is already in an org.
+    /// Adds `accounts` to `org`, all or none.
     pub fn add_members(
         &mut self,
         caller: Address,
-        registrar: Address,
         org: u64,
         accounts: &[Address],
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, org)?;
-        if org == 0 {
-            return Err(ZoneIdentityError::invalid_address().into());
-        }
-        // Check every account first, so a rejected batch writes nothing.
+        self.ensure_org_admin(caller, org)?;
+        let spec = tempo_precompiles::storage::StorageCtx.spec();
         for &account in accounts {
-            // A virtual address never holds funds; moves to it are checked as its master.
-            if account.is_zero() || account.is_virtual() {
+            if account.is_zero() || account.is_virtual() || crate::is_zone_precompile(account, spec)
+            {
                 return Err(ZoneIdentityError::invalid_address().into());
             }
-            if self.members[account].read()? != Member::default() {
+            if self.members[account].read()? != 0 {
                 return Err(ZoneIdentityError::already_member(account).into());
             }
         }
         for &account in accounts {
-            self.write_member(account, Member { org, frozen: false })?;
-        }
-        Ok(())
-    }
-
-    /// Moves `account` back to org 0. Only its org's admin may remove it, so a member cannot leave
-    /// to escape its org's outbound rules.
-    pub fn remove_member(&mut self, caller: Address, account: Address) -> ZoneResult<()> {
-        self.ensure_member_admin(caller, account)?;
-        self.write_member(account, Member::default())
-    }
-
-    /// Freezes or unfreezes a member of the caller's org.
-    pub fn set_frozen(
-        &mut self,
-        caller: Address,
-        account: Address,
-        frozen: bool,
-    ) -> ZoneResult<()> {
-        let member = self.ensure_member_admin(caller, account)?;
-        self.write_member(account, Member { frozen, ..member })
-    }
-
-    /// Sets, for each of `tokens`, the halves of the edge from `from` to `to` that the caller
-    /// administers: the sending half as `from`'s org admin, the receiving half as `to`'s. An admin of
-    /// both orgs, as for an org's edge to itself, sets both.
-    pub fn set_edge(
-        &mut self,
-        caller: Address,
-        registrar: Address,
-        from: OrgKey,
-        to: OrgKey,
-        tokens: &[Address],
-        allowed: bool,
-    ) -> ZoneResult<()> {
-        self.ensure_org(from.orgId)?;
-        self.ensure_org(to.orgId)?;
-        let kind = edge_kind(&from, &to)?;
-        let sending = !caller.is_zero() && caller == self.org_admin(registrar, from.orgId)?;
-        let receiving = !caller.is_zero() && caller == self.org_admin(registrar, to.orgId)?;
-        if !sending && !receiving {
-            return Err(ZoneIdentityError::unauthorized().into());
-        }
-        for &token in tokens {
-            let slot = &mut self.orgs[from.orgId].edges[to.orgId][token];
-            let mut edges = slot.read()?;
-            let (from_ok, to_ok) = edges.halves(kind);
-            if sending {
-                *from_ok = allowed;
-            }
-            if receiving {
-                *to_ok = allowed;
-            }
-            let (from_ok, to_ok) = (*from_ok, *to_ok);
-            slot.write(edges)?;
-            self.emit_event(IZoneIdentity::EdgeUpdated {
-                fromOrg: from.orgId,
-                fromL1: from.l1,
-                toOrg: to.orgId,
-                toL1: to.l1,
-                token,
-                fromOk: from_ok,
-                toOk: to_ok,
+            self.members[account].write(org)?;
+            self.emit_event(IZoneIdentity::MemberAdded {
+                account,
+                orgId: org,
             })?;
         }
         Ok(())
     }
 
-    /// Admin of `org`; the registrar for org 0.
-    pub fn org_admin(&self, registrar: Address, org: u64) -> ZoneResult<Address> {
-        if org == 0 {
-            return Ok(registrar);
+    /// Moves `account` back to org 0.
+    pub fn remove_member(&mut self, caller: Address, account: Address) -> ZoneResult<()> {
+        let org = self.ensure_member_admin(caller, account)?;
+        self.members[account].write(0)?;
+        Ok(self.emit_event(IZoneIdentity::MemberRemoved {
+            account,
+            orgId: org,
+        })?)
+    }
+
+    /// Sets the halves of the edge from `from` to `to` the caller administers, per token. Org 0
+    /// has no edges.
+    pub fn set_edge(
+        &mut self,
+        caller: Address,
+        from: u64,
+        to: u64,
+        tokens: &[Address],
+        allowed: bool,
+    ) -> ZoneResult<()> {
+        self.ensure_org(from)?;
+        self.ensure_org(to)?;
+        if from == 0 || to == 0 {
+            return Err(ZoneIdentityError::unauthorized().into());
         }
+        let sending = self.is_edge_admin(caller, from)?;
+        let receiving = self.is_edge_admin(caller, to)?;
+        if !sending && !receiving {
+            return Err(ZoneIdentityError::unauthorized().into());
+        }
+        for &token in tokens {
+            let slot = &mut self.orgs[from].edges[to][token];
+            let mut edge = slot.read()?;
+            if sending {
+                edge.from_ok = allowed;
+            }
+            if receiving {
+                edge.to_ok = allowed;
+            }
+            slot.write(edge)?;
+            self.emit_event(IZoneIdentity::EdgeUpdated {
+                fromOrg: from,
+                toOrg: to,
+                token,
+                fromOk: edge.from_ok,
+                toOk: edge.to_ok,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Sets what `org`'s members may do with Tempo address `target`, per token.
+    pub fn set_l1_target(
+        &mut self,
+        caller: Address,
+        org: u64,
+        target: Address,
+        tokens: &[Address],
+        rules: L1Target,
+    ) -> ZoneResult<()> {
+        self.ensure_org_admin(caller, org)?;
+        if target.is_zero() {
+            return Err(ZoneIdentityError::invalid_address().into());
+        }
+        for &token in tokens {
+            self.orgs[org].l1[token].targets[target].write(rules)?;
+            self.emit_event(IZoneIdentity::L1TargetUpdated {
+                orgId: org,
+                target,
+                token,
+                depositFrom: rules.deposit_from,
+                withdrawTo: rules.withdraw_to,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Sets `org`'s Tempo policy, per token.
+    pub fn set_l1_policy(
+        &mut self,
+        caller: Address,
+        org: u64,
+        tokens: &[Address],
+        policy: L1Policy,
+    ) -> ZoneResult<()> {
+        self.ensure_org_admin(caller, org)?;
+        for &token in tokens {
+            self.orgs[org].l1[token].policy.write(policy)?;
+            self.emit_event(IZoneIdentity::L1PolicyUpdated {
+                orgId: org,
+                token,
+                policy: policy.into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Admin of `org`; zero for org 0.
+    pub fn org_admin(&self, org: u64) -> ZoneResult<Address> {
         Ok(self.orgs[org].admin.read()?)
     }
 
     /// Whether `reader` is `account` or its org's admin or reader, outside org 0, unless audited.
     pub fn can_read(&self, reader: Address, account: Address) -> crate::Result<bool> {
-        if reader == account {
-            return Ok(true);
-        }
-        Ok(self.read_member(reader, account)?.1)
+        Ok(reader == account || self.read_member(reader, account)?.1)
     }
 
-    /// `account`'s membership, and whether `reader` may read it as its org's admin or reader.
-    /// Reads the same slots, priced as cold, whatever the answer, so gas does not reveal the org.
-    fn read_member(&self, reader: Address, account: Address) -> crate::Result<(Member, bool)> {
+    /// `account`'s org, and whether `reader` may read it; gas is the same whatever the answer.
+    fn read_member(&self, reader: Address, account: Address) -> crate::Result<(u64, bool)> {
         self.storage.with_cold_pricing(|| {
-            let member = self.members[account].read()?;
-            let org = &self.orgs[member.org];
-            let admin = org.admin.read()?;
-            let epoch = org.admin_epoch.read()?;
-            let listed = org.readers[epoch][reader].read()?;
-            let may_read = member.org != 0 && (reader == admin || listed);
+            let org = self.members[account].read()?;
+            let may_read = self.can_read_org(reader, org)?;
             #[cfg(feature = "std")]
             let may_read = reads::admit(DelegatedRead { reader, account }, may_read);
-            Ok((member, may_read))
+            Ok((org, may_read))
         })
     }
 
-    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0. The
-    /// entry belongs to the current admin and lapses when the registrar replaces it.
+    /// Whether `reader` is `org`'s admin or reader, never for org 0, at the same cost either way.
+    pub fn can_read_org(&self, reader: Address, org: u64) -> tempo_precompiles::Result<bool> {
+        let config = &self.orgs[org];
+        let admin = config.admin.read()?;
+        let listed = config.readers[reader].read()?;
+        Ok(org != 0 && (reader == admin || listed))
+    }
+
+    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only.
     pub fn set_reader(
         &mut self,
         caller: Address,
-        registrar: Address,
         org: u64,
         reader: Address,
         allowed: bool,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, org)?;
-        if org == 0 || reader.is_zero() {
+        self.ensure_org_admin(caller, org)?;
+        if reader.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
-        let epoch = self.orgs[org].admin_epoch.read()?;
-        self.orgs[org].readers[epoch][reader].write(allowed)?;
+        self.orgs[org].readers[reader].write(allowed)?;
         Ok(self.emit_event(IZoneIdentity::ReaderUpdated {
             orgId: org,
             reader,
@@ -316,63 +312,87 @@ impl ZoneIdentity {
         })?)
     }
 
-    /// Membership of `account` for a caller that may read it, or the registrar.
-    pub fn org_of(
-        &self,
-        caller: Address,
-        registrar: Address,
-        account: Address,
-    ) -> ZoneResult<Member> {
-        let (member, may_read) = self.read_member(caller, account)?;
-        if caller != account && !may_read {
-            ensure_caller(caller, registrar)?;
+    /// The org `account` is in, for a caller that may read it, or the registrar.
+    pub fn org_of(&self, caller: Address, registrar: Address, account: Address) -> ZoneResult<u64> {
+        // Checked first so an audit never records these reads as delegated.
+        if caller == account || !registrar.is_zero() && caller == registrar {
+            return Ok(self.member_org(account)?);
         }
-        Ok(member)
+        let (org, may_read) = self.read_member(caller, account)?;
+        if !may_read {
+            return Err(ZoneIdentityError::unauthorized().into());
+        }
+        Ok(org)
     }
 
-    /// Whether `token` may move along the edge from `from` to `to`, for the admin of either org or
-    /// the registrar.
+    /// Whether the edge allows `token`, for either org's admin or the registrar.
     pub fn edge(
         &self,
         caller: Address,
         registrar: Address,
-        from: OrgKey,
-        to: OrgKey,
+        from: u64,
+        to: u64,
         token: Address,
     ) -> ZoneResult<bool> {
-        if caller != self.org_admin(registrar, from.orgId)?
-            && caller != self.org_admin(registrar, to.orgId)?
-        {
+        if caller != self.org_admin(from)? && caller != self.org_admin(to)? {
             ensure_caller(caller, registrar)?;
         }
-        let kind = edge_kind(&from, &to)?;
-        Ok(self.orgs[from.orgId].edges[to.orgId][token]
+        Ok(self.orgs[from].edges[to][token]
             .read()?
-            .allows(kind))
+            .allows_between(from, to))
     }
 
-    fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
-        self.members[account].write(member)?;
-        Ok(self.emit_event(IZoneIdentity::MemberUpdated {
-            account,
-            orgId: member.org,
-            frozen: member.frozen,
-        })?)
+    /// `org`'s rule for `target` and `token`, for its admin or the registrar.
+    pub fn l1_target(
+        &self,
+        caller: Address,
+        registrar: Address,
+        org: u64,
+        target: Address,
+        token: Address,
+    ) -> ZoneResult<L1Target> {
+        self.ensure_org_reader(caller, registrar, org)?;
+        Ok(self.orgs[org].l1[token].targets[target].read()?)
     }
 
-    /// Returns `account`'s membership if the caller administers its org. Every other case,
-    /// including an account in no org, reverts with the same `Unauthorized` after the same two
-    /// reads, so the call does not reveal whether an account is a member.
-    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<Member> {
-        // Reads the member and its org's admin slot whatever the caller, priced as cold.
-        let (member, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
-            let member = self.members[account].read()?;
-            Ok((member, self.orgs[member.org].admin.read()?))
+    /// `org`'s policy for `token`, for `org`'s admin or the registrar.
+    pub fn l1_policy(
+        &self,
+        caller: Address,
+        registrar: Address,
+        org: u64,
+        token: Address,
+    ) -> ZoneResult<L1Policy> {
+        self.ensure_org_reader(caller, registrar, org)?;
+        Ok(self.orgs[org].l1[token].policy.read()?)
+    }
+
+    /// Reads both of `org`'s Tempo rule slots for `token` and `l1`.
+    fn l1_rules(
+        &self,
+        org: u64,
+        token: Address,
+        l1: Address,
+    ) -> tempo_precompiles::Result<(L1Policy, L1Target)> {
+        let rules = &self.orgs[org].l1[token];
+        Ok((rules.policy.read()?, rules.targets[l1].read()?))
+    }
+
+    /// Whether `caller` administers `org`; never for org 0.
+    fn is_edge_admin(&self, caller: Address, org: u64) -> ZoneResult<bool> {
+        Ok(org != 0 && !caller.is_zero() && caller == self.orgs[org].admin.read()?)
+    }
+
+    /// `account`'s org if the caller administers it, at the same cost and error for any account.
+    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<u64> {
+        let (org, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
+            let org = self.members[account].read()?;
+            Ok((org, self.orgs[org].admin.read()?))
         })?;
-        if member.org == 0 || admin.is_zero() || caller != admin {
+        if org == 0 || admin.is_zero() || caller != admin {
             return Err(ZoneIdentityError::unauthorized().into());
         }
-        Ok(member)
+        Ok(org)
     }
 
     fn ensure_org(&self, org: u64) -> ZoneResult<()> {
@@ -382,80 +402,93 @@ impl ZoneIdentity {
         Ok(())
     }
 
-    fn ensure_org_admin(&self, caller: Address, registrar: Address, org: u64) -> ZoneResult<()> {
+    /// Rejects a caller that isn't `org`'s admin.
+    fn ensure_org_admin(&self, caller: Address, org: u64) -> ZoneResult<()> {
         self.ensure_org(org)?;
-        ensure_caller(caller, self.org_admin(registrar, org)?)
+        ensure_caller(caller, self.org_admin(org)?)
+    }
+
+    /// Rejects a caller that is neither `org`'s admin nor the registrar.
+    fn ensure_org_reader(&self, caller: Address, registrar: Address, org: u64) -> ZoneResult<()> {
+        if caller != self.org_admin(org)? {
+            ensure_caller(caller, registrar)?;
+        }
+        Ok(())
     }
 }
 
 /// One org's configuration.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct Org {
-    /// Key that manages the org's members and its halves of edges.
+    /// Manages the org's members, edge halves and Tempo rules.
     pub admin: Address,
-    /// Both halves of the transfer, deposit and withdrawal edges from this org to another, keyed by
-    /// receiving org and token.
-    pub edges: Mapping<u64, Mapping<Address, Edges>>,
-    /// How many times the registrar has replaced this org's admin.
-    pub admin_epoch: u64,
-    /// Addresses besides the admin that may read this org's members' account-scoped state, keyed by
-    /// the admin epoch they were named in, so replacing the admin revokes every reader at once, even
-    /// if an earlier admin is later reappointed.
-    pub readers: Mapping<u64, Mapping<Address, bool>>,
+    /// Edges to other orgs, by receiving org and token.
+    pub edges: Mapping<u64, Mapping<Address, Edge>>,
+    /// Tempo rules, by token.
+    pub l1: Mapping<Address, L1Rules>,
+    /// Others that may read members' account-scoped state; they outlive admin replacements.
+    pub readers: Mapping<Address, bool>,
 }
 
-/// Both halves of the three edges between two orgs for one token, packed into one slot. A move
-/// needs both halves of its edge.
+/// One org's Tempo rules for one token.
+#[derive(Debug, Clone, Storable, Default)]
+pub struct L1Rules {
+    /// Applies to Tempo addresses without a target.
+    pub policy: L1Policy,
+    /// Per Tempo address.
+    pub targets: Mapping<Address, L1Target>,
+}
+
+/// Both halves of an edge for one token.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct Edges {
-    /// Zone to Zone, set by the sending org's admin.
-    pub transfer_from: bool,
-    /// Zone to Zone, set by the receiving org's admin.
-    pub transfer_to: bool,
-    /// The sending org's Tempo addresses to the Zone, set by the sending org's admin.
-    pub deposit_from: bool,
-    /// The sending org's Tempo addresses to the Zone, set by the receiving org's admin.
-    pub deposit_to: bool,
-    /// The Zone to the receiving org's Tempo addresses, set by the sending org's admin.
-    pub withdrawal_from: bool,
-    /// The Zone to the receiving org's Tempo addresses, set by the receiving org's admin.
-    pub withdrawal_to: bool,
+pub struct Edge {
+    /// Set by the sending org's admin.
+    pub from_ok: bool,
+    /// Set by the receiving org's admin.
+    pub to_ok: bool,
 }
 
-impl Edges {
-    /// Whether both halves of the edge for `kind` allow the move.
-    fn allows(mut self, kind: TransferKind) -> bool {
-        let (from_ok, to_ok) = self.halves(kind);
-        *from_ok && *to_ok
+impl Edge {
+    /// Whether both halves allow it; never to, from or within org 0.
+    fn allows_between(self, from: u64, to: u64) -> bool {
+        from != 0 && to != 0 && self.from_ok && self.to_ok
     }
+}
 
-    /// The sending and receiving halves of the edge for `kind`.
-    fn halves(&mut self, kind: TransferKind) -> (&mut bool, &mut bool) {
-        match kind {
-            TransferKind::InZone => (&mut self.transfer_from, &mut self.transfer_to),
-            TransferKind::Deposit => (&mut self.deposit_from, &mut self.deposit_to),
-            TransferKind::Withdrawal => (&mut self.withdrawal_from, &mut self.withdrawal_to),
+/// An org's rule for one Tempo address and token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub struct L1Target {
+    /// Members accept deposits from the address.
+    pub deposit_from: bool,
+    /// Members may withdraw to the address.
+    pub withdraw_to: bool,
+}
+
+/// An org's rule for Tempo addresses without a target, for one token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub struct L1Policy {
+    /// Members accept deposits from any Tempo address.
+    pub open_deposit: bool,
+    /// Members may withdraw to any Tempo address.
+    pub open_withdrawal: bool,
+}
+
+impl From<IZoneIdentity::L1Policy> for L1Policy {
+    fn from(policy: IZoneIdentity::L1Policy) -> Self {
+        Self {
+            open_deposit: policy.openDeposit,
+            open_withdrawal: policy.openWithdrawal,
         }
     }
 }
 
-/// The move an edge between `from` and `to` governs. Tempo to Tempo has none.
-fn edge_kind(from: &OrgKey, to: &OrgKey) -> ZoneResult<TransferKind> {
-    match (from.l1, to.l1) {
-        (false, false) => Ok(TransferKind::InZone),
-        (true, false) => Ok(TransferKind::Deposit),
-        (false, true) => Ok(TransferKind::Withdrawal),
-        (true, true) => Err(ZoneIdentityError::invalid_edge().into()),
+impl From<L1Policy> for IZoneIdentity::L1Policy {
+    fn from(policy: L1Policy) -> Self {
+        Self {
+            openDeposit: policy.open_deposit,
+            openWithdrawal: policy.open_withdrawal,
+        }
     }
-}
-
-/// An address's membership, packed into one slot: zero for an address in no org.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct Member {
-    /// Org the address belongs to; 0 when it is in no org.
-    pub org: u64,
-    /// The org admin froze the address: nothing may be sent to or from it.
-    pub frozen: bool,
 }
 
 /// How funds move between `from` and `to`.
@@ -479,21 +512,26 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{
-        Address,
-        map::{HashMap, HashSet},
-    };
+    use alloy_primitives::{Address, map::HashSet};
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
     use tempo_precompiles::{
+        address_registry::AddressRegistry,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{VIRTUAL_MASTER, register_virtual_master},
     };
+    use test_case::test_case;
 
     use super::*;
 
     use crate::error::ZonePrecompileError;
+
+    const ALICE: Address = Address::repeat_byte(0x11);
+    const BOB: Address = Address::repeat_byte(0x22);
+    const OFFRAMP: Address = Address::repeat_byte(0x33);
+    const DEPOSITOR: Address = Address::repeat_byte(0x34);
+    const STRANGER: Address = Address::repeat_byte(0x44);
 
     fn with_identity<R>(f: impl FnOnce(&mut ZoneIdentity, Address) -> R) -> R {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
@@ -518,11 +556,7 @@ mod tests {
             .unwrap()
     }
 
-    const ALICE: Address = Address::repeat_byte(0x11);
-    const BOB: Address = Address::repeat_byte(0x22);
-
     /// One org administered by the returned admin, with Alice and Bob as members and `usd` allowed
-    /// inside it.
     fn org_with_members(
         identity: &mut ZoneIdentity,
         registrar: Address,
@@ -530,19 +564,8 @@ mod tests {
     ) -> (Address, u64) {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, registrar, admin).unwrap();
-        identity
-            .set_edge(
-                admin,
-                registrar,
-                OrgKey::zone(org),
-                OrgKey::zone(org),
-                &[usd],
-                true,
-            )
-            .unwrap();
-        identity
-            .add_members(admin, registrar, org, &[ALICE, BOB])
-            .unwrap();
+        identity.set_edge(admin, org, org, &[usd], true).unwrap();
+        identity.add_members(admin, org, &[ALICE, BOB]).unwrap();
         (admin, org)
     }
 
@@ -552,40 +575,48 @@ mod tests {
             let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
             let a = identity.create_org(registrar, registrar, admin_a).unwrap();
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            let (from, to, usd) = (OrgKey::zone(a), OrgKey::zone(b), token(1));
-            let edge = |identity: &ZoneIdentity| {
-                identity
-                    .edge(registrar, registrar, from.clone(), to.clone(), usd)
-                    .unwrap()
-            };
-            identity
-                .set_edge(admin_a, registrar, from.clone(), to.clone(), &[usd], true)
-                .unwrap();
+            let usd = token(1);
+            let edge =
+                |identity: &ZoneIdentity| identity.edge(registrar, registrar, a, b, usd).unwrap();
+            identity.set_edge(admin_a, a, b, &[usd], true).unwrap();
             assert!(!edge(identity));
-            identity
-                .set_edge(admin_b, registrar, from.clone(), to.clone(), &[usd], true)
-                .unwrap();
+            identity.set_edge(admin_b, a, b, &[usd], true).unwrap();
             assert!(edge(identity));
             // Either admin closes it alone; nobody else can touch it.
-            identity
-                .set_edge(admin_b, registrar, from.clone(), to.clone(), &[usd], false)
-                .unwrap();
+            identity.set_edge(admin_b, a, b, &[usd], false).unwrap();
             assert!(!edge(identity));
             assert_eq!(
-                identity.set_edge(
-                    Address::repeat_byte(9),
-                    registrar,
-                    from.clone(),
-                    to.clone(),
-                    &[usd],
-                    true
-                ),
+                identity.set_edge(Address::repeat_byte(9), a, b, &[usd], true),
                 Err(identity_error(ZoneIdentityError::unauthorized()))
             );
             assert_eq!(
-                identity.set_edge(admin_a, registrar, from, OrgKey::zone(9), &[usd], true),
+                identity.set_edge(admin_a, a, 9, &[usd], true),
                 Err(identity_error(ZoneIdentityError::unknown_org(9)))
             );
+        });
+    }
+
+    #[test]
+    fn org_zero_cannot_transfer_in_the_zone() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let (carol, dave) = (Address::repeat_byte(0x55), Address::repeat_byte(0x66));
+            // Not between addresses in org 0, nor to or from an org.
+            assert!(!allows(usd, carol, dave, TransferKind::InZone));
+            assert!(!allows(usd, ALICE, carol, TransferKind::InZone));
+            assert!(!allows(usd, carol, ALICE, TransferKind::InZone));
+            // Nobody opens an edge touching org 0, not even the org's admin or the registrar.
+            for caller in [registrar, admin] {
+                for (from, to) in [(0, 0), (org, 0), (0, org)] {
+                    assert_eq!(
+                        identity.set_edge(caller, from, to, &[usd], true),
+                        Err(identity_error(ZoneIdentityError::unauthorized()))
+                    );
+                }
+            }
+            assert!(!identity.edge(admin, registrar, org, 0, usd).unwrap());
+            assert!(!identity.edge(admin, registrar, 0, org, usd).unwrap());
         });
     }
 
@@ -604,7 +635,19 @@ mod tests {
     fn removed_members_lose_every_edge() {
         with_identity(|identity, registrar| {
             let usd = token(1);
-            let (admin, _) = org_with_members(identity, registrar, usd);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            identity
+                .set_l1_target(
+                    admin,
+                    org,
+                    OFFRAMP,
+                    &[usd],
+                    L1Target {
+                        deposit_from: false,
+                        withdraw_to: true,
+                    },
+                )
+                .unwrap();
             // Members cannot remove themselves.
             assert_eq!(
                 identity.remove_member(BOB, BOB),
@@ -617,15 +660,20 @@ mod tests {
                     identity.remove_member(outsider, account),
                     Err(identity_error(ZoneIdentityError::unauthorized()))
                 );
-                assert_eq!(
-                    identity.set_frozen(outsider, account, true),
-                    Err(identity_error(ZoneIdentityError::unauthorized()))
-                );
             }
+            assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
+            identity.clear_emitted_events();
             identity.remove_member(admin, BOB).unwrap();
+            // The event names the org BOB left.
+            identity.assert_emitted_events(vec![IZoneIdentity::MemberRemoved {
+                account: BOB,
+                orgId: org,
+            }]);
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
-            // No exit of its own: org 0 has no edges unless the registrar sets them.
-            assert!(!allows(usd, BOB, BOB, TransferKind::Withdrawal));
+            // The org's edges and targets no longer apply; org 0 can't transfer, only withdraw.
+            assert!(!allows(usd, BOB, ALICE, TransferKind::InZone));
+            assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
+            assert!(allows(usd, BOB, STRANGER, TransferKind::Withdrawal));
         });
     }
 
@@ -635,121 +683,222 @@ mod tests {
             let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
             let a = identity.create_org(registrar, registrar, admin_a).unwrap();
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            identity
-                .add_members(admin_a, registrar, a, &[ALICE])
-                .unwrap();
+            identity.add_members(admin_a, a, &[ALICE]).unwrap();
             // The whole batch is refused, so BOB is not added either.
             assert_eq!(
-                identity.add_members(admin_b, registrar, b, &[BOB, ALICE]),
+                identity.add_members(admin_b, b, &[BOB, ALICE]),
                 Err(identity_error(ZoneIdentityError::already_member(ALICE)))
             );
-            assert_eq!(identity.members[BOB].read().unwrap().org, 0);
+            assert_eq!(identity.members[BOB].read().unwrap(), 0);
         });
     }
 
     #[test]
-    fn tempo_sides_are_separate_from_zone_sides() {
+    fn l1_targets_bind_only_their_org() {
         with_identity(|identity, registrar| {
-            let usd = token(1);
+            let (usd, share) = (token(1), token(2));
             let (admin, org) = org_with_members(identity, registrar, usd);
-            let exit_admin = Address::repeat_byte(2);
-            let exits = identity
-                .create_org(registrar, registrar, exit_admin)
-                .unwrap();
-            let offramp = Address::repeat_byte(0x33);
-            identity
-                .add_members(exit_admin, registrar, exits, &[offramp])
-                .unwrap();
-            // Withdrawals from the org to the exit org's Tempo addresses, not transfers to it.
-            for caller in [admin, exit_admin] {
-                identity
-                    .set_edge(
-                        caller,
-                        registrar,
-                        OrgKey::zone(org),
-                        OrgKey::l1(exits),
-                        &[usd],
-                        true,
-                    )
-                    .unwrap();
-            }
-            assert!(allows(usd, ALICE, offramp, TransferKind::Withdrawal));
-            assert!(!allows(usd, ALICE, offramp, TransferKind::InZone));
-            assert!(!allows(usd, offramp, ALICE, TransferKind::Deposit));
+            let set_target =
+                |identity: &mut ZoneIdentity, admin, org, target, deposit_from, withdraw_to| {
+                    identity
+                        .set_l1_target(
+                            admin,
+                            org,
+                            target,
+                            &[usd],
+                            L1Target {
+                                deposit_from,
+                                withdraw_to,
+                            },
+                        )
+                        .unwrap()
+                };
+            set_target(identity, admin, org, DEPOSITOR, true, false);
+            set_target(identity, admin, org, OFFRAMP, false, true);
 
-            // Org 0's Tempo side stands for any address on Tempo: the org accepts deposits from anyone.
-            let stranger = Address::repeat_byte(0x44);
-            assert!(!allows(usd, stranger, ALICE, TransferKind::Deposit));
-            for caller in [registrar, admin] {
-                identity
-                    .set_edge(
-                        caller,
-                        registrar,
-                        OrgKey::l1(0),
-                        OrgKey::zone(org),
-                        &[usd],
-                        true,
-                    )
-                    .unwrap();
-            }
-            assert!(allows(usd, stranger, ALICE, TransferKind::Deposit));
-            assert!(allows(usd, offramp, ALICE, TransferKind::Deposit));
+            // Each direction is separate, and a target is not a Zone recipient.
+            assert!(allows(usd, DEPOSITOR, ALICE, TransferKind::Deposit));
+            assert!(!allows(usd, ALICE, DEPOSITOR, TransferKind::Withdrawal));
+            assert!(allows(usd, ALICE, OFFRAMP, TransferKind::Withdrawal));
+            assert!(!allows(usd, OFFRAMP, ALICE, TransferKind::Deposit));
+            assert!(!allows(usd, ALICE, OFFRAMP, TransferKind::InZone));
+            assert!(!allows(usd, STRANGER, ALICE, TransferKind::Deposit));
+            // Targets are per token.
+            assert!(!allows(share, ALICE, OFFRAMP, TransferKind::Withdrawal));
+
+            // Another org lists the same off-ramp on its own, without any consent from it or from
+            let carol = Address::repeat_byte(0x55);
+            let admin_b = Address::repeat_byte(2);
+            let b = identity.create_org(registrar, registrar, admin_b).unwrap();
+            identity.add_members(admin_b, b, &[carol]).unwrap();
+            assert!(!allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
+            set_target(identity, admin_b, b, OFFRAMP, false, true);
+            assert!(allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
+            assert!(allows(usd, ALICE, OFFRAMP, TransferKind::Withdrawal));
         });
     }
 
-    #[test]
-    fn virtual_recipients_are_checked_as_their_master() {
+    /// Alice deposits from and withdraws to a Tempo address the org doesn't list.
+    #[test_case(L1Policy::default() => [false, false])]
+    #[test_case(L1Policy { open_deposit: true, ..Default::default() } => [true, false])]
+    #[test_case(L1Policy { open_withdrawal: true, ..Default::default() } => [false, true])]
+    fn l1_policy_opens_any_address(policy: L1Policy) -> [bool; 2] {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, org) = org_with_members(identity, registrar, usd);
-            let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
-            // A virtual address of a member's master is in the member's org.
-            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
-            identity
-                .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
-                .unwrap();
-            assert!(allows(usd, ALICE, virtual_addr, TransferKind::InZone));
-            assert!(
-                allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal)
-                    == allows(usd, ALICE, VIRTUAL_MASTER, TransferKind::Withdrawal)
-            );
-            // Virtual addresses themselves cannot be members.
+            identity.set_l1_policy(admin, org, &[usd], policy).unwrap();
+            assert_eq!(identity.l1_policy(admin, registrar, org, usd), Ok(policy));
+            [
+                allows(usd, STRANGER, ALICE, TransferKind::Deposit),
+                allows(usd, ALICE, STRANGER, TransferKind::Withdrawal),
+            ]
+        })
+    }
+
+    #[test]
+    fn org_zero_never_accepts_deposits_and_always_withdraws() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            org_with_members(identity, registrar, usd);
+            assert!(!allows(usd, OFFRAMP, STRANGER, TransferKind::Deposit));
+            assert!(!allows(usd, STRANGER, STRANGER, TransferKind::Deposit));
+            assert!(allows(usd, STRANGER, OFFRAMP, TransferKind::Withdrawal));
+            // Org 0 has no Tempo rules to set, not even for the registrar.
+            let target = L1Target {
+                deposit_from: true,
+                withdraw_to: true,
+            };
+            let open = L1Policy {
+                open_deposit: true,
+                open_withdrawal: true,
+            };
             assert_eq!(
-                identity.add_members(admin, registrar, org, &[virtual_addr]),
+                identity.set_l1_target(registrar, 0, OFFRAMP, &[usd], target),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(
+                identity.set_l1_policy(registrar, 0, &[usd], open),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(
+                identity.add_members(registrar, 0, &[STRANGER]),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(identity.org_admin(0), Ok(Address::ZERO));
+        });
+    }
+
+    #[test]
+    fn only_the_org_admin_sets_and_reads_l1_rules() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let outsider = Address::repeat_byte(9);
+            let rules = L1Target {
+                deposit_from: true,
+                withdraw_to: true,
+            };
+            assert_eq!(
+                identity.set_l1_target(outsider, org, OFFRAMP, &[usd], rules),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(
+                identity.set_l1_target(admin, 9, OFFRAMP, &[usd], rules),
+                Err(identity_error(ZoneIdentityError::unknown_org(9)))
+            );
+            assert_eq!(
+                identity.set_l1_policy(outsider, org, &[usd], L1Policy::default()),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(
+                identity.set_l1_target(admin, org, Address::ZERO, &[usd], rules),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
-            // An unregistered virtual recipient is denied, not an error, for every kind of move.
-            let unregistered = Address::new_virtual(
+            identity
+                .set_l1_target(admin, org, OFFRAMP, &[usd], rules)
+                .unwrap();
+            for reader in [admin, registrar] {
+                assert_eq!(
+                    identity.l1_target(reader, registrar, org, OFFRAMP, usd),
+                    Ok(rules)
+                );
+            }
+            assert_eq!(
+                identity.l1_target(outsider, registrar, org, OFFRAMP, usd),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(
+                identity.l1_policy(outsider, registrar, org, usd),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+        });
+    }
+
+    #[test]
+    fn virtual_recipients_are_checked_as_given() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            // Even with the master registered locally, nothing resolves it.
+            let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
+            identity.add_members(admin, org, &[VIRTUAL_MASTER]).unwrap();
+            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
+            let withdraw_to = L1Target {
+                deposit_from: false,
+                withdraw_to: true,
+            };
+            identity
+                .set_l1_target(admin, org, VIRTUAL_MASTER, &[usd], withdraw_to)
+                .unwrap();
+            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
+
+            // A virtual Tempo deposit address listed as itself is a target like any other.
+            identity
+                .set_l1_target(admin, org, virtual_addr, &[usd], withdraw_to)
+                .unwrap();
+            assert!(allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
+            // An open withdrawal policy covers unlisted virtual addresses too.
+            let unlisted = Address::new_virtual(
                 tempo_primitives::MasterId::repeat_byte(0xee),
                 alloy_primitives::FixedBytes::repeat_byte(1),
             );
-            for kind in [
-                TransferKind::InZone,
-                TransferKind::Deposit,
-                TransferKind::Withdrawal,
+            assert!(!allows(usd, ALICE, unlisted, TransferKind::Withdrawal));
+            identity
+                .set_l1_policy(
+                    admin,
+                    org,
+                    &[usd],
+                    L1Policy {
+                        open_withdrawal: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(allows(usd, ALICE, unlisted, TransferKind::Withdrawal));
+
+            // Virtual addresses themselves cannot be members.
+            assert_eq!(
+                identity.add_members(admin, org, &[virtual_addr]),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
+            );
+            // Nor can precompiles, including the outbox and ZoneIdentity itself.
+            for precompile in [
+                tempo_contracts::zones::ZONE_OUTBOX_ADDRESS,
+                zone_primitives::constants::ZONE_INBOX_ADDRESS,
+                ZONE_IDENTITY_ADDRESS,
+                usd,
             ] {
-                assert!(!allows(usd, ALICE, unregistered, kind));
+                assert_eq!(
+                    identity.add_members(admin, org, &[precompile]),
+                    Err(identity_error(ZoneIdentityError::invalid_address()))
+                );
             }
         });
     }
 
     #[test]
-    fn invalid_edges_and_org_zero_admin_are_refused() {
+    fn org_zero_admin_is_refused() {
         with_identity(|identity, registrar| {
-            let org = identity
-                .create_org(registrar, registrar, registrar)
-                .unwrap();
-            assert_eq!(
-                identity.set_edge(
-                    registrar,
-                    registrar,
-                    OrgKey::l1(org),
-                    OrgKey::l1(0),
-                    &[token(1)],
-                    true
-                ),
-                Err(identity_error(ZoneIdentityError::invalid_edge()))
-            );
             assert_eq!(
                 identity.set_org_admin(registrar, registrar, 0, Address::repeat_byte(1)),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
@@ -758,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn readers_follow_the_current_admin() {
+    fn readers_stay_until_removed() {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, org) = org_with_members(identity, registrar, usd);
@@ -768,9 +917,7 @@ mod tests {
             identity
                 .create_org(registrar, registrar, other_admin)
                 .unwrap();
-            identity
-                .set_reader(admin, registrar, org, auditor, true)
-                .unwrap();
+            identity.set_reader(admin, org, auditor, true).unwrap();
             for (reader, account, readable) in [
                 (ALICE, ALICE, true),
                 (stray, stray, true),
@@ -787,74 +934,72 @@ mod tests {
                     "{reader} reads {account}"
                 );
             }
-            // Decided reads override `ZoneIdentity`, even via `orgOf`. Others come back undecided.
-            let alice = Member { org, frozen: false };
+            // Audits allow and record delegated reads, even via `orgOf`, but not self or registrar.
             let read = |reader| DelegatedRead {
                 reader,
                 account: ALICE,
             };
-            let decided = HashMap::from_iter([(read(admin), false), (read(BOB), true)]);
-            let ((), undecided) = audit_reads(decided, || {
+            let ((), reads) = audit_reads(|| {
                 assert!(identity.can_read(ALICE, ALICE).unwrap());
-                assert!(!identity.can_read(admin, ALICE).unwrap());
-                assert!(identity.can_read(BOB, ALICE).unwrap());
-                assert!(identity.can_read(auditor, ALICE).unwrap());
-                assert_eq!(identity.org_of(ALICE, registrar, ALICE), Ok(alice));
-                assert_eq!(identity.org_of(registrar, registrar, ALICE), Ok(alice));
-                assert_eq!(
-                    identity.org_of(admin, registrar, ALICE),
-                    Err(identity_error(ZoneIdentityError::unauthorized()))
-                );
+                assert!(identity.can_read(admin, ALICE).unwrap());
+                assert!(identity.can_read(stray, ALICE).unwrap());
+                assert_eq!(identity.org_of(ALICE, registrar, ALICE), Ok(org));
+                assert_eq!(identity.org_of(registrar, registrar, ALICE), Ok(org));
+                assert_eq!(identity.org_of(BOB, registrar, ALICE), Ok(org));
             });
             assert_eq!(
-                undecided,
-                HashSet::from_iter([read(auditor), read(registrar)])
+                reads,
+                HashSet::from_iter([read(admin), read(stray), read(BOB)])
             );
-            assert!(identity.can_read(admin, ALICE).unwrap());
+            assert!(!identity.can_read(stray, ALICE).unwrap());
 
-            identity
-                .set_reader(admin, registrar, org, auditor, false)
-                .unwrap();
+            identity.set_reader(admin, org, auditor, false).unwrap();
             assert!(!identity.can_read(auditor, ALICE).unwrap());
 
-            // Replacing the admin revokes the readers it named.
-            identity
-                .set_reader(admin, registrar, org, auditor, true)
-                .unwrap();
+            // A new admin keeps the readers until it removes them; the old admin loses access.
+            identity.set_reader(admin, org, auditor, true).unwrap();
             let new_admin = Address::repeat_byte(3);
             identity
                 .set_org_admin(registrar, registrar, org, new_admin)
                 .unwrap();
-            assert!(!identity.can_read(auditor, ALICE).unwrap());
+            assert!(identity.can_read(auditor, ALICE).unwrap());
             assert!(!identity.can_read(admin, ALICE).unwrap());
             assert!(identity.can_read(new_admin, ALICE).unwrap());
-            // Reappointing the earlier admin does not bring its readers back.
-            identity
-                .set_org_admin(registrar, registrar, org, admin)
-                .unwrap();
-            assert!(identity.can_read(admin, ALICE).unwrap());
+            for (reader, org_id, readable) in [
+                (new_admin, org, true),
+                (auditor, org, true),
+                (admin, org, false),
+                (auditor, org + 1, false),
+                (Address::ZERO, 0, false),
+            ] {
+                assert_eq!(
+                    identity.can_read_org(reader, org_id).unwrap(),
+                    readable,
+                    "{reader} reads org {org_id}"
+                );
+            }
+            identity.set_reader(new_admin, org, auditor, false).unwrap();
             assert!(!identity.can_read(auditor, ALICE).unwrap());
 
             for (caller, org_id, reader, error) in [
-                (new_admin, org, auditor, ZoneIdentityError::unauthorized()),
-                (registrar, 0, auditor, ZoneIdentityError::invalid_address()),
+                (admin, org, auditor, ZoneIdentityError::unauthorized()),
+                (registrar, 0, auditor, ZoneIdentityError::unauthorized()),
                 (
-                    admin,
+                    new_admin,
                     org,
                     Address::ZERO,
                     ZoneIdentityError::invalid_address(),
                 ),
             ] {
                 assert_eq!(
-                    identity.set_reader(caller, registrar, org_id, reader, true),
+                    identity.set_reader(caller, org_id, reader, true),
                     Err(identity_error(error))
                 );
             }
         });
     }
 
-    /// Every org check charges the same gas whatever the orgs, freezes and edges involved, and
-    /// whether its slots were already warm, so gas cannot reveal an account's org.
+    /// Every org check charges the same gas whatever the orgs, edges, targets and
     #[test]
     fn org_checks_cost_the_same_whatever_the_state() {
         use crate::test_utils::{MockL1Reader, test_context_with_hardfork, test_storage_provider};
@@ -862,12 +1007,7 @@ mod tests {
         let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
         let registrar = Address::repeat_byte(0xbb);
         let usd = token(1);
-        let (carol, dave, offramp, stranger) = (
-            Address::repeat_byte(0x33),
-            Address::repeat_byte(0x44),
-            Address::repeat_byte(0x66),
-            Address::repeat_byte(0x77),
-        );
+        let (carol, dave) = (Address::repeat_byte(0x55), Address::repeat_byte(0x66));
         let (org, other) = {
             let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || {
@@ -876,53 +1016,60 @@ mod tests {
                 let other = identity
                     .create_org(registrar, registrar, registrar)
                     .unwrap();
+                identity.add_members(registrar, other, &[carol]).unwrap();
+                identity.add_members(admin, org, &[dave]).unwrap();
                 identity
-                    .add_members(registrar, registrar, other, &[carol, offramp])
+                    .set_l1_target(
+                        admin,
+                        org,
+                        OFFRAMP,
+                        &[usd],
+                        L1Target {
+                            deposit_from: true,
+                            withdraw_to: true,
+                        },
+                    )
                     .unwrap();
                 identity
-                    .add_members(admin, registrar, org, &[dave])
+                    .set_l1_policy(
+                        registrar,
+                        other,
+                        &[usd],
+                        L1Policy {
+                            open_withdrawal: true,
+                            ..Default::default()
+                        },
+                    )
                     .unwrap();
-                identity.set_frozen(admin, dave, true).unwrap();
-                for caller in [admin, registrar] {
-                    identity
-                        .set_edge(
-                            caller,
-                            registrar,
-                            OrgKey::zone(org),
-                            OrgKey::l1(other),
-                            &[usd],
-                            true,
-                        )
-                        .unwrap();
-                }
                 (org, other)
             })
         };
 
         let scenarios = [
-            // Allowed in an org, denied across orgs, from org 0, and with a frozen party.
+            // Allowed in an org, denied within org 0, across orgs and from org 0.
             (
                 TransferKind::InZone,
                 vec![
                     (ALICE, BOB),
+                    (OFFRAMP, STRANGER),
                     (ALICE, carol),
-                    (stranger, ALICE),
-                    (ALICE, dave),
+                    (STRANGER, ALICE),
                 ],
             ),
-            // Allowed directly, denied, to org 0, and from a frozen party.
+            // Allowed by target, by policy and from org 0, and denied.
             (
                 TransferKind::Withdrawal,
                 vec![
-                    (ALICE, offramp),
-                    (ALICE, carol),
-                    (ALICE, stranger),
-                    (dave, offramp),
+                    (ALICE, OFFRAMP),
+                    (carol, STRANGER),
+                    (STRANGER, OFFRAMP),
+                    (dave, carol),
                 ],
             ),
+            // Allowed by target, denied, and denied into org 0.
             (
                 TransferKind::Deposit,
-                vec![(offramp, ALICE), (stranger, ALICE), (carol, stranger)],
+                vec![(OFFRAMP, ALICE), (STRANGER, ALICE), (OFFRAMP, STRANGER)],
             ),
         ];
         for (kind, moves) in scenarios {
@@ -945,13 +1092,12 @@ mod tests {
             );
         }
 
-        // orgOf by an outsider costs the same for members of either org, frozen or not, and for an
-        // address in no org, before and after its slots are warm.
+        // orgOf by an outsider costs the same for members of either org and for an
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
         let costs = StorageCtx::enter(&mut storage, || {
             let identity = ZoneIdentity::new();
             let outsider = Address::repeat_byte(0x99);
-            let accounts = [ALICE, BOB, carol, dave, stranger];
+            let accounts = [ALICE, BOB, carol, dave, STRANGER];
             let mut costs = Vec::new();
             for &account in accounts.iter().chain(accounts.iter()) {
                 let before = identity.storage.gas_used();
@@ -965,13 +1111,12 @@ mod tests {
             "orgOf: {costs:?}"
         );
 
-        // canRead costs the same whatever the account's org and the answer: the registrar, as
-        // `other`'s admin, may read carol but not the rest.
+        // canRead costs the same whatever the org and answer; the registrar is carol's org admin.
         for reader in [Address::repeat_byte(0x99), registrar] {
             let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
             let costs = StorageCtx::enter(&mut storage, || {
                 let identity = ZoneIdentity::new();
-                let accounts = [ALICE, BOB, carol, dave, stranger];
+                let accounts = [ALICE, BOB, carol, dave, STRANGER];
                 let mut costs = Vec::new();
                 for &account in accounts.iter().chain(accounts.iter()) {
                     let before = identity.storage.gas_used();
@@ -990,8 +1135,6 @@ mod tests {
         }
 
         // After an outsider's orgOf(Alice) warms her org's admin slot, orgAdmin costs the same for
-        // her org as for another, so it cannot tell which slot was warmed. A new transaction
-        // starts with every slot cold.
         ctx.evm().state_mut().commit_transaction();
         let l1 = L1State::new(MockL1Reader::default(), Address::ZERO);
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
@@ -1013,5 +1156,62 @@ mod tests {
             [cost(other), cost(org)]
         });
         assert_eq!(costs[0], costs[1], "orgAdmin: {costs:?}");
+    }
+
+    /// Once the portal's `AccessPolicy` abdication takes effect, the registrar can no longer create
+    #[test]
+    fn registrar_loses_its_powers_once_access_policy_is_abdicated() {
+        use crate::test_utils::MockL1Reader;
+        use alloy_primitives::{Bytes, U256};
+        use alloy_sol_types::SolInterface;
+        use tempo_contracts::precompiles::ZonePortalCapability;
+        use tempo_precompiles::zone_factory::ZonePortalStorage;
+
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        let registrar = Address::repeat_byte(0xbb);
+        let abdicate_at = |at: u64| {
+            reader
+                .with_storage(0, || {
+                    let mut portal = ZonePortalStorage::new(Address::ZERO);
+                    portal.identity_registrar.write(registrar)?;
+                    let slot = portal
+                        .abdication_effective_at(ZonePortalCapability::AccessPolicy)
+                        .slot();
+                    StorageCtx::default().sstore(Address::ZERO, slot, U256::from(at))
+                })
+                .unwrap()
+        };
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        storage.set_timestamp(U256::from(1_000));
+        StorageCtx::enter(&mut storage, || {
+            let mut identity = ZoneIdentity::new();
+            let mut call = |data: Vec<u8>| identity.call(&l1, &data, registrar);
+            let create = || IZoneIdentity::createOrgCall { admin: registrar }.abi_encode();
+            let org_of = || IZoneIdentity::orgOfCall { account: ALICE }.abi_encode();
+
+            // Scheduled for later: the registrar still acts.
+            abdicate_at(1_001);
+            assert!(call(create()).is_ok());
+            assert!(call(org_of()).is_ok());
+
+            // In effect: every registrar path is refused.
+            abdicate_at(1_000);
+            let unauthorized = Bytes::from(ZoneIdentityError::unauthorized().abi_encode());
+            for data in [
+                create(),
+                IZoneIdentity::setOrgAdminCall {
+                    orgId: 1,
+                    admin: ALICE,
+                }
+                .abi_encode(),
+                org_of(),
+            ] {
+                assert!(matches!(
+                    call(data),
+                    Err(evm2::precompiles::PrecompileError::Revert(output)) if output == unauthorized
+                ));
+            }
+        });
     }
 }

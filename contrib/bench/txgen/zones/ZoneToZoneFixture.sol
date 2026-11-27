@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {IPortal} from "./PortalFixture.sol";
+import {IPortal, processWithdrawals} from "./PortalFixture.sol";
 
 interface IZoneToZonePortal is IPortal {
     function isGatewayOpen() external view returns (bool);
@@ -287,7 +287,7 @@ contract ZoneToZoneSettlementFixture {
             portal.submitBatch(anchor, 0, blocks, deposits, withdrawalRoot, "", "", height, signatures);
         }
         processedHash[address(portal)] = deposits.nextProcessedHash;
-        if (items.length != 0) portal.processWithdrawals(items, bytes32(0));
+        if (items.length != 0) processWithdrawals(portal, items);
     }
 }
 

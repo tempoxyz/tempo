@@ -56,10 +56,11 @@
 //! A walk waiting for finalization resumes when the finalization pipeline
 //! delivers its ancestor.
 //!
-//! Requesters that go away are dropped without a verdict, and a request for
-//! the same round and candidate replaces the pending one. Requests for
-//! different candidates in the same round (an equivocating leader) are kept
-//! side by side, so one cannot cancel the other.
+//! A request whose requesters all went away is dropped without a verdict,
+//! and a request for the same round and candidate joins the pending one, so
+//! that every requester receives the verdict. Requests for different
+//! candidates in the same round (an equivocating leader) are kept side by
+//! side, so one cannot cancel the other.
 //!
 //! # Execution failures
 //!
@@ -88,7 +89,7 @@ use std::{
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
-    CertifiableBlock as _, Heightable as _,
+    CertifiableBlock as _, Heightable as _, Reporter,
     marshal::Update,
     types::{Height, Round, View},
 };
@@ -121,7 +122,7 @@ use tracing::{
 };
 
 use super::{
-    Config, ExecutionLayer, Marshal,
+    Config, ExecutionLayer, Finalized, Marshal,
     ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
@@ -141,7 +142,7 @@ const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// canonical head while finalized catchup continues.
 const DELIVERIES_PER_FORKCHOICE_UPDATE: usize = 8;
 
-pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
+pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal, TReporter> {
     context: ContextCell<TContext>,
 
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -159,6 +160,11 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// The mailbox of the marshal actor. Used to backfill finalized blocks
     /// on startup and to fetch missing notarized block bodies.
     marshal: TMarshal,
+    /// Receives each finalized block once its state is readable from the
+    /// execution layer.
+    finalized_reporter: TReporter,
+    /// The finalized height last reported to the finalized reporter.
+    last_reported_finalized: Option<Height>,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -207,9 +213,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// waiting for a subscribed ancestor or for finalization, and walks with
     /// a fetched ancestor in hand. Parent subscriptions live in the fetch
     /// pool; canceled requests are reaped when the queue is reconciled.
-    /// A request stays until it has a verdict, fails, is found canceled,
-    /// its round falls at or below the network finalized round, or a request
-    /// for the same round and candidate replaces it.
+    /// A request stays until it has a verdict, fails, is found canceled, or
+    /// its round falls at or below the network finalized round.
     queued_verifications: BTreeMap<VerificationKey, Verification>,
     /// The verification holding the engine slot: the one whose cursor is in
     /// flight, about to be probed, or whose parent is being looked up
@@ -281,6 +286,11 @@ struct Metrics {
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
     convergence_depth: commonware_runtime::telemetry::metrics::Gauge,
+    /// Number of verification requests received.
+    verification_requests: commonware_runtime::telemetry::metrics::Counter,
+    /// Number of verification requests that joined a pending verification
+    /// for the same round and candidate instead of starting their own.
+    verification_requests_joined: commonware_runtime::telemetry::metrics::Counter,
 }
 
 impl Metrics {
@@ -305,10 +315,23 @@ impl Metrics {
             (negative after a re-anchor below the head)",
             Gauge::default(),
         );
+        let verification_requests = context.register(
+            "verification_requests",
+            "number of verification requests received",
+            Counter::default(),
+        );
+        let verification_requests_joined = context.register(
+            "verification_requests_joined",
+            "number of verification requests that joined a pending verification for the \
+            same round and candidate",
+            Counter::default(),
+        );
         Self {
             finalized_blocks_proposed_by_self,
             finalization_lag,
             convergence_depth,
+            verification_requests,
+            verification_requests_joined,
         }
     }
 
@@ -322,15 +345,17 @@ impl Metrics {
     }
 }
 
-impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
+impl<TContext, TExecutionLayer, TMarshal, TReporter>
+    Actor<TContext, TExecutionLayer, TMarshal, TReporter>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
+    TReporter: Reporter<Activity = Finalized>,
 {
     pub(super) fn init(
         context: TContext,
-        config: super::Config<TExecutionLayer, TMarshal>,
+        config: super::Config<TExecutionLayer, TMarshal, TReporter>,
         mailbox: UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
         let Config {
@@ -340,6 +365,7 @@ where
             marshal,
             fcu_heartbeat_interval,
             public_key,
+            finalized_reporter,
         } = config;
         ensure!(
             finalized_tip.1 >= finalized_floor,
@@ -412,6 +438,8 @@ where
             finalized_floor,
             mailbox,
             marshal,
+            finalized_reporter,
+            last_reported_finalized: None,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -478,6 +506,9 @@ where
         });
 
         loop {
+            // The first iteration reports the finalized block the executor
+            // starts from; later ones report what forkchoice updates raised.
+            self.report_finalized();
             self.prune_finalized();
             self.metrics.observe(
                 self.local_state,
@@ -970,6 +1001,32 @@ where
         Ok(())
     }
 
+    /// Reports the tracked finalized block to the finalized reporter if it
+    /// is above the last one reported.
+    ///
+    /// Called from the executor loop only, so startup backfill reports
+    /// nothing: the first report is the finalized block the executor enters
+    /// its loop with (the execution layer's finalized block, the finalized
+    /// floor below it after a snapshot restore, or the floor backfill
+    /// finalized). Its state is readable either way.
+    #[instrument(skip_all)]
+    fn report_finalized(&mut self) {
+        let (height, digest) = self.local_state.finalized;
+        if self
+            .last_reported_finalized
+            .is_some_and(|reported| height <= reported)
+        {
+            return;
+        }
+        self.last_reported_finalized = Some(height);
+        debug!(
+            finalized.height = %height,
+            finalized.digest = %digest,
+            "reporting finalized block whose state the execution layer serves",
+        );
+        let _ = self.finalized_reporter.report(Finalized { height, digest });
+    }
+
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next
     /// finalized target and is acknowledged once the forkchoice update
     /// finalizing it lands - or without another update if the execution
@@ -1318,6 +1375,7 @@ where
                     block,
                     response,
                 } = *request;
+                self.metrics.verification_requests.inc();
                 self.record_convergence_target(context.round, context.parent);
                 self.queue_verification(Verification::new(context.round, cause, block, response));
             }
@@ -1334,13 +1392,19 @@ where
 
     /// Queues a verification. Verifications from different rounds, or for
     /// different candidates in the same round, wait side by side; one for the
-    /// same round and candidate replaces the pending one, whether that one is
-    /// queued or active.
+    /// same round and candidate joins the pending one, whether that one is
+    /// queued or active, and receives the same verdict.
     fn queue_verification(&mut self, verification: Verification) {
         let key = verification.key();
-        if self.remove_verification(key).is_some() {
+        let pending = self
+            .verifications_mut()
+            .find(|pending| pending.key() == key);
+        if let Some(pending) = pending {
             let VerificationKey { round, digest } = key;
-            debug!(%round, %digest, "verification replaced a pending one for the same candidate");
+            debug!(%round, %digest, "verification joined a pending one for the same candidate");
+            pending.responses.extend(verification.responses);
+            self.metrics.verification_requests_joined.inc();
+            return;
         }
         self.queued_verifications.insert(key, verification);
     }
@@ -1642,7 +1706,7 @@ where
             .chain(self.queued_verifications.values_mut())
     }
 
-    /// Drops the verification, wherever it sits; its channel closes.
+    /// Drops the verification, wherever it sits; its channels close.
     fn remove_verification(&mut self, key: VerificationKey) -> Option<Verification> {
         match &self.active_verification {
             Some(active) if active.key() == key => self.active_verification.take(),
@@ -1918,17 +1982,17 @@ impl Future for PendingNotarizedBlock {
 /// there if it must. The actor polls active requester cancellation, reaps
 /// canceled queued requests, and pools parent subscriptions. It stays until
 /// the candidate has a verdict, the request fails or is canceled, its round
-/// falls at or below the network finalized round, its target falls below the
-/// network finalized height, or a request for the same round and candidate
-/// replaces it.
+/// falls at or below the network finalized round, or its target falls below
+/// the network finalized height.
 struct Verification {
     round: Round,
     /// The walk toward the candidate, which is its target.
     walk: AncestryWalk,
-    /// Delivers the verdict: `Some(duration)` when the execution layer
-    /// accepted the candidate, `None` when it rejected it. Dropped without a
-    /// value when verification failed or the request was replaced or dropped.
-    response: oneshot::Sender<Option<Duration>>,
+    /// Deliver the verdict, one per requester of this round and candidate:
+    /// `Some(duration)` when the execution layer accepted the candidate,
+    /// `None` when it rejected it. Dropped without a value when verification
+    /// failed or the request was dropped.
+    responses: Vec<oneshot::Sender<Option<Duration>>>,
     /// Time spent in engine calls across the whole walk.
     duration: Duration,
 }
@@ -1943,7 +2007,7 @@ impl Verification {
         Self {
             round,
             walk: AncestryWalk::new(cause, candidate),
-            response,
+            responses: vec![response],
             duration: Duration::ZERO,
         }
     }
@@ -1956,14 +2020,17 @@ impl Verification {
         }
     }
 
+    /// Whether every requester went away.
     fn is_canceled(&self) -> bool {
-        self.response.is_canceled()
+        self.responses.iter().all(|response| response.is_canceled())
     }
 
-    /// Answers the requester and consumes the verification.
+    /// Answers every requester and consumes the verification.
     fn respond(self, verdict: Option<Duration>) {
-        if self.response.send(verdict).is_err() {
-            info!("verification subscriber went away before the verdict was delivered");
+        for response in self.responses {
+            if response.send(verdict).is_err() {
+                info!("verification subscriber went away before the verdict was delivered");
+            }
         }
     }
 
@@ -1991,9 +2058,15 @@ impl Verification {
         true
     }
 
-    /// Polls the active requester's cancellation and its local parent lookup.
+    /// Polls the active requesters' cancellation and the local parent lookup.
     fn poll_event(&mut self, cx: &mut std::task::Context<'_>) -> Poll<VerificationEvent> {
-        if self.response.poll_canceled(cx).is_ready() {
+        // The first requester still there holds the waker, which is enough
+        // to notice once all of them went away.
+        if self
+            .responses
+            .iter_mut()
+            .all(|response| response.poll_canceled(cx).is_ready())
+        {
             return Poll::Ready(VerificationEvent::Canceled);
         }
         self.walk
@@ -2004,7 +2077,7 @@ impl Verification {
 
 /// What a verification woke the event loop for.
 enum VerificationEvent {
-    /// Its requester went away.
+    /// Every requester went away.
     Canceled,
     /// Its local parent lookup resolved.
     ParentLookedUp(Option<Digested<Block>>),

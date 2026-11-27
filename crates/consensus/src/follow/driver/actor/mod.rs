@@ -14,7 +14,7 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
@@ -223,35 +223,44 @@ where
     /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
     async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
-        let current_consensus_epoch = self
+        let last_finalized_height = self.config.last_finalized_height;
+        let floor_epoch_info = self
             .config
             .epoch_strategy
-            .containing(self.config.last_finalized_height)
+            .containing(last_finalized_height)
             .expect("strategy is valid for all heights and epochs");
 
-        let current_execution_epoch = self
-            .config
-            .epoch_strategy
-            .containing(self.startup_execution_boundary)
-            .expect("strategy is valid for all heights and epochs");
+        // A floor inside epoch `E` needs the scheme from `last(E-1)`. A floor at
+        // `last(E)` has already processed that boundary and needs the scheme for
+        // `E+1` it carries.
+        let floor_boundary_height = if floor_epoch_info.last() == last_finalized_height {
+            Some(last_finalized_height)
+        } else {
+            floor_epoch_info.epoch().previous().map(|previous| {
+                self.config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy is valid for all heights and epochs")
+            })
+        };
 
-        if let Some(previous) = current_consensus_epoch.epoch().previous()
-            && previous > current_execution_epoch.epoch()
+        if let Some(last_consensus_boundary) = floor_boundary_height
+            && last_consensus_boundary > self.startup_execution_boundary
         {
-            let last_consensus_boundary = self
+            let boundary_epoch = self
                 .config
                 .epoch_strategy
-                .last(previous)
-                .expect("strategy is valid for all heights and epochs");
+                .containing(last_consensus_boundary)
+                .expect("strategy is valid for all heights and epochs")
+                .epoch();
 
             let Some(boundary_block) = self.config.marshal.get_block(last_consensus_boundary).await
             else {
-                let consensus_epoch = current_consensus_epoch.epoch();
-                let execution_epoch = current_execution_epoch.epoch();
+                let execution_boundary = self.startup_execution_boundary;
                 warn!(
-                    "cannot install scheme; consensus layer epoch {consensus_epoch} is ahead \
-                    of execution layer epoch {execution_epoch}, but the consensus layer does not have \
-                    the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
+                    "cannot install scheme; consensus layer boundary `{last_consensus_boundary}` is ahead \
+                    of execution layer boundary `{execution_boundary}`, but the consensus layer does not have \
+                    the boundary block. The node likely previously skipped \
                     epoch boundaries via the network identity and will continue to try use it to verify finalizations"
                 );
 
@@ -269,10 +278,10 @@ where
                     })?
                     .epoch();
             ensure!(
-                claimed_epoch == previous.next(),
+                claimed_epoch == boundary_epoch.next(),
                 "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
                  epoch `{claimed_epoch}`, expected the next epoch `{}`",
-                previous.next(),
+                boundary_epoch.next(),
             );
 
             let onchain_outcome = self
@@ -310,7 +319,20 @@ where
                 identity: *outcome.network_identity(),
             };
 
-            self.state.observe(identity).await?
+            self.state.observe(identity.clone()).await?;
+
+            // Retire the previous fallback in memory too. Otherwise a missing later epoch would
+            // still verify against the identity this boundary rotated away from until restart.
+            let previous = self.verifier.network_identity().clone();
+            if self.verifier.advance_network_identity(identity.clone()) {
+                info!(
+                    previous_from_epoch = previous.from_epoch,
+                    previous_network_identity = %previous.identity,
+                    from_epoch = identity.from_epoch,
+                    network_identity = %identity.identity,
+                    "retired the network identity fallback after an authenticated full DKG rotation",
+                );
+            }
         }
 
         Ok(())
@@ -503,9 +525,9 @@ where
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = configured_identity.from_epoch,
+                    configured_from_epoch = configured_identity.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );
