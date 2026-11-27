@@ -10,18 +10,19 @@ use std::{
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{B256, U256};
 use alloy_provider::{Provider, ProviderBuilder};
+use eyre::WrapErr as _;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::{
-    precompiles::{ITIP20, PATH_USD_ADDRESS},
+    precompiles::{ITIP20, ITIP403Registry, PATH_USD_ADDRESS},
     zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZoneFactory, ZonePortal},
 };
-use tempo_precompiles::zone_factory::portal_address;
+use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, zone_factory::portal_address};
 use zone_precompiles::{L1StorageReader as _, ecies};
 
 use crate::utils::{
     L1_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneCreationConfig, ZoneGenesis, ZoneL1,
     ZoneLaunch, ZoneTestNode, create_zone_request, l1_dev_signer, poll_until, portal_admin_signer,
-    signer_at, t15_hankie_test_genesis,
+    signer_at,
 };
 
 struct ChildGuard(Vec<Child>);
@@ -44,17 +45,12 @@ fn free_port() -> u16 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires local hankie and cloakroom binaries"]
+#[ignore = "requires hankie and cloakroom binaries in HANKIE_BIN and CLOAKROOM_BIN"]
 async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let hankie_bin = PathBuf::from(
-        std::env::var("HANKIE_BIN")
-            .unwrap_or_else(|_| "/home/user/workspace/repo/target/debug/hankie".into()),
-    );
-    let cloakroom_bin = PathBuf::from(
-        std::env::var("CLOAKROOM_BIN")
-            .unwrap_or_else(|_| "/home/user/workspace/repo/target/debug/cloakroom".into()),
-    );
+    let hankie_bin = PathBuf::from(std::env::var("HANKIE_BIN").wrap_err("set HANKIE_BIN")?);
+    let cloakroom_bin =
+        PathBuf::from(std::env::var("CLOAKROOM_BIN").wrap_err("set CLOAKROOM_BIN")?);
     eyre::ensure!(
         hankie_bin.exists(),
         "missing hankie binary at {}",
@@ -72,9 +68,14 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
         .tempdir()?
         .keep();
     eprintln!("[hankie-e2e] logs in {}", dir.display());
-    let genesis = t15_hankie_test_genesis()?;
+    // The L1 genesis must carry the Zone runtimes this checkout builds against: hankie keeps the
+    // runtimes of a genesis that starts at T15, and Tempo's dev genesis does. Hankie's default
+    // genesis comes from its own tempo pin, whose runtimes can differ.
     let genesis_path = dir.join("genesis.json");
-    std::fs::write(&genesis_path, serde_json::to_vec_pretty(&genesis)?)?;
+    std::fs::write(
+        &genesis_path,
+        serde_json::to_vec_pretty(&tempo_chainspec::spec::DEV.inner.genesis)?,
+    )?;
 
     let store_port = free_port();
     let upload_port = free_port();
@@ -93,9 +94,9 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
     children.0.push(
         Command::new(&cloakroom_bin)
             .args([
-                "--simulator",
+                "--embedded-store",
                 dir.join("store").to_str().unwrap(),
-                "--simulator-listen",
+                "--embedded-store-listen",
                 &format!("127.0.0.1:{store_port}"),
                 "--listen",
                 &format!("127.0.0.1:{rpc_port}"),
@@ -190,6 +191,19 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
             .nextZoneId()
             .call()
             .await?,
+    );
+
+    // Tempo's dev genesis binds no token to a TIP-403 transfer policy, and createZone requires
+    // one for its initial token. `zone-xtask create-zone` migrates the binding the same way.
+    let migrate_receipt = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &dev_provider)
+        .migrateTransferPolicyIds(vec![PATH_USD_ADDRESS])
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        migrate_receipt.status(),
+        "migrateTransferPolicyIds reverted on hankie"
     );
 
     let nonce = dev_provider

@@ -224,13 +224,6 @@ pub(crate) fn forge_bytecode(contract: &str) -> eyre::Result<alloy_primitives::B
     ))
 }
 
-pub(crate) fn t15_hankie_test_genesis() -> eyre::Result<Genesis> {
-    let mut genesis: Genesis = serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
-    set_tempo_fork(&mut genesis, TempoHardfork::T15, 0);
-    install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
-    Ok(genesis)
-}
-
 fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
     for account in t15_zone_factory_state(owner) {
         let storage = account
