@@ -64,9 +64,450 @@ impl TipFeeManager {
         self.__initialize()
     }
 
+    /// Fast-path lookup of a user's preferred fee token without constructing `TipFeeManager`.
+    #[inline]
+    pub fn get_user_token_direct(user: Address) -> Result<Address> {
+        use crate::storage::StorageKey as _;
+        crate::storage::Slot::<Address>::new(
+            user.mapping_slot(slots::USER_TOKENS),
+            TIP_FEE_MANAGER_ADDRESS,
+        )
+        .read()
+    }
+
+    /// Fast-path lookup of a validator's preferred fee token using a precomputed mapping slot.
+    #[inline]
+    pub fn get_validator_token_by_slot(validator_token_slot: U256) -> Result<Address> {
+        let token =
+            crate::storage::Slot::<Address>::new(validator_token_slot, TIP_FEE_MANAGER_ADDRESS)
+                .read()?;
+        if token.is_zero() {
+            Ok(DEFAULT_FEE_TOKEN)
+        } else {
+            Ok(token)
+        }
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn collect_fee_pre_tx_on_provider<T>(
+        storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
+        fee_payer: Address,
+        fee_payer_balance_slot: U256,
+        user_token: Address,
+        max_amount: U256,
+        validator_token_slot: U256,
+        skip_liquidity_check: bool,
+    ) -> Result<(Address, bool)>
+    where
+        T: evm2::EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+        T::EvmExt: crate::storage::evm::EvmStorageExt,
+    {
+        use crate::{
+            storage::{PrecompileStorageProvider as _, evm::EvmStorageExt as _},
+            tip20::{TIP_FEE_MANAGER_BALANCE_SLOT, slots as tip20_slots},
+            tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, TIP403Registry},
+        };
+        use tempo_contracts::precompiles::TIP20Error;
+        use tempo_primitives::TempoAddressExt as _;
+        let spec = storage.spec();
+        if !spec.is_t8() || !user_token.is_tip20() {
+            return StorageCtx::enter(storage, || {
+                Self::collect_fee_pre_tx_direct(
+                    fee_payer,
+                    fee_payer_balance_slot,
+                    user_token,
+                    max_amount,
+                    validator_token_slot,
+                    skip_liquidity_check,
+                )
+            });
+        }
+        let val_token_word = storage.sload_direct(TIP_FEE_MANAGER_ADDRESS, validator_token_slot)?;
+        let validator_token = {
+            let addr = Address::from_word(val_token_word.into());
+            if addr.is_zero() {
+                DEFAULT_FEE_TOKEN
+            } else {
+                addr
+            }
+        };
+        let registered_policy = if spec.is_t9() {
+            let slot = storage
+                .evm_ext_mut()
+                .cached_token_transfer_policy_slot(user_token);
+            let raw = storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, slot)?;
+            let id = raw.as_limbs()[0];
+            if id != 0 { Some(id) } else { None }
+        } else {
+            None
+        };
+        let tx_key_word = storage.tload_direct(
+            crate::ACCOUNT_KEYCHAIN_ADDRESS,
+            crate::account_keychain::slots::TRANSACTION_KEY,
+        )?;
+        let map_delta_err = |err: TempoPrecompileError| match err {
+            TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                TIP20Error::insufficient_balance(current, max_amount, user_token).into()
+            }
+            e if e == TempoPrecompileError::under_overflow() => {
+                TIP20Error::supply_cap_exceeded().into()
+            }
+            e => e,
+        };
+        if tx_key_word.is_zero() && registered_policy.is_none_or(|id| id == ALLOW_ALL_POLICY_ID) {
+            if let Some(policy_id) = storage
+                .tip20_fee_pre_tx_fast(
+                    user_token,
+                    registered_policy.is_none(),
+                    tip20_slots::TRANSFER_POLICY_ID,
+                    tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8,
+                    ALLOW_ALL_POLICY_ID,
+                    tip20_slots::PAUSED,
+                    fee_payer_balance_slot,
+                    TIP_FEE_MANAGER_BALANCE_SLOT,
+                    max_amount,
+                )
+                .map_err(map_delta_err)?
+            {
+                StorageCtx::enter(storage, || -> Result<()> {
+                    let registry = TIP403Registry::new();
+                    if !registry.is_authorized_as(policy_id, fee_payer, AuthRole::sender())? {
+                        return Err(TIP20Error::policy_forbids().into());
+                    }
+                    Ok(())
+                })?;
+                if !storage
+                    .sload_direct(user_token, tip20_slots::PAUSED)?
+                    .is_zero()
+                {
+                    return Err(TIP20Error::contract_paused().into());
+                }
+                storage
+                    .sdelta_pair(
+                        user_token,
+                        fee_payer_balance_slot,
+                        TIP_FEE_MANAGER_BALANCE_SLOT,
+                        max_amount,
+                    )
+                    .map_err(map_delta_err)?;
+            }
+        } else {
+            let policy_id = match registered_policy {
+                Some(id) => id,
+                None => {
+                    let raw = storage.sload_direct(user_token, tip20_slots::TRANSFER_POLICY_ID)?;
+                    (raw >> (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8)).as_limbs()[0]
+                }
+            };
+            if policy_id != ALLOW_ALL_POLICY_ID {
+                StorageCtx::enter(storage, || -> Result<()> {
+                    let registry = TIP403Registry::new();
+                    if !registry.is_authorized_as(policy_id, fee_payer, AuthRole::sender())? {
+                        return Err(TIP20Error::policy_forbids().into());
+                    }
+                    Ok(())
+                })?;
+            }
+            if !storage
+                .sload_direct(user_token, tip20_slots::PAUSED)?
+                .is_zero()
+            {
+                return Err(TIP20Error::contract_paused().into());
+            }
+            if !tx_key_word.is_zero() {
+                let tx_key = Address::from_word(tx_key_word.into());
+                StorageCtx::enter(storage, || {
+                    crate::account_keychain::AccountKeychain::authorize_transfer_with_key(
+                        tx_key, fee_payer, user_token, max_amount,
+                    )
+                })?;
+            }
+            storage
+                .sdelta_pair(
+                    user_token,
+                    fee_payer_balance_slot,
+                    TIP_FEE_MANAGER_BALANCE_SLOT,
+                    max_amount,
+                )
+                .map_err(map_delta_err)?;
+        }
+        let mut used_two_hop = false;
+        if !skip_liquidity_check && user_token != validator_token {
+            used_two_hop = StorageCtx::enter(storage, || -> Result<bool> {
+                let mut this = Self::new();
+                let (route, ..) = this.plan_fee_route(user_token, validator_token, max_amount)?;
+                let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
+                let two_hop = matches!(route, FeeRoute::TwoHop(_));
+                this.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
+                Ok(two_hop)
+            })?;
+        }
+        Ok((user_token, used_two_hop))
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn collect_fee_post_tx_on_provider<T>(
+        storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
+        fee_payer: Address,
+        fee_payer_balance_slot: U256,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        validator_token_slot: U256,
+        collected_fees_slot: impl FnOnce(Address) -> U256,
+        has_two_hop_intermediate: bool,
+    ) -> Result<U256>
+    where
+        T: evm2::EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+        T::EvmExt: crate::storage::evm::EvmStorageExt,
+    {
+        use crate::{
+            storage::PrecompileStorageProvider as _,
+            tip20::{TIP_FEE_MANAGER_BALANCE_SLOT, TIP20Event},
+        };
+        use tempo_contracts::precompiles::TIP20Error;
+        use tempo_primitives::TempoAddressExt as _;
+        let spec = storage.spec();
+        if !spec.is_t8() || !fee_token.is_tip20() {
+            return StorageCtx::enter(storage, || {
+                Self::collect_fee_post_tx_direct(
+                    fee_payer,
+                    fee_payer_balance_slot,
+                    actual_spending,
+                    refund_amount,
+                    fee_token,
+                    validator_token_slot,
+                    collected_fees_slot,
+                    has_two_hop_intermediate,
+                )
+            });
+        }
+        storage.emit_event_direct(
+            fee_token,
+            alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                fee_payer,
+                TIP_FEE_MANAGER_ADDRESS,
+                actual_spending,
+            )),
+        )?;
+        if spec.is_t1c() {
+            let tx_key_word = storage.tload_direct(
+                crate::ACCOUNT_KEYCHAIN_ADDRESS,
+                crate::account_keychain::slots::TRANSACTION_KEY,
+            )?;
+            if !tx_key_word.is_zero() {
+                let tx_key = Address::from_word(tx_key_word.into());
+                StorageCtx::enter(storage, || {
+                    crate::account_keychain::AccountKeychain::refund_spending_limit_with_key(
+                        tx_key,
+                        fee_payer,
+                        fee_token,
+                        refund_amount,
+                    )
+                })?;
+            }
+        }
+        let refund_res = storage.sdelta_pair(
+            fee_token,
+            TIP_FEE_MANAGER_BALANCE_SLOT,
+            fee_payer_balance_slot,
+            refund_amount,
+        );
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(
+                refund_res,
+                Err(TempoPrecompileError::StorageDeltaUnderflow(_))
+            ),
+            "FeeManager refund must never fail with InsufficientBalance",
+            &serde_json::json!({
+                "to": fee_payer.to_string(),
+                "refund": refund_amount.to_string(),
+                "actual_spending": actual_spending.to_string(),
+            })
+        );
+        refund_res.map_err(|err| match err {
+            TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                TIP20Error::insufficient_balance(current, refund_amount, fee_token).into()
+            }
+            e if e == TempoPrecompileError::under_overflow() => {
+                TIP20Error::supply_cap_exceeded().into()
+            }
+            e => e,
+        })?;
+        let hop_token = if has_two_hop_intermediate {
+            Address::from_word(
+                storage
+                    .tload_direct(TIP_FEE_MANAGER_ADDRESS, slots::TWO_HOP_INTERMEDIATE)?
+                    .into(),
+            )
+        } else {
+            Address::ZERO
+        };
+        if hop_token.is_zero() {
+            let mut collected_fees_slot = Some(collected_fees_slot);
+            match storage.fee_post_tx_collect_fast(
+                TIP_FEE_MANAGER_ADDRESS,
+                validator_token_slot,
+                fee_token,
+                DEFAULT_FEE_TOKEN,
+                actual_spending,
+                |tok| (collected_fees_slot.take().unwrap())(tok),
+            )? {
+                Ok(amount) => return Ok(amount),
+                Err(validator_token) => {
+                    if !actual_spending.is_zero() {
+                        StorageCtx::enter(storage, || {
+                            Self::new().execute_fee_swap(
+                                fee_token,
+                                validator_token,
+                                actual_spending,
+                            )
+                        })?;
+                    }
+                    let amount = compute_amount_out(actual_spending)?;
+                    if !amount.is_zero() {
+                        storage.sinc_direct(
+                            TIP_FEE_MANAGER_ADDRESS,
+                            (collected_fees_slot.take().unwrap())(validator_token),
+                            amount,
+                        )?;
+                    }
+                    return Ok(amount);
+                }
+            }
+        }
+        let val_token_word = storage.sload_direct(TIP_FEE_MANAGER_ADDRESS, validator_token_slot)?;
+        let validator_token = {
+            let addr = Address::from_word(val_token_word.into());
+            if addr.is_zero() {
+                DEFAULT_FEE_TOKEN
+            } else {
+                addr
+            }
+        };
+        if !actual_spending.is_zero() {
+            StorageCtx::enter(storage, || -> Result<()> {
+                let mut this = Self::new();
+                let out1 = this.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                this.execute_fee_swap(hop_token, validator_token, out1)?;
+                Ok(())
+            })?;
+        }
+        let amount = compute_amount_out(compute_amount_out(actual_spending)?)?;
+        if !amount.is_zero() {
+            storage.sinc_direct(
+                TIP_FEE_MANAGER_ADDRESS,
+                collected_fees_slot(validator_token),
+                amount,
+            )?;
+        }
+        Ok(amount)
+    }
+
+    /// Fast-path pre-tx fee collection reusing precomputed slots and skipping `TipFeeManager::new()`
+    /// on the common same-token path. Returns `(user_token, used_two_hop)`.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn collect_fee_pre_tx_direct(
+        fee_payer: Address,
+        fee_payer_balance_slot: U256,
+        user_token: Address,
+        max_amount: U256,
+        validator_token_slot: U256,
+        skip_liquidity_check: bool,
+    ) -> Result<(Address, bool)> {
+        let validator_token = Self::get_validator_token_by_slot(validator_token_slot)?;
+        if StorageCtx.spec().is_t8() {
+            TIP20Token::ensure_authorized_as_direct(
+                user_token,
+                &[(fee_payer, AuthRole::sender())],
+            )?;
+            TIP20Token::transfer_fee_pre_tx_with_slot(
+                user_token,
+                fee_payer,
+                fee_payer_balance_slot,
+                max_amount,
+            )?;
+        } else {
+            let mut tip20_token = TIP20Token::from_address(user_token)?;
+            tip20_token.ensure_transfer_authorized(fee_payer, TIP_FEE_MANAGER_ADDRESS)?;
+            tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
+        }
+        let mut used_two_hop = false;
+        if !skip_liquidity_check && user_token != validator_token {
+            let mut this = Self::new();
+            let (route, ..) = this.plan_fee_route(user_token, validator_token, max_amount)?;
+            let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
+            used_two_hop = matches!(route, FeeRoute::TwoHop(_));
+            this.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
+        }
+        Ok((user_token, used_two_hop))
+    }
+
+    /// Fast-path post-tx fee settlement reusing precomputed slots and skipping `TipFeeManager::new()`
+    /// on the common same-token path.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn collect_fee_post_tx_direct(
+        fee_payer: Address,
+        fee_payer_balance_slot: U256,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        validator_token_slot: U256,
+        collected_fees_slot: impl FnOnce(Address) -> U256,
+        has_two_hop_intermediate: bool,
+    ) -> Result<U256> {
+        TIP20Token::transfer_fee_post_tx_with_slot(
+            fee_token,
+            fee_payer,
+            fee_payer_balance_slot,
+            refund_amount,
+            actual_spending,
+        )?;
+        let hop_token = if has_two_hop_intermediate {
+            crate::storage::Slot::<Address>::new(
+                slots::TWO_HOP_INTERMEDIATE,
+                TIP_FEE_MANAGER_ADDRESS,
+            )
+            .t_read()?
+        } else {
+            Address::ZERO
+        };
+        let validator_token = Self::get_validator_token_by_slot(validator_token_slot)?;
+        let amount = if hop_token.is_zero() {
+            if fee_token != validator_token {
+                if !actual_spending.is_zero() {
+                    Self::new().execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                }
+                compute_amount_out(actual_spending)?
+            } else {
+                actual_spending
+            }
+        } else {
+            if !actual_spending.is_zero() {
+                let mut this = Self::new();
+                let out1 = this.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                this.execute_fee_swap(hop_token, validator_token, out1)?;
+            }
+            compute_amount_out(compute_amount_out(actual_spending)?)?
+        };
+        if !amount.is_zero() {
+            crate::storage::Slot::<U256>::new(
+                collected_fees_slot(validator_token),
+                TIP_FEE_MANAGER_ADDRESS,
+            )
+            .sinc(amount)?;
+        }
+        Ok(amount)
+    }
+
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
-        let token = self.validator_tokens[beneficiary].read()?;
+        let token = self.validator_tokens.entry(&beneficiary).read()?;
 
         if token.is_zero() {
             Ok(DEFAULT_FEE_TOKEN)
@@ -132,7 +573,7 @@ impl TipFeeManager {
         // T3+: skip write and event if the token is already set to the requested value.
         // Prevents permissionless callers from forcing redundant pool invalidation scans.
         if self.storage.spec().is_t3() {
-            let current = self.user_tokens[sender].read()?;
+            let current = self.user_tokens.entry(&sender).read()?;
             if current == call.token {
                 return Ok(());
             }
@@ -166,15 +607,18 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        let mut tip20_token = TIP20Token::from_address(user_token)?;
-
         // TIP-1042: T8 fee collection exempts FeeManager recipient authorization.
         if self.storage.spec().is_t8() {
-            tip20_token.ensure_authorized_as(&[(fee_payer, AuthRole::sender())])?;
+            TIP20Token::ensure_authorized_as_direct(
+                user_token,
+                &[(fee_payer, AuthRole::sender())],
+            )?;
+            TIP20Token::transfer_fee_pre_tx_direct(user_token, fee_payer, max_amount)?;
         } else {
+            let mut tip20_token = TIP20Token::from_address(user_token)?;
             tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
+            tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
         }
-        tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
@@ -240,8 +684,12 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<U256> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token)?;
-        tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
+        TIP20Token::transfer_fee_post_tx_direct(
+            fee_token,
+            fee_payer,
+            refund_amount,
+            actual_spending,
+        )?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
@@ -280,7 +728,10 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        self.collected_fees[validator][token].sinc(amount)?;
+        self.collected_fees
+            .entry(&validator)
+            .entry(&token)
+            .sinc(amount)?;
 
         Ok(())
     }

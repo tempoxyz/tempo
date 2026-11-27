@@ -38,16 +38,40 @@ pub struct ConfigurableAccount {
 impl ConfigurableAccount {
     /// Seeds only the direct outer owner-quorum authority, never a delegate or sponsor, and
     /// whether the transaction may migrate its sender.
+    #[inline]
+    pub fn set_authority_direct(
+        origin: Address,
+        directly_authorized: Address,
+        upgrade_eligibility: UpgradeEligibility,
+    ) -> Result<()> {
+        use crate::storage::{FromWord as _, StorageCtx};
+        use alloy::primitives::U256;
+        const {
+            assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT_OFFSET == 0);
+            assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT.const_eq(&slots::UPGRADE_ELIGIBILITY));
+        }
+        let mut storage = StorageCtx;
+        storage.tstore(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            slots::TX_ORIGIN,
+            origin.to_word(),
+        )?;
+        let packed = directly_authorized.to_word()
+            | (U256::from(upgrade_eligibility as u8) << (slots::UPGRADE_ELIGIBILITY_OFFSET * 8));
+        storage.tstore(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            slots::DIRECTLY_AUTHORIZED_ACCOUNT,
+            packed,
+        )
+    }
+
     pub fn set_authority(
         &mut self,
         origin: Address,
         directly_authorized: Address,
         upgrade_eligibility: UpgradeEligibility,
     ) -> Result<()> {
-        self.tx_origin.t_write(origin)?;
-        self.directly_authorized_account
-            .t_write(directly_authorized)?;
-        self.upgrade_eligibility.t_write(upgrade_eligibility)
+        Self::set_authority_direct(origin, directly_authorized, upgrade_eligibility)
     }
 
     fn derive_account(

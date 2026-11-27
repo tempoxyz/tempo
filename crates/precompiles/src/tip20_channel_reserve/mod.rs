@@ -148,6 +148,16 @@ impl TIP20ChannelReserve {
         self.channel_open_context_hash.t_write(hash)
     }
 
+    /// Writes `channel_open_context_hash` directly without constructing `TIP20ChannelReserve`.
+    #[inline]
+    pub fn set_channel_open_context_hash_direct(hash: B256) -> Result<()> {
+        crate::storage::Slot::<B256>::new(
+            slots::CHANNEL_OPEN_CONTEXT_HASH,
+            crate::TIP20_CHANNEL_RESERVE_ADDRESS,
+        )
+        .t_write(hash)
+    }
+
     /// Returns the number of reusable channel storage credits owned by `payer`.
     pub fn storage_credits(&self, payer: Address) -> Result<u64> {
         self.channel_storage_credits[payer].read()
@@ -846,8 +856,8 @@ impl TIP20ChannelReserve {
 
     /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
-        self.storage
-            .keccak256(&descriptor.id_preimage(self.storage.chain_id()))
+        let preimage = descriptor.id_preimage_bytes(self.storage.chain_id());
+        self.storage.keccak256(&preimage)
     }
 
     /// Ensures the caller is the payee or the descriptor's nonzero operator.

@@ -37,7 +37,6 @@ commonware-codec.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 derive_more = { workspace = true, features = ["from", "try_into"] }
-scoped-tls = "1.0"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 antithesis_sdk = { workspace = true, optional = true }

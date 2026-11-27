@@ -122,6 +122,47 @@ pub const PERMIT_TYPEHASH: B256 = B256::new(
         .finalize(),
 );
 
+/// Precomputed storage slot for `balances[TIP_FEE_MANAGER_ADDRESS]` in any TIP-20 token.
+pub const TIP_FEE_MANAGER_BALANCE_SLOT: U256 = {
+    let mut buf = [0u8; 64];
+    let addr = TIP_FEE_MANAGER_ADDRESS.0.0;
+    let mut i = 0;
+    while i < 20 {
+        buf[12 + i] = addr[i];
+        i += 1;
+    }
+    let slot = slots::BALANCES.to_be_bytes::<32>();
+    let mut j = 0;
+    while j < 32 {
+        buf[32 + j] = slot[j];
+        j += 1;
+    }
+    U256::from_be_bytes(Keccak256::new().update(&buf).finalize())
+};
+
+pub const TIP20_CHANNEL_RESERVE_BALANCE_SLOT: U256 = {
+    let mut buf = [0u8; 64];
+    let addr = TIP20_CHANNEL_RESERVE_ADDRESS.0.0;
+    let mut i = 0;
+    while i < 20 {
+        buf[12 + i] = addr[i];
+        i += 1;
+    }
+    let slot = slots::BALANCES.to_be_bytes::<32>();
+    let mut j = 0;
+    while j < 32 {
+        buf[32 + j] = slot[j];
+        j += 1;
+    }
+    U256::from_be_bytes(Keccak256::new().update(&buf).finalize())
+};
+
+const BOOL_TRUE_WORD: [u8; 32] = {
+    let mut b = [0u8; 32];
+    b[31] = 1;
+    b
+};
+
 /// EIP-712 domain separator typehash
 pub const EIP712_DOMAIN_TYPEHASH: B256 = B256::new(
     Keccak256::new()
@@ -208,15 +249,48 @@ impl TIP20Token {
     }
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
-    pub fn transfer_policy_id(&self) -> Result<u64> {
+    /// Fast-path lookup of `transfer_policy_id` without constructing `TIP20Token` or `TIP403Registry`.
+    #[inline]
+    pub(crate) fn transfer_policy_id_on_provider<T>(
+        storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
+        token: Address,
+    ) -> Result<u64>
+    where
+        T: evm2::EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+        T::EvmExt: crate::storage::evm::EvmStorageExt,
+    {
+        use crate::storage::{PrecompileStorageProvider as _, evm::EvmStorageExt as _};
+        if storage.spec().is_t9() {
+            let reg_slot = storage
+                .evm_ext_mut()
+                .cached_token_transfer_policy_slot(token);
+            let reg_raw = storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, reg_slot)?;
+            if let Some(policy_id) = TIP403Registry::decode_token_transfer_policy_raw(reg_raw)? {
+                return Ok(policy_id);
+            }
+        }
+        let word = storage.sload_direct(token, slots::TRANSFER_POLICY_ID)?;
+        let shifted = word >> (slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        Ok(shifted.as_limbs()[0])
+    }
+
+    pub fn transfer_policy_id_direct(token: Address) -> Result<u64> {
         if StorageCtx.spec().is_t9()
             && let Some(policy_id) =
-                TIP403Registry::new().registered_token_transfer_policy_id(self.address)?
+                TIP403Registry::registered_token_transfer_policy_id_direct(token)?
         {
             return Ok(policy_id);
         }
+        crate::storage::Slot::<u64>::new_with_ctx(
+            slots::TRANSFER_POLICY_ID,
+            crate::storage::LayoutCtx::packed(slots::TRANSFER_POLICY_ID_OFFSET),
+            token,
+        )
+        .read()
+    }
 
-        self.legacy_transfer_policy_id()
+    pub fn transfer_policy_id(&self) -> Result<u64> {
+        Self::transfer_policy_id_direct(self.address)
     }
 
     /// Returns the policy ID stored in the legacy TIP-20 storage slot.
@@ -1018,7 +1092,42 @@ impl TIP20Token {
         }
         self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
 
-        self._transfer(from, &to, amount)?;
+        if self.storage.spec().is_t8()
+            && !to.target.is_zero()
+            && (from == TIP20_CHANNEL_RESERVE_ADDRESS || to.target == TIP20_CHANNEL_RESERVE_ADDRESS)
+        {
+            use crate::storage::StorageKey as _;
+            let from_slot = if from == TIP20_CHANNEL_RESERVE_ADDRESS {
+                TIP20_CHANNEL_RESERVE_BALANCE_SLOT
+            } else {
+                from.mapping_slot(slots::BALANCES)
+            };
+            let to_slot = if to.target == TIP20_CHANNEL_RESERVE_ADDRESS {
+                TIP20_CHANNEL_RESERVE_BALANCE_SLOT
+            } else {
+                to.target.mapping_slot(slots::BALANCES)
+            };
+            crate::storage::Slot::<U256>::new(from_slot, self.address)
+                .sdec(amount)
+                .map_err(|err| match err {
+                    TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                        TIP20Error::insufficient_balance(current, amount, self.address).into()
+                    }
+                    err => err,
+                })?;
+            crate::storage::Slot::<U256>::new(to_slot, self.address)
+                .sinc(amount)
+                .map_err(|err| {
+                    if err == TempoPrecompileError::under_overflow() {
+                        TIP20Error::supply_cap_exceeded().into()
+                    } else {
+                        err
+                    }
+                })?;
+            self.emit_event(to.build_transfer_event(from, amount))?;
+        } else {
+            self._transfer(from, &to, amount)?;
+        }
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
@@ -1134,6 +1243,511 @@ impl TIP20Token {
     /// # Safety
     /// Caller must ensure `is_tip20_prefix(address)` returns true.
     #[inline]
+    pub(crate) fn try_execute_direct<T>(
+        storage: &mut crate::storage::evm::EvmPrecompileStorageProvider<'_, '_, '_, T>,
+        address: Address,
+        calldata: &[u8],
+        caller: Address,
+        frame_depth: u16,
+        nested_calls: &std::rc::Rc<std::cell::Cell<u16>>,
+    ) -> Option<evm2::precompiles::PrecompileResult>
+    where
+        T: evm2::EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+        T::EvmExt: crate::storage::evm::EvmStorageExt,
+    {
+        use crate::storage::{
+            PrecompileStorageProvider as _, StorageKey as _,
+            evm::{EvmStorageExt as _, Frame},
+        };
+        let spec = storage.spec();
+        if !spec.is_t8() || storage.is_static() {
+            return None;
+        }
+        let is_transfer = calldata.len() == 68 && calldata[..4] == ITIP20::transferCall::SELECTOR;
+        let is_transfer_memo = !is_transfer
+            && calldata.len() == 100
+            && calldata[..4] == ITIP20::transferWithMemoCall::SELECTOR;
+        if (is_transfer || is_transfer_memo) && calldata[4..16] == [0u8; 12] {
+            let to = Address::from_slice(&calldata[16..36]);
+            if !to.is_zero()
+                && !to.is_tip20()
+                && to != RECEIVE_POLICY_GUARD_ADDRESS
+                && to.decode_virtual().is_none()
+                && !(spec.is_t15() && ZoneDepositAddress::is_reserved(&to))
+            {
+                if crate::input_cost(spec, calldata.len())
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                let (initialized, paused) =
+                    match storage.tip20_init_and_paused(address, slots::PAUSED) {
+                        Ok(v) => v,
+                        Err(e) => return Some(e.into_precompile_result()),
+                    };
+                if !initialized {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    );
+                }
+                if paused {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::contract_paused())
+                            .into_precompile_result(),
+                    );
+                }
+                let policy_id = match Self::transfer_policy_id_on_provider(storage, address) {
+                    Ok(id) => id,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                let amount = U256::from_be_slice(&calldata[36..68]);
+                let memo = if is_transfer_memo {
+                    Some(B256::from_slice(&calldata[68..100]))
+                } else {
+                    None
+                };
+                if policy_id != ALLOW_ALL_POLICY_ID {
+                    let res = StorageCtx::enter(storage, || -> Result<()> {
+                        let registry = TIP403Registry::new();
+                        for &(user, role) in
+                            &[(caller, AuthRole::sender()), (to, AuthRole::recipient())]
+                        {
+                            if !registry.is_authorized_as(policy_id, user, role)? {
+                                return Err(TIP20Error::policy_forbids().into());
+                            }
+                        }
+                        Ok(())
+                    });
+                    if let Err(err) = res {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                let tx_key_word = match storage.tload_direct(
+                    crate::ACCOUNT_KEYCHAIN_ADDRESS,
+                    crate::account_keychain::slots::TRANSACTION_KEY,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                if !tx_key_word.is_zero() {
+                    let tx_key = Address::from_word(tx_key_word.into());
+                    let res = StorageCtx::enter(storage, || {
+                        AccountKeychain::authorize_transfer_with_key(
+                            tx_key, caller, address, amount,
+                        )
+                    });
+                    if let Err(err) = res {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                let (to_slot, rp_slot) = storage
+                    .evm_ext_mut()
+                    .cached_balance_and_receive_policy_slots(to);
+                let rp_raw = match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, rp_slot) {
+                    Ok(v) => v,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                if !rp_raw.is_zero() {
+                    storage.set_frame(Frame {
+                        address,
+                        depth: frame_depth,
+                        nested_calls: nested_calls.clone(),
+                    });
+                    let res = StorageCtx::enter(storage, || -> Result<bool> {
+                        if let Some((reason, recovery)) =
+                            TIP403Registry::check_receive_policy_from_raw(
+                                address, caller, to, rp_raw,
+                            )?
+                        {
+                            let mut token = Self::from_address_unchecked(address);
+                            token.block_inbound_transfer(
+                                caller,
+                                &Recipient::direct(to),
+                                amount,
+                                None,
+                                memo.unwrap_or(B256::ZERO),
+                                reason,
+                                recovery,
+                            )?;
+                            return Ok(true);
+                        }
+                        Ok(false)
+                    });
+                    match res {
+                        Ok(true) => {
+                            let out = if is_transfer {
+                                alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD)
+                            } else {
+                                alloy::primitives::Bytes::new()
+                            };
+                            return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(out)));
+                        }
+                        Ok(false) => {}
+                        Err(err) => return Some(err.into_precompile_result()),
+                    }
+                }
+                let from_slot = storage
+                    .evm_ext()
+                    .resolved_fee_balance_slot(caller)
+                    .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(caller));
+                if let Err(err) = storage.sdelta_pair(address, from_slot, to_slot, amount) {
+                    let mapped: TempoPrecompileError = match err {
+                        TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                            TIP20Error::insufficient_balance(current, amount, address).into()
+                        }
+                        e if e == TempoPrecompileError::under_overflow() => {
+                            TIP20Error::supply_cap_exceeded().into()
+                        }
+                        e => e,
+                    };
+                    return Some(mapped.into_precompile_result());
+                }
+                if let Err(err) = storage.emit_event_direct(
+                    address,
+                    alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                        caller, to, amount,
+                    )),
+                ) {
+                    return Some(err.into_precompile_result());
+                }
+                if let Some(memo) = memo
+                    && let Err(err) = storage.emit_event_direct(
+                        address,
+                        alloy::primitives::IntoLogData::to_log_data(
+                            &TIP20Event::transfer_with_memo(caller, to, amount, memo),
+                        ),
+                    )
+                {
+                    return Some(err.into_precompile_result());
+                }
+                let out = if is_transfer {
+                    alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD)
+                } else {
+                    alloy::primitives::Bytes::new()
+                };
+                return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(out)));
+            }
+            return None;
+        }
+        if calldata.len() == 68
+            && calldata[..4] == ITIP20::approveCall::SELECTOR
+            && calldata[4..16] == [0u8; 12]
+        {
+            let spender = Address::from_slice(&calldata[16..36]);
+            let amount = U256::from_be_slice(&calldata[36..68]);
+            if crate::input_cost(spec, calldata.len())
+                .and_then(|cost| storage.deduct_gas(cost))
+                .is_err()
+            {
+                return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+            }
+            let allowance_slot = spender.mapping_slot(caller.mapping_slot(slots::ALLOWANCES));
+            match storage.tip20_approve_fast(address, allowance_slot, amount) {
+                Ok(None) => {}
+                Ok(Some((tx_key, old_allowance))) => {
+                    let res = StorageCtx::enter(storage, || {
+                        AccountKeychain::authorize_approve_with_key(
+                            tx_key,
+                            caller,
+                            address,
+                            old_allowance,
+                            amount,
+                        )
+                    });
+                    if let Err(err) = res {
+                        return Some(err.into_precompile_result());
+                    }
+                    if let Err(err) = storage.sstore_direct(address, allowance_slot, amount) {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                Err(err) => return Some(err.into_precompile_result()),
+            }
+            if let Err(err) = storage.emit_event_direct(
+                address,
+                alloy::primitives::IntoLogData::to_log_data(&TIP20Event::approval(
+                    caller, spender, amount,
+                )),
+            ) {
+                return Some(err.into_precompile_result());
+            }
+            return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD),
+            )));
+        }
+        if calldata.len() == 100
+            && calldata[..4] == ITIP20::transferFromCall::SELECTOR
+            && calldata[4..16] == [0u8; 12]
+            && calldata[36..48] == [0u8; 12]
+        {
+            let from = Address::from_slice(&calldata[16..36]);
+            let to = Address::from_slice(&calldata[48..68]);
+            if !to.is_zero()
+                && !to.is_tip20()
+                && to != RECEIVE_POLICY_GUARD_ADDRESS
+                && to.decode_virtual().is_none()
+                && !(spec.is_t15() && ZoneDepositAddress::is_reserved(&to))
+            {
+                if crate::input_cost(spec, calldata.len())
+                    .and_then(|cost| storage.deduct_gas(cost))
+                    .is_err()
+                {
+                    return Some(Err(evm2::precompiles::PrecompileHalt::OutOfGas.into()));
+                }
+                let (initialized, paused) =
+                    match storage.tip20_init_and_paused(address, slots::PAUSED) {
+                        Ok(v) => v,
+                        Err(e) => return Some(e.into_precompile_result()),
+                    };
+                if !initialized {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::uninitialized())
+                            .into_precompile_result(),
+                    );
+                }
+                if paused {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::contract_paused())
+                            .into_precompile_result(),
+                    );
+                }
+                let policy_id = match Self::transfer_policy_id_on_provider(storage, address) {
+                    Ok(id) => id,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                let amount = U256::from_be_slice(&calldata[68..100]);
+                if policy_id != ALLOW_ALL_POLICY_ID {
+                    let res = StorageCtx::enter(storage, || -> Result<()> {
+                        let registry = TIP403Registry::new();
+                        for &(user, role) in
+                            &[(from, AuthRole::sender()), (to, AuthRole::recipient())]
+                        {
+                            if !registry.is_authorized_as(policy_id, user, role)? {
+                                return Err(TIP20Error::policy_forbids().into());
+                            }
+                        }
+                        Ok(())
+                    });
+                    if let Err(err) = res {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                let allowance_slot = caller.mapping_slot(from.mapping_slot(slots::ALLOWANCES));
+                let allowed = match storage.sload_direct(address, allowance_slot) {
+                    Ok(v) => v,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                if amount > allowed {
+                    return Some(
+                        TempoPrecompileError::from(TIP20Error::insufficient_allowance())
+                            .into_precompile_result(),
+                    );
+                }
+                if allowed != U256::MAX {
+                    let new_allowance = allowed - amount;
+                    if let Err(err) = storage.sstore_direct(address, allowance_slot, new_allowance)
+                    {
+                        return Some(err.into_precompile_result());
+                    }
+                }
+                let rp_slot = to.mapping_slot(crate::tip403_registry::slots::RECEIVE_POLICIES);
+                let rp_raw = match storage.sload_direct(crate::TIP403_REGISTRY_ADDRESS, rp_slot) {
+                    Ok(v) => v,
+                    Err(e) => return Some(e.into_precompile_result()),
+                };
+                if !rp_raw.is_zero() {
+                    storage.set_frame(Frame {
+                        address,
+                        depth: frame_depth,
+                        nested_calls: nested_calls.clone(),
+                    });
+                    let res = StorageCtx::enter(storage, || -> Result<bool> {
+                        if let Some((reason, recovery)) =
+                            TIP403Registry::check_receive_policy_from_raw(
+                                address, from, to, rp_raw,
+                            )?
+                        {
+                            let mut token = Self::from_address_unchecked(address);
+                            token.block_inbound_transfer(
+                                from,
+                                &Recipient::direct(to),
+                                amount,
+                                None,
+                                B256::ZERO,
+                                reason,
+                                recovery,
+                            )?;
+                            return Ok(true);
+                        }
+                        Ok(false)
+                    });
+                    match res {
+                        Ok(true) => {
+                            return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                                alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD),
+                            )));
+                        }
+                        Ok(false) => {}
+                        Err(err) => return Some(err.into_precompile_result()),
+                    }
+                }
+                let from_slot = storage
+                    .evm_ext()
+                    .resolved_fee_balance_slot(from)
+                    .unwrap_or_else(|| storage.evm_ext_mut().cached_balance_slot(from));
+                let to_slot = to.mapping_slot(slots::BALANCES);
+                if let Err(err) = storage.sdelta_pair(address, from_slot, to_slot, amount) {
+                    let mapped: TempoPrecompileError = match err {
+                        TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                            TIP20Error::insufficient_balance(current, amount, address).into()
+                        }
+                        e if e == TempoPrecompileError::under_overflow() => {
+                            TIP20Error::supply_cap_exceeded().into()
+                        }
+                        e => e,
+                    };
+                    return Some(mapped.into_precompile_result());
+                }
+                if let Err(err) = storage.emit_event_direct(
+                    address,
+                    alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                        from, to, amount,
+                    )),
+                ) {
+                    return Some(err.into_precompile_result());
+                }
+                return Some(Ok(evm2::evm::precompile::PrecompileOutput::new(
+                    alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD),
+                )));
+            }
+        }
+        None
+    }
+
+    #[inline]
+    /// Fast-path precompile dispatch for `transfer` and `transferWithMemo` on T8+, avoiding
+    /// full `TIP20Token` struct initialization and `ITIP20Calls` enum dispatch on the common path.
+    pub(crate) fn call_direct(
+        address: Address,
+        calldata: &[u8],
+        caller: Address,
+    ) -> evm2::precompiles::PrecompileResult {
+        use crate::{Precompile as _, charge_input_cost, storage::StorageKey as _};
+        let mut storage = StorageCtx;
+        let spec = storage.spec();
+        if spec.is_t8() && !storage.is_static() {
+            let is_transfer =
+                calldata.len() == 68 && calldata[..4] == ITIP20::transferCall::SELECTOR;
+            let is_transfer_memo = !is_transfer
+                && calldata.len() == 100
+                && calldata[..4] == ITIP20::transferWithMemoCall::SELECTOR;
+            if (is_transfer || is_transfer_memo) && calldata[4..16] == [0u8; 12] {
+                let to = Address::from_slice(&calldata[16..36]);
+                if !to.is_zero()
+                    && !to.is_tip20()
+                    && to != RECEIVE_POLICY_GUARD_ADDRESS
+                    && to.decode_virtual().is_none()
+                    && !(spec.is_t15() && ZoneDepositAddress::is_reserved(&to))
+                {
+                    if let Some(err) = charge_input_cost(&mut storage, calldata) {
+                        return err;
+                    }
+                    let initialized = match storage
+                        .with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
+                    {
+                        Ok(v) => v,
+                        Err(e) => return storage.error_result(e),
+                    };
+                    if !initialized {
+                        return storage.error_result(TIP20Error::uninitialized());
+                    }
+                    let amount = U256::from_be_slice(&calldata[36..68]);
+                    let memo = if is_transfer_memo {
+                        Some(B256::from_slice(&calldata[68..100]))
+                    } else {
+                        None
+                    };
+                    let res: Result<()> = (|| {
+                        if crate::storage::Slot::<bool>::new(slots::PAUSED, address).read()? {
+                            return Err(TIP20Error::contract_paused().into());
+                        }
+                        Self::ensure_authorized_as_direct(
+                            address,
+                            &[(caller, AuthRole::sender()), (to, AuthRole::recipient())],
+                        )?;
+                        AccountKeychain::authorize_transfer_direct(caller, address, amount)?;
+                        if let Some((reason, recovery)) =
+                            TIP403Registry::check_receive_policy_direct(address, caller, to)?
+                        {
+                            let mut token = Self::from_address_unchecked(address);
+                            return token.block_inbound_transfer(
+                                caller,
+                                &Recipient::direct(to),
+                                amount,
+                                None,
+                                memo.unwrap_or(B256::ZERO),
+                                reason,
+                                recovery,
+                            );
+                        }
+                        crate::storage::Slot::<U256>::new(
+                            caller.mapping_slot(slots::BALANCES),
+                            address,
+                        )
+                        .sdec(amount)
+                        .map_err(|err| match err {
+                            TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                                TIP20Error::insufficient_balance(current, amount, address).into()
+                            }
+                            err => err,
+                        })?;
+                        crate::storage::Slot::<U256>::new(
+                            to.mapping_slot(slots::BALANCES),
+                            address,
+                        )
+                        .sinc(amount)
+                        .map_err(|err| {
+                            if err == TempoPrecompileError::under_overflow() {
+                                TIP20Error::supply_cap_exceeded().into()
+                            } else {
+                                err
+                            }
+                        })?;
+                        storage.emit_event(
+                            address,
+                            alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                                caller, to, amount,
+                            )),
+                        )?;
+                        if let Some(memo) = memo {
+                            storage.emit_event(
+                                address,
+                                alloy::primitives::IntoLogData::to_log_data(
+                                    &TIP20Event::transfer_with_memo(caller, to, amount, memo),
+                                ),
+                            )?;
+                        }
+                        Ok(())
+                    })();
+                    return match res {
+                        Ok(()) => {
+                            let out = if is_transfer {
+                                alloy::primitives::Bytes::from_static(&BOOL_TRUE_WORD)
+                            } else {
+                                alloy::primitives::Bytes::new()
+                            };
+                            Ok(evm2::evm::precompile::PrecompileOutput::new(out))
+                        }
+                        Err(err) => err.into_precompile_result(),
+                    };
+                }
+            }
+        }
+        Self::from_address_unchecked(address).call(calldata, caller)
+    }
+
     pub fn from_address_unchecked(address: Address) -> Self {
         debug_assert!(address.is_tip20(), "address must have TIP20 prefix");
         Self::__new(address)
@@ -1186,15 +1800,15 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances[account].read()
+        self.balances.entry(&account).read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].write(amount)
+        self.balances.entry(&account).write(amount)
     }
 
     pub fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].sinc(amount).map_err(|err| {
+        self.balances.entry(&account).sinc(amount).map_err(|err| {
             if err == TempoPrecompileError::under_overflow() {
                 TIP20Error::supply_cap_exceeded().into()
             } else {
@@ -1204,7 +1818,8 @@ impl TIP20Token {
     }
 
     pub fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account]
+        self.balances
+            .entry(&account)
             .sdec(amount)
             .map_err(|err| match err {
                 TempoPrecompileError::StorageDeltaUnderflow(current) => {
@@ -1364,8 +1979,20 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `PolicyForbids` — a user is not authorized for the requested role by the active transfer policy
-    pub fn ensure_authorized_as(&self, user_auth: &[(Address, AuthRole)]) -> Result<()> {
-        let policy_id = self.transfer_policy_id()?;
+    ///
+    /// Fast-path transfer policy check without constructing `TIP20Token` or `TIP403Registry` for policy 1 (always-allow).
+    #[inline]
+    pub fn ensure_authorized_as_direct(
+        token: Address,
+        user_auth: &[(Address, AuthRole)],
+    ) -> Result<()> {
+        if !token.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+        let policy_id = Self::transfer_policy_id_direct(token)?;
+        if policy_id == ALLOW_ALL_POLICY_ID {
+            return Ok(());
+        }
         let registry = TIP403Registry::new();
         for &(user, role) in user_auth {
             if !registry.is_authorized_as(policy_id, user, role)? {
@@ -1375,12 +2002,16 @@ impl TIP20Token {
         Ok(())
     }
 
+    pub fn ensure_authorized_as(&self, user_auth: &[(Address, AuthRole)]) -> Result<()> {
+        Self::ensure_authorized_as_direct(self.address, user_auth)
+    }
+
     /// Checks and deducts `amount` from the caller's [`AccountKeychain`] spending limit.
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+        AccountKeychain::authorize_transfer_direct(from, self.address, amount)
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
@@ -1448,10 +2079,33 @@ impl TIP20Token {
 
         let token = self.address;
         let Some((reason, recovery)) =
-            TIP403Registry::new().check_receive_policy(token, originator, to.target)?
+            TIP403Registry::check_receive_policy_direct(token, originator, to.target)?
         else {
             return Ok(false);
         };
+        self.block_inbound_transfer(
+            originator,
+            to,
+            amount,
+            mint_total_supply,
+            memo,
+            reason,
+            recovery,
+        )?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn block_inbound_transfer(
+        &mut self,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        mint_total_supply: Option<U256>,
+        memo: B256,
+        reason: ITIP403Registry::BlockedReason,
+        recovery: Address,
+    ) -> Result<()> {
         // A zone recovery authority could never claim diverted funds. Ungated: before T15 zone
         // transfers were disabled and the Inbox rejects blocked deposits itself.
         if matches!(self.storage.kind(), TempoEvmKind::Zone) {
@@ -1467,10 +2121,18 @@ impl TIP20Token {
             self._transfer(originator, &guard, amount)?;
             InboundKind::TRANSFER
         };
-        ReceivePolicyGuard::new()
-            .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
+        ReceivePolicyGuard::new().store_blocked(
+            self.address,
+            originator,
+            to,
+            recovery,
+            amount,
+            reason,
+            kind,
+            memo,
+        )?;
 
-        Ok(true)
+        Ok(())
     }
 
     /// Releases guarded funds to `to`. Resumes skip policy checks. Reroutes
@@ -1522,7 +2184,140 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    ///
+    /// Fast-path fee pre-tx transfer that skips constructing `TIP20Token` on T8+ (where rewards are disabled).
+    #[inline]
+    pub fn transfer_fee_pre_tx_direct(token: Address, from: Address, amount: U256) -> Result<()> {
+        use crate::storage::StorageKey as _;
+        Self::transfer_fee_pre_tx_with_slot(token, from, from.mapping_slot(slots::BALANCES), amount)
+    }
+
+    /// Like [`Self::transfer_fee_pre_tx_direct`], using a precomputed `from` balance slot.
+    #[inline]
+    pub fn transfer_fee_pre_tx_with_slot(
+        token: Address,
+        from: Address,
+        from_balance_slot: U256,
+        amount: U256,
+    ) -> Result<()> {
+        if !token.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+        if !StorageCtx.spec().is_t8() {
+            return Self::from_address_unchecked(token).transfer_fee_pre_tx(from, amount);
+        }
+        if crate::storage::Slot::<bool>::new(slots::PAUSED, token).read()? {
+            return Err(TIP20Error::contract_paused().into());
+        }
+        AccountKeychain::authorize_transfer_direct(from, token, amount)?;
+
+        crate::storage::Slot::<U256>::new(from_balance_slot, token)
+            .sdec(amount)
+            .map_err(|err| match err {
+                TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                    TIP20Error::insufficient_balance(current, amount, token).into()
+                }
+                err => err,
+            })?;
+        crate::storage::Slot::<U256>::new(TIP_FEE_MANAGER_BALANCE_SLOT, token)
+            .sinc(amount)
+            .map_err(|err| {
+                if err == TempoPrecompileError::under_overflow() {
+                    TIP20Error::supply_cap_exceeded().into()
+                } else {
+                    err
+                }
+            })?;
+        Ok(())
+    }
+
+    /// Fast-path fee post-tx refund that skips constructing `TIP20Token` on T8+ (where rewards are disabled).
+    #[inline]
+    pub fn transfer_fee_post_tx_direct(
+        token: Address,
+        to: Address,
+        refund: U256,
+        actual_spending: U256,
+    ) -> Result<()> {
+        use crate::storage::StorageKey as _;
+        Self::transfer_fee_post_tx_with_slot(
+            token,
+            to,
+            to.mapping_slot(slots::BALANCES),
+            refund,
+            actual_spending,
+        )
+    }
+
+    /// Like [`Self::transfer_fee_post_tx_direct`], using a precomputed `to` balance slot.
+    #[inline]
+    pub fn transfer_fee_post_tx_with_slot(
+        token: Address,
+        to: Address,
+        to_balance_slot: U256,
+        refund: U256,
+        actual_spending: U256,
+    ) -> Result<()> {
+        if !token.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+        if !StorageCtx.spec().is_t8() {
+            return Self::from_address_unchecked(token).transfer_fee_post_tx(
+                to,
+                refund,
+                actual_spending,
+            );
+        }
+        let mut storage = StorageCtx;
+        storage.emit_event(
+            token,
+            alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                to,
+                TIP_FEE_MANAGER_ADDRESS,
+                actual_spending,
+            )),
+        )?;
+        if refund.is_zero() {
+            return Ok(());
+        }
+        if storage.spec().is_t1c() {
+            AccountKeychain::refund_spending_limit_direct(to, token, refund)?;
+        }
+        let refund_debit = crate::storage::Slot::<U256>::new(TIP_FEE_MANAGER_BALANCE_SLOT, token)
+            .sdec(refund)
+            .map_err(|err| match err {
+                TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                    TIP20Error::insufficient_balance(current, refund, token).into()
+                }
+                err => err,
+            });
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),
+            "Fee manager custody covers the unused fee refund",
+            &serde_json::json!({
+                "token": token.to_string(),
+                "refund": refund.to_string(),
+                "actual_spending": actual_spending.to_string(),
+            })
+        );
+        refund_debit?;
+        crate::storage::Slot::<U256>::new(to_balance_slot, token)
+            .sinc(refund)
+            .map_err(|err| {
+                if err == TempoPrecompileError::under_overflow() {
+                    TIP20Error::supply_cap_exceeded().into()
+                } else {
+                    err
+                }
+            })?;
+        Ok(())
+    }
+
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Self::transfer_fee_pre_tx_direct(self.address, from, amount);
+        }
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
@@ -1561,6 +2356,9 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Self::transfer_fee_post_tx_direct(self.address, to, refund, actual_spending);
+        }
         self.emit_event(TIP20Event::transfer(
             to,
             TIP_FEE_MANAGER_ADDRESS,
@@ -1573,7 +2371,7 @@ impl TIP20Token {
         }
 
         if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            AccountKeychain::refund_spending_limit_direct(to, self.address, refund)?;
         }
 
         // Update rewards for the recipient and get their reward recipient
@@ -1659,6 +2457,9 @@ impl Recipient {
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
         if StorageCtx.spec().is_t15() && ZoneDepositAddress::is_reserved(&addr) {
             return Err(TIP20Error::invalid_recipient().into());
+        }
+        if !StorageCtx.spec().is_t3() || addr.decode_virtual().is_none() {
+            return Ok(Self::direct(addr));
         }
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {

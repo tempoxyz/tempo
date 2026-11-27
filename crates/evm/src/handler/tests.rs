@@ -1829,6 +1829,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
         TempoFeeContext {
             fee_payer: caller,
             fee_token: DEFAULT_FEE_TOKEN,
+            fee_payer_balance_slot: U256::ZERO,
             collected: U256::ZERO,
         },
     )
@@ -1930,6 +1931,7 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
         TempoFeeContext {
             fee_payer: caller,
             fee_token: DEFAULT_FEE_TOKEN,
+            fee_payer_balance_slot: U256::ZERO,
             collected: U256::ZERO,
         },
     )

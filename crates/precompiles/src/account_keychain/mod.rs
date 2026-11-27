@@ -786,6 +786,97 @@ impl AccountKeychain {
         self.tx_origin.t_write(origin)
     }
 
+    /// Writes `tx_origin` directly to transient storage without constructing `AccountKeychain`.
+    #[inline]
+    pub fn set_tx_origin_direct(origin: Address) -> Result<()> {
+        crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+            .t_write(origin)
+    }
+
+    /// Fast path for `authorize_transfer` that skips constructing `AccountKeychain` for main-key txs.
+    #[inline]
+    pub fn authorize_transfer_direct(account: Address, token: Address, amount: U256) -> Result<()> {
+        let transaction_key =
+            crate::storage::Slot::<Address>::new(slots::TRANSACTION_KEY, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if transaction_key.is_zero() {
+            return Ok(());
+        }
+        Self::authorize_transfer_with_key(transaction_key, account, token, amount)
+    }
+
+    /// Like [`Self::authorize_transfer_direct`], using a non-zero `transaction_key` already loaded via `tload`.
+    #[inline]
+    pub fn authorize_transfer_with_key(
+        transaction_key: Address,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let tx_origin =
+            crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+        Self::new().verify_and_update_spending(account, transaction_key, token, amount)
+    }
+
+    /// Like [`Self::authorize_approve`], using a non-zero `transaction_key` already loaded via `tload`.
+    #[inline]
+    pub fn authorize_approve_with_key(
+        transaction_key: Address,
+        account: Address,
+        token: Address,
+        old_approval: U256,
+        new_approval: U256,
+    ) -> Result<()> {
+        let tx_origin =
+            crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+        let approval_increase = new_approval.saturating_sub(old_approval);
+        if approval_increase.is_zero() {
+            return Ok(());
+        }
+        Self::new().verify_and_update_spending(account, transaction_key, token, approval_increase)
+    }
+
+    /// Fast path for `refund_spending_limit` that skips constructing `AccountKeychain` for main-key txs.
+    #[inline]
+    pub fn refund_spending_limit_direct(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key =
+            crate::storage::Slot::<Address>::new(slots::TRANSACTION_KEY, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if transaction_key.is_zero() {
+            return Ok(());
+        }
+        Self::refund_spending_limit_with_key(transaction_key, account, token, amount)
+    }
+
+    /// Like [`Self::refund_spending_limit_direct`], using a non-zero `transaction_key` already loaded via `tload`.
+    #[inline]
+    pub fn refund_spending_limit_with_key(
+        transaction_key: Address,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let tx_origin =
+            crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+        Self::new().refund_spending_limit_for_key(account, transaction_key, token, amount)
+    }
+
     /// Persists the authorization-time restrictions for a freshly created key.
     ///
     /// T0-T2 only store raw spending limits. T3 additionally seeds periodic metadata and replaces
@@ -1533,17 +1624,16 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
+        Self::refund_spending_limit_direct(account, token, amount)
+    }
 
-        if transaction_key.is_zero() {
-            return Ok(());
-        }
-
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
+    fn refund_spending_limit_for_key(
+        &mut self,
+        account: Address,
+        transaction_key: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         // Silently skip refund if the key was revoked or expired — the fee was already
         // collected and the key is no longer active, so there is nothing to restore.
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -1605,22 +1695,7 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key.is_zero() {
-            return Ok(());
-        }
-
-        // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
-        // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, amount)
+        Self::authorize_transfer_direct(account, token, amount)
     }
 
     /// Authorize a token approval with access key spending limits.

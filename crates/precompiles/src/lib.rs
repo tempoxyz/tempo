@@ -16,6 +16,7 @@ pub mod account_keychain;
 pub mod address_registry;
 pub mod configurable_account;
 pub mod current_committee;
+pub mod modexp_fast;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -230,6 +231,7 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
+        crate::modexp_fast::install_tempo_crypto();
         Self {
             base,
             spec,
@@ -242,9 +244,7 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
 
     fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
-            TIP20Token::from_address(address)
-                .expect("TIP-20 prefix already checked")
-                .call(calldata, caller)
+            TIP20Token::call_direct(address, calldata, caller)
         } else if address == TIP20_FACTORY_ADDRESS {
             TIP20Factory::new().call(calldata, caller)
         } else if address == TIP20_CHANNEL_RESERVE_ADDRESS {
@@ -363,8 +363,39 @@ where
             )));
         }
 
-        if !has_input_gas(self.spec, evm.message_input(message).len(), gas.remaining()) {
+        let input_len = evm.message_input(message).len();
+        if !has_input_gas(self.spec, input_len, gas.remaining()) {
             return Some(Err(PrecompileHalt::OutOfGas.into()));
+        }
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        if message.call_target.is_tip20()
+            && self.spec.is_t8()
+            && !is_static
+            && (input_len == 68 || input_len == 100)
+        {
+            let mut stack_buf = [0u8; 100];
+            stack_buf[..input_len].copy_from_slice(evm.message_input(message));
+            let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, false)
+                .with_actions(self.actions.clone())
+                .with_non_creditable_slots(self.non_creditable_slots.clone());
+            if let Some(res) = TIP20Token::try_execute_direct(
+                &mut storage,
+                message.call_target,
+                &stack_buf[..input_len],
+                message.caller,
+                message.depth,
+                &self.nested_calls,
+            ) {
+                return Some(res);
+            }
+            storage.set_frame(Frame {
+                address: message.call_target,
+                depth: message.depth,
+                nested_calls: self.nested_calls.clone(),
+            });
+            return Some(StorageCtx::enter(&mut storage, || {
+                self.call_tempo(message.call_target, &stack_buf[..input_len], message.caller)
+            }));
         }
         Some(self.execute_in_frame(evm, message, gas, |input| {
             self.call_tempo(message.call_target, input, message.caller)

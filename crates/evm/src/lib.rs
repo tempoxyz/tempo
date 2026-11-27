@@ -30,8 +30,9 @@ pub use action_replay::{
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{
-    ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
-    deploy_precompile_at_boundary,
+    ExecutorState, STATE_HOOK_BATCH_SIZE, StateUpdateMergeScratch, TempoBlockExecutor,
+    TempoReceiptBuilder, TempoTxResult, deploy_precompile_at_boundary,
+    merge_and_emit_state_updates,
 };
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
@@ -42,9 +43,10 @@ pub use fee_manager::{
     fee_token_inference_target,
 };
 pub use handler::{
-    TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
-    TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,
-    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
+    FeeSlotCache, SenderSlotCache, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
+    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, TxTransientSeeds, build_tempo_evm,
+    configurable_account::account_access_gas, tempo_execution_config, tempo_opcode_config,
+    tempo_tx_registry,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
@@ -253,6 +255,7 @@ impl ConfigureEvm for TempoEvmConfig {
         DB: Database + 'a,
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
+        // batch_state_hook disabled for isolated bench
         let precompiles =
             self.evm_factory
                 .cached_precompiles(&evm_env, &ext, cache_map, metrics_enabled);
@@ -396,6 +399,9 @@ impl ConfigureEvm for TempoEvmConfig {
         })
     }
 }
+
+#[doc(hidden)]
+pub use evm2::{block::AccountUpdate, evm::AccountInfo};
 
 #[cfg(test)]
 mod tests {

@@ -66,6 +66,19 @@ impl<K, V: StorableType> Mapping<K, V> {
         self.base_slot
     }
 
+    /// Returns a handler by value without populating the internal `HandlerCache`.
+    #[inline]
+    pub fn entry(&self, key: &K) -> V::Handler
+    where
+        K: StorageKey,
+    {
+        V::handle(
+            key.mapping_slot(self.base_slot),
+            LayoutCtx::FULL,
+            self.address,
+        )
+    }
+
     /// Returns a `Handler` for the given key.
     ///
     /// This enables the composable pattern: `mapping.at(&key).read()`

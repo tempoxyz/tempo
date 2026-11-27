@@ -86,7 +86,7 @@ struct ReceivePolicy {
 
 /// Per-account TIP-1028 receive policy configuration. Packed in a single slot.
 #[derive(Debug, Clone, Default, Storable)]
-struct ReceivePolicyConfig {
+pub(crate) struct ReceivePolicyConfig {
     /// Whether the account has configured a receive policy.
     has_receive_policy: bool,
     /// Policy ID authorizing senders for inbound transfers.
@@ -272,11 +272,45 @@ impl TIP403Registry {
     }
 
     /// Returns the registered policy ID without validating the token address.
+    /// Fast-path lookup of a token's registered transfer policy ID without constructing `TIP403Registry`.
+    /// Decodes a non-zero raw `TokenTransferPolicy` storage word into `Option<u64>`.
+    #[inline]
+    pub(crate) fn decode_token_transfer_policy_raw(raw: U256) -> Result<Option<u64>> {
+        if raw.is_zero() {
+            return Ok(None);
+        }
+        use crate::storage::{LayoutCtx, Storable as _, StorageOps};
+        struct RawWord(U256);
+        impl StorageOps for RawWord {
+            fn load(&self, _slot: U256) -> Result<U256> {
+                Ok(self.0)
+            }
+            fn store(&mut self, _slot: U256, _value: U256) -> Result<()> {
+                unreachable!()
+            }
+        }
+        let binding = TokenTransferPolicy::load(&RawWord(raw), U256::ZERO, LayoutCtx::FULL)?;
+        Ok(binding.is_set.then_some(binding.policy_id))
+    }
+
+    pub(crate) fn registered_token_transfer_policy_id_direct(
+        token: Address,
+    ) -> Result<Option<u64>> {
+        use crate::storage::{LayoutCtx, StorableType as _, StorageKey as _};
+        let binding = TokenTransferPolicy::handle(
+            token.mapping_slot(slots::TOKEN_TRANSFER_POLICIES),
+            LayoutCtx::FULL,
+            TIP403_REGISTRY_ADDRESS,
+        )
+        .read()?;
+        Ok(binding.is_set.then_some(binding.policy_id))
+    }
+
     pub(crate) fn registered_token_transfer_policy_id(
         &self,
         token: Address,
     ) -> Result<Option<u64>> {
-        let binding = self.token_transfer_policies[token].read()?;
+        let binding = self.token_transfer_policies.entry(&token).read()?;
         Ok(binding.is_set.then_some(binding.policy_id))
     }
 
@@ -416,17 +450,59 @@ impl TIP403Registry {
 
     /// Checks the receive policy. If valid, returns `None`. Otherwise returns the
     /// blocking reason and recovery address.
-    pub(crate) fn check_receive_policy(
-        &self,
+    /// Fast-path receive-policy check that avoids constructing `TIP403Registry` when the
+    /// receiver has no receive policy configured (the common case).
+    #[inline]
+    pub(crate) fn check_receive_policy_direct(
         token: Address,
         sender: Address,
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
-        let config = self.receive_policies[receiver].config.read()?;
+        use crate::storage::{LayoutCtx, StorableType as _, StorageKey as _};
+        // `ReceivePolicyRecord` stores `config` at offset 0 of its base slot.
+        let config = ReceivePolicyConfig::handle(
+            receiver.mapping_slot(slots::RECEIVE_POLICIES),
+            LayoutCtx::FULL,
+            TIP403_REGISTRY_ADDRESS,
+        )
+        .read()?;
         if !config.has_receive_policy {
             return Ok(None);
         }
+        Self::new().check_receive_policy_with_config(token, sender, receiver, config)
+    }
 
+    #[inline]
+    pub(crate) fn check_receive_policy_from_raw(
+        token: Address,
+        sender: Address,
+        receiver: Address,
+        raw: U256,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        use crate::storage::{LayoutCtx, Storable as _, StorageOps};
+        struct RawWord(U256);
+        impl StorageOps for RawWord {
+            fn load(&self, _slot: U256) -> Result<U256> {
+                Ok(self.0)
+            }
+            fn store(&mut self, _slot: U256, _value: U256) -> Result<()> {
+                unreachable!()
+            }
+        }
+        let config = ReceivePolicyConfig::load(&RawWord(raw), U256::ZERO, LayoutCtx::FULL)?;
+        if !config.has_receive_policy {
+            return Ok(None);
+        }
+        Self::new().check_receive_policy_with_config(token, sender, receiver, config)
+    }
+
+    fn check_receive_policy_with_config(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+        config: ReceivePolicyConfig,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
         let token_filter_data = config.token_filter_data();
         if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
@@ -446,6 +522,19 @@ impl TIP403Registry {
         }
 
         Ok(None)
+    }
+
+    pub(crate) fn check_receive_policy(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        let config = self.receive_policies.entry(&receiver).config.read()?;
+        if !config.has_receive_policy {
+            return Ok(None);
+        }
+        self.check_receive_policy_with_config(token, sender, receiver, config)
     }
 
     /// Returns the recovery authority encoded by `mode` for `account`.

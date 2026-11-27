@@ -624,6 +624,7 @@ fn fee_diagnostic_failure_preserves_insufficient_liquidity(error: TempoPrecompil
         TempoFeeContext {
             fee_payer: SIGNER,
             fee_token: PATH_USD_ADDRESS,
+            fee_payer_balance_slot: U256::ZERO,
             collected: U256::ONE,
         },
         None,

@@ -85,23 +85,23 @@ pub enum TempoEvmTx {
     /// Legacy transaction.
     Legacy {
         /// Recovered transaction without its signature.
-        transaction: Recovered<TxLegacy>,
+        transaction: Box<Recovered<TxLegacy>>,
         /// Whether the original envelope carried Tempo's system transaction signature.
         is_system: bool,
     },
     /// EIP-2930 access-list transaction.
-    Eip2930(Recovered<TxEip2930>),
+    Eip2930(Box<Recovered<TxEip2930>>),
     /// EIP-1559 dynamic-fee transaction.
-    Eip1559(Recovered<TxEip1559>),
+    Eip1559(Box<Recovered<TxEip1559>>),
     /// EIP-7702 set-code transaction.
-    Eip7702(Recovered<LazyTxEip7702>),
+    Eip7702(Box<Recovered<LazyTxEip7702>>),
     /// Tempo account-abstraction transaction.
     AA(TempoAaTx),
 }
 
 impl TempoEvmTx {
     /// Returns the contained legacy transaction, if this is legacy.
-    pub const fn as_legacy(&self) -> Option<&Recovered<TxLegacy>> {
+    pub fn as_legacy(&self) -> Option<&Recovered<TxLegacy>> {
         match self {
             Self::Legacy { transaction, .. } => Some(transaction),
             Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip7702(_) | Self::AA(_) => None,
@@ -109,7 +109,7 @@ impl TempoEvmTx {
     }
 
     /// Returns the contained EIP-2930 transaction, if this is EIP-2930.
-    pub const fn as_eip2930(&self) -> Option<&Recovered<TxEip2930>> {
+    pub fn as_eip2930(&self) -> Option<&Recovered<TxEip2930>> {
         match self {
             Self::Eip2930(transaction) => Some(transaction),
             Self::Legacy { .. } | Self::Eip1559(_) | Self::Eip7702(_) | Self::AA(_) => None,
@@ -117,7 +117,7 @@ impl TempoEvmTx {
     }
 
     /// Returns the contained EIP-1559 transaction, if this is EIP-1559.
-    pub const fn as_eip1559(&self) -> Option<&Recovered<TxEip1559>> {
+    pub fn as_eip1559(&self) -> Option<&Recovered<TxEip1559>> {
         match self {
             Self::Eip1559(transaction) => Some(transaction),
             Self::Legacy { .. } | Self::Eip2930(_) | Self::Eip7702(_) | Self::AA(_) => None,
@@ -125,7 +125,7 @@ impl TempoEvmTx {
     }
 
     /// Returns the contained EIP-7702 transaction, if this is EIP-7702.
-    pub const fn as_eip7702(&self) -> Option<&Recovered<LazyTxEip7702>> {
+    pub fn as_eip7702(&self) -> Option<&Recovered<LazyTxEip7702>> {
         match self {
             Self::Eip7702(transaction) => Some(transaction),
             Self::Legacy { .. } | Self::Eip2930(_) | Self::Eip1559(_) | Self::AA(_) => None,
@@ -254,16 +254,17 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
 
         match transaction {
             TempoTxEnvelope::Legacy(transaction) => Self::Legacy {
-                transaction: Recovered::new_unchecked(transaction.strip_signature(), signer),
+                transaction: Box::new(Recovered::new_unchecked(
+                    transaction.strip_signature(),
+                    signer,
+                )),
                 is_system,
             },
-            TempoTxEnvelope::Eip2930(transaction) => Self::Eip2930(Recovered::new_unchecked(
-                transaction.strip_signature(),
-                signer,
+            TempoTxEnvelope::Eip2930(transaction) => Self::Eip2930(Box::new(
+                Recovered::new_unchecked(transaction.strip_signature(), signer),
             )),
-            TempoTxEnvelope::Eip1559(transaction) => Self::Eip1559(Recovered::new_unchecked(
-                transaction.strip_signature(),
-                signer,
+            TempoTxEnvelope::Eip1559(transaction) => Self::Eip1559(Box::new(
+                Recovered::new_unchecked(transaction.strip_signature(), signer),
             )),
             TempoTxEnvelope::Eip7702(transaction) => {
                 let transaction = transaction.strip_signature();
@@ -278,7 +279,7 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
                     } else {
                         LazyTxEip7702::from_recovered_authorizations(transaction)
                     };
-                Self::Eip7702(Recovered::new_unchecked(transaction, signer))
+                Self::Eip7702(Box::new(Recovered::new_unchecked(transaction, signer)))
             }
             TempoTxEnvelope::AA(transaction) => Self::AA(TempoAaTx::new(Recovered::new_unchecked(
                 transaction,
@@ -336,7 +337,10 @@ impl TempoTxEnv {
                 );
                 // Keep the cached authority recovery results for execution.
                 return Some(Self {
-                    evm_tx: TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
+                    evm_tx: TempoEvmTx::Eip7702(Box::new(Recovered::new_unchecked(
+                        transaction,
+                        signer,
+                    ))),
                     execution_context: ExecutionContext::Simulation,
                     tx_hash: *envelope.tx_hash(),
                     unique_tx_identifier: envelope.unique_tx_identifier(signer),
@@ -356,7 +360,7 @@ impl TempoTxEnv {
     }
 
     /// Returns the contained legacy transaction, if this is legacy.
-    pub const fn as_legacy(&self) -> Option<&TxLegacy> {
+    pub fn as_legacy(&self) -> Option<&TxLegacy> {
         match self.evm_tx.as_legacy() {
             Some(transaction) => Some(transaction.inner()),
             None => None,
@@ -364,7 +368,7 @@ impl TempoTxEnv {
     }
 
     /// Returns the contained EIP-2930 transaction, if this is EIP-2930.
-    pub const fn as_eip2930(&self) -> Option<&TxEip2930> {
+    pub fn as_eip2930(&self) -> Option<&TxEip2930> {
         match self.evm_tx.as_eip2930() {
             Some(transaction) => Some(transaction.inner()),
             None => None,
@@ -372,7 +376,7 @@ impl TempoTxEnv {
     }
 
     /// Returns the contained EIP-1559 transaction, if this is EIP-1559.
-    pub const fn as_eip1559(&self) -> Option<&TxEip1559> {
+    pub fn as_eip1559(&self) -> Option<&TxEip1559> {
         match self.evm_tx.as_eip1559() {
             Some(transaction) => Some(transaction.inner()),
             None => None,
@@ -380,7 +384,7 @@ impl TempoTxEnv {
     }
 
     /// Returns the contained EIP-7702 transaction, if this is EIP-7702.
-    pub const fn as_eip7702(&self) -> Option<&LazyTxEip7702> {
+    pub fn as_eip7702(&self) -> Option<&LazyTxEip7702> {
         match self.evm_tx.as_eip7702() {
             Some(transaction) => Some(transaction.inner()),
             None => None,
@@ -601,7 +605,7 @@ impl TransactionEnvMut for TempoTxEnv {
                     value,
                     input,
                 } = transaction.inner().clone();
-                self.evm_tx = TempoEvmTx::Eip2930(Recovered::new_unchecked(
+                self.evm_tx = TempoEvmTx::Eip2930(Box::new(Recovered::new_unchecked(
                     TxEip2930 {
                         chain_id: chain_id.unwrap_or_default(),
                         nonce,
@@ -613,7 +617,7 @@ impl TransactionEnvMut for TempoTxEnv {
                         input,
                     },
                     signer,
-                ));
+                )));
             }
             TempoEvmTx::Eip2930(tx) => tx.inner_mut().access_list = access_list,
             TempoEvmTx::Eip1559(tx) => tx.inner_mut().access_list = access_list,
