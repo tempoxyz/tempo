@@ -15,6 +15,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// Used via Cargo features to enforce compile-time max-level filtering alongside tracing.
+use log as _;
+
 // tracy-client is an optional dependency activated by the `tracy` feature.
 // It is not used directly but must be present for the `ondemand` feature flag.
 #[cfg(feature = "tracy")]

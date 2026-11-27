@@ -1047,24 +1047,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.set_post_execution_block_access_index();
         self.apply_current_committee_system_call()?;
 
+        if self.evm().config_spec_id().is_t13() {
+            return Ok(SealedBlock::seal(self).into_output());
+        }
+
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-        let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
-            let mut inner = self.inner.inner;
-            let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
-            let result = reth_execution_types::BlockExecutionResult {
-                receipts: inner.receipts,
-                requests: Default::default(),
-                gas_used: inner.cumulative_gas_used,
-                blob_gas_used: inner.blob_gas_used,
-            };
-            (
-                BlockExecutionOutput::new(result, inner.block_state.into_bundle()),
-                block_access_list,
-            )
-        } else {
-            self.inner.finish_with_block_access_list()?
-        };
+        let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
@@ -1143,6 +1132,52 @@ fn zone_runtime_fork(spec: TempoHardfork) -> Option<TempoHardfork> {
     }
 }
 
+/// Finalized T13+ block whose EVM and state-update hook have been dropped.
+///
+/// Keeps `block_state` private with no mutation methods so post-state cannot be modified once
+/// the parallel state-root hook is released.
+struct SealedBlock {
+    block_state: reth_execution_types::BlockState,
+    result: reth_execution_types::BlockExecutionResult<TempoReceipt>,
+    block_access_list: Option<BlockAccessList>,
+}
+
+impl SealedBlock {
+    /// Consumes `executor`, dropping its EVM and state-update hook before returning a frozen
+    /// handle that can only materialize `BundleState`.
+    fn seal(executor: TempoBlockExecutor<'_>) -> Self {
+        let block_gas_used = executor.block_gas_used;
+        let use_regular_gas = executor.evm().version().feature(evm2::EvmFeatures::EIP8037);
+        let mut inner = executor.inner.inner;
+        let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
+        let gas_used = if use_regular_gas {
+            block_gas_used
+        } else {
+            inner.cumulative_gas_used
+        };
+        // Moving `block_state` and `receipts` out leaves `inner.evm` and the executor's private
+        // `state_update_hook` (a sibling field of `evm`) to drop when this function returns,
+        // overlapping state-root finalization with `into_bundle()` in `into_output()`.
+        Self {
+            block_state: inner.block_state,
+            result: reth_execution_types::BlockExecutionResult {
+                receipts: inner.receipts,
+                requests: Default::default(),
+                gas_used,
+                blob_gas_used: inner.blob_gas_used,
+            },
+            block_access_list,
+        }
+    }
+
+    fn into_output(self) -> (BlockExecutionOutput<TempoReceipt>, Option<BlockAccessList>) {
+        (
+            BlockExecutionOutput::new(self.result, self.block_state.into_bundle()),
+            self.block_access_list,
+        )
+    }
+}
+
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
 impl TempoBlockExecutor<'_> {
@@ -1189,7 +1224,10 @@ mod tests {
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
     use std::{
         collections::HashMap,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
     use tempo_contracts::{
@@ -3557,5 +3595,45 @@ mod tests {
              not block_regular_gas_used ({})",
             result.gas_used, cumulative, regular
         );
+    }
+
+    #[test]
+    fn test_sealed_block_drops_state_hook_before_into_output() {
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T15)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropFlag(hook_dropped.clone());
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let updates_clone = updates.clone();
+        executor.set_state_hook(move |state| {
+            let _ = &guard;
+            updates_clone.lock().unwrap().push(state);
+        });
+
+        let addr = Address::with_last_byte(0xab);
+        executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
+        assert!(!hook_dropped.load(Ordering::SeqCst));
+
+        let sealed = SealedBlock::seal(executor);
+        assert!(
+            hook_dropped.load(Ordering::SeqCst),
+            "state hook must drop during seal()"
+        );
+
+        let (output, _bal) = sealed.into_output();
+        assert!(output.state.state().contains_key(&addr));
+        assert_eq!(updates.lock().unwrap().len(), 1);
     }
 }

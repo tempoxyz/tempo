@@ -53,10 +53,11 @@ templates:
   zone_deposit:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    # ~160K used warm; a portal's first deposit creates its cursor slots and peaks near 2M before
-    # refunds (a revert would leave it cold). The general lane admits a transaction only while
-    # used gas plus its limit fits, so oversized limits strand capacity.
-    gas_limit: 2500000
+    # ~160K used warm; a portal's first deposit creates its cursor slots and, on the T15 portal
+    # runtime with deposit checkpoints, uses ~2.42M (a revert would leave it cold). The general
+    # lane admits a transaction only while used gas plus its limit fits, so oversized limits
+    # strand capacity.
+    gas_limit: 3000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
       - to: {var: setup.portal.address}
@@ -78,7 +79,9 @@ templates:
   zone_withdraw:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    gas_limit: 2500000 # ~160K used warm; see zone_deposit
+    # A portal's first withdrawal needs ~2.93M on the T15 portal runtime (~690K warm); below
+    # that it runs out of gas and the sample reverts without data. See zone_deposit.
+    gas_limit: 3500000
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
       - to: {var: setup.settlement.address}
