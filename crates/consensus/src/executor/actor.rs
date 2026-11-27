@@ -367,11 +367,6 @@ where
             public_key,
             finalized_reporter,
         } = config;
-        ensure!(
-            finalized_tip.1 >= finalized_floor,
-            "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",
-            finalized_tip.1,
-        );
         let metrics = Metrics::init(&context);
 
         let execution_finalized_num_hash = execution_node.finalized_num_hash();
@@ -493,6 +488,22 @@ where
             });
             return;
         }
+
+        if let Err(error) = self.ensure_finalized_tip_matches_marshal().await {
+            error_span!("shutdown").in_scope(|| {
+                error!(
+                    %error,
+                    "executor failed startup finality check",
+                )
+            });
+            return;
+        }
+
+        // The floor can sit above the last stored certificate (see
+        // `alias::marshal::init`). Backfilled blocks are final, so network
+        // finality starts no lower than them.
+        let (round, height, digest) = self.delivered_finalized_tip;
+        self.record_finalized_tip(round, height, digest);
 
         info_span!("start").in_scope(|| {
             let canonicalized = self.local_state;
@@ -1287,6 +1298,30 @@ where
                     })?;
             }
         }
+        Ok(())
+    }
+
+    /// Errors unless marshal finalized the startup tip's digest at its height,
+    /// when that tip sits above the last stored certificate.
+    ///
+    /// With the execution layer already at the floor the backfill is empty, so
+    /// the tip's digest comes from the execution layer alone. It must not be
+    /// promoted past the certified tip without marshal, which processed every
+    /// block up to the floor, agreeing on it.
+    #[instrument(skip_all, err)]
+    async fn ensure_finalized_tip_matches_marshal(&mut self) -> eyre::Result<()> {
+        let (_, height, digest) = self.delivered_finalized_tip;
+        if height <= self.network_finalized_tip.1 {
+            return Ok(());
+        }
+        let Some((_, finalized)) = self.marshal.get_info(height).await else {
+            bail!("marshal has no finalized block at the startup finalized height `{height}`");
+        };
+        ensure!(
+            finalized == digest,
+            "execution layer block `{digest}` at height `{height}` differs from marshal's \
+             finalized block `{finalized}`; execution and consensus storage are inconsistent",
+        );
         Ok(())
     }
 

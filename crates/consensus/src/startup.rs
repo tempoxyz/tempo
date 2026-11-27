@@ -50,7 +50,6 @@ pub(crate) fn verify_finalized_tip(
     let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, trusted.identity);
     if let Some((height, certificate)) = tip {
         ensure!(!height.is_zero(), "genesis must not have a certificate");
-        ensure!(height >= finalized_floor, "tip is below the floor");
 
         let cert_epoch = certificate.proposal.round.epoch();
         if cert_epoch.get() < trusted.from_epoch {

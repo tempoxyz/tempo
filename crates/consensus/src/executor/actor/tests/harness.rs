@@ -1090,12 +1090,22 @@ impl Marshal for FakeMarshal {
     }
 
     fn get_info(&self, height: Height) -> impl Future<Output = Option<(Height, Digest)>> + Send {
+        // Like Commonware's marshal, fall back to the finalized block when no
+        // finalization is stored for the height.
         let info = self
             .inner
             .infos
             .lock()
             .get(&height.get())
-            .map(|digest| (height, *digest));
+            .copied()
+            .or_else(|| {
+                self.inner
+                    .blocks
+                    .lock()
+                    .get(&height.get())
+                    .map(|block| block.digest())
+            })
+            .map(|digest| (height, digest));
         async move { info }
     }
 

@@ -254,17 +254,25 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
             )
             .is_err()
         );
-        assert!(
-            verify_finalized_tip(
-                &mut context,
-                &configured_identity,
-                None,
-                Some((valid.0, &valid.1)),
-                Height::new(13),
-                &SchemeProvider::new(),
-            )
-            .is_err()
-        );
+    });
+}
+
+#[test]
+fn startup_accepts_a_tip_below_the_processed_floor() {
+    Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::new(0));
+        let configured_identity = identity(&fixture);
+        let (height, certificate) = tip(&fixture, 1);
+        let trusted = verify_finalized_tip(
+            &mut context,
+            &configured_identity,
+            None,
+            Some((height, &certificate)),
+            height.next(),
+            &SchemeProvider::new(),
+        )
+        .expect("a tip below the floor must be accepted");
+        assert_eq!(trusted, configured_identity);
     });
 }
 
