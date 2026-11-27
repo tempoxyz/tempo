@@ -654,7 +654,7 @@ where
                 // for a 2D or expiring nonce transaction is its lane nonce. The contract is
                 // deployed at the sender's account nonce instead, so report that address when
                 // it can be determined from the block, and no address otherwise.
-                if receipt.inner.contract_address.is_some() && is_lane(tx.nonce_key()) {
+                if receipt.inner.contract_address.is_some() && !is_protocol_nonce(tx.nonce_key()) {
                     receipt.inner.contract_address = lane_creates.get(&index).copied();
                 }
 
@@ -693,7 +693,9 @@ where
     ) -> Result<HashMap<u64, Address>, ProviderError> {
         let senders = receipts
             .iter()
-            .filter(|r| r.receipt.success && r.tx.kind().is_create() && is_lane(r.tx.nonce_key()))
+            .filter(|r| {
+                r.receipt.success && r.tx.kind().is_create() && !is_protocol_nonce(r.tx.nonce_key())
+            })
             .map(|r| r.tx.signer())
             .collect::<HashSet<_>>();
         let Some(block_hash) = receipts.first().map(|r| r.meta.block_hash) else {
@@ -739,7 +741,7 @@ where
                     if *signer != sender {
                         continue;
                     }
-                    if is_lane(tx.nonce_key()) {
+                    if !is_protocol_nonce(tx.nonce_key()) {
                         if !tx.kind().is_create() || !success.get(&index).copied().unwrap_or(true) {
                             continue;
                         }
@@ -764,9 +766,10 @@ where
     }
 }
 
-/// Returns whether a transaction with `nonce_key` uses a 2D or expiring nonce.
-fn is_lane(nonce_key: Option<U256>) -> bool {
-    nonce_key.is_some_and(|key| !key.is_zero())
+/// Returns whether a transaction with `nonce_key` uses the account's protocol nonce: it is not a
+/// Tempo transaction, or its nonce key is zero.
+fn is_protocol_nonce(nonce_key: Option<U256>) -> bool {
+    nonce_key.is_none_or(|key| key.is_zero())
 }
 
 #[derive(Debug)]
