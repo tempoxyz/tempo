@@ -1092,7 +1092,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     }
 
     fn set_state_hook(&mut self, hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
-        self.inner.set_state_hook(hook);
+        if self.evm().ext().batch_state_hook {
+            let mut batched = LazyBatchedStateHook::new(hook);
+            self.inner
+                .set_state_hook(move |state| batched.on_state(state));
+        } else {
+            self.inner.set_state_hook(hook);
+        }
         true
     }
 
@@ -1153,6 +1159,167 @@ impl TempoBlockExecutor<'_> {
     /// Get the current section for assertions.
     pub(crate) fn section(&self) -> BlockSection {
         self.section
+    }
+}
+
+/// Number of transaction `StateUpdate`s batched per state-root worker message.
+pub const STATE_HOOK_BATCH_SIZE: usize = 32;
+
+/// Reusable scratch tables for [`merge_and_emit_state_updates`].
+#[derive(Default)]
+pub struct StateUpdateMergeScratch {
+    account_idx: alloy_primitives::map::AddressHashMap<usize>,
+    storage_idxs: Vec<alloy_primitives::map::HashMap<U256, usize>>,
+}
+
+/// Merges a batch of sequential per-transaction [`StateUpdate`]s, deduplicating hot accounts and
+/// storage slots before forwarding to `emit`. Flushes immediately before any destructive update
+/// (`current.is_none() || wiped`) so trie deletion/wipe semantics are preserved exactly.
+pub fn merge_and_emit_state_updates(
+    batch: Vec<StateUpdate>,
+    scratch: &mut StateUpdateMergeScratch,
+    mut emit: impl FnMut(StateUpdate),
+) {
+    let mut merged_accounts = Vec::new();
+    scratch.account_idx.clear();
+    scratch.storage_idxs.clear();
+
+    for update in batch {
+        if update.is_empty() {
+            continue;
+        }
+        let has_destructive = update
+            .accounts
+            .iter()
+            .any(|account| account.current.is_none() || account.wiped);
+        if has_destructive {
+            if !merged_accounts.is_empty() {
+                emit(StateUpdate {
+                    accounts: core::mem::take(&mut merged_accounts),
+                });
+                scratch.account_idx.clear();
+                scratch.storage_idxs.clear();
+            }
+            emit(update);
+            continue;
+        }
+
+        for account in update.accounts {
+            if let Some(&idx) = scratch.account_idx.get(&account.address) {
+                let existing = &mut merged_accounts[idx];
+                existing.current = account.current;
+                existing.created |= account.created;
+                if !account.storage.is_empty() {
+                    let slot_map = &mut scratch.storage_idxs[idx];
+                    if slot_map.is_empty() && !existing.storage.is_empty() {
+                        slot_map.reserve(existing.storage.len() + account.storage.len());
+                        for (sidx, (k, _)) in existing.storage.iter().enumerate() {
+                            slot_map.insert(*k, sidx);
+                        }
+                    }
+                    for (key, slot) in account.storage {
+                        if let Some(&sidx) = slot_map.get(&key) {
+                            existing.storage[sidx].1.present_value = slot.present_value;
+                        } else {
+                            let sidx = existing.storage.len();
+                            existing.storage.push((key, slot));
+                            slot_map.insert(key, sidx);
+                        }
+                    }
+                }
+            } else {
+                let idx = merged_accounts.len();
+                scratch.account_idx.insert(account.address, idx);
+                merged_accounts.push(account);
+                scratch.storage_idxs.push(Default::default());
+            }
+        }
+    }
+
+    if !merged_accounts.is_empty() {
+        emit(StateUpdate {
+            accounts: merged_accounts,
+        });
+        scratch.account_idx.clear();
+        scratch.storage_idxs.clear();
+    }
+}
+
+enum LazyHookWorker<F> {
+    Pending(Option<F>),
+    Running {
+        tx: std::sync::mpsc::Sender<Vec<StateUpdate>>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    },
+}
+
+struct LazyBatchedStateHook<F: FnMut(StateUpdate) + Send + 'static> {
+    worker: LazyHookWorker<F>,
+    batch: Vec<StateUpdate>,
+}
+
+impl<F: FnMut(StateUpdate) + Send + 'static> LazyBatchedStateHook<F> {
+    fn new(hook: F) -> Self {
+        Self {
+            worker: LazyHookWorker::Pending(Some(hook)),
+            batch: Vec::new(),
+        }
+    }
+
+    #[cold]
+    fn start_worker(&mut self) {
+        let LazyHookWorker::Pending(ref mut slot) = self.worker else {
+            return;
+        };
+        let Some(mut hook) = slot.take() else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<StateUpdate>>();
+        let handle = std::thread::Builder::new()
+            .name("state-hook".to_string())
+            .spawn(move || {
+                let mut scratch = StateUpdateMergeScratch::default();
+                while let Ok(batch) = rx.recv() {
+                    merge_and_emit_state_updates(batch, &mut scratch, &mut hook);
+                }
+            })
+            .ok();
+        self.worker = LazyHookWorker::Running { tx, handle };
+        self.batch.reserve(STATE_HOOK_BATCH_SIZE);
+    }
+
+    #[inline]
+    fn on_state(&mut self, state: StateUpdate) {
+        if state.is_empty() {
+            return;
+        }
+        if matches!(self.worker, LazyHookWorker::Pending(_)) {
+            self.start_worker();
+        }
+        self.batch.push(state);
+        if self.batch.len() >= STATE_HOOK_BATCH_SIZE {
+            let batch =
+                core::mem::replace(&mut self.batch, Vec::with_capacity(STATE_HOOK_BATCH_SIZE));
+            if let LazyHookWorker::Running { tx, .. } = &self.worker {
+                let _ = tx.send(batch);
+            }
+        }
+    }
+}
+
+impl<F: FnMut(StateUpdate) + Send + 'static> Drop for LazyBatchedStateHook<F> {
+    fn drop(&mut self) {
+        if let LazyHookWorker::Running { tx, handle } = &mut self.worker {
+            if !std::thread::panicking() && !self.batch.is_empty() {
+                let _ = tx.send(core::mem::take(&mut self.batch));
+            }
+            let handle = handle.take();
+            // Drop sender before joining so the worker exits after flushing.
+            self.worker = LazyHookWorker::Pending(None);
+            if let Some(h) = handle {
+                let _ = h.join();
+            }
+        }
     }
 }
 

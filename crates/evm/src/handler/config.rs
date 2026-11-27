@@ -110,6 +110,10 @@ pub struct TempoEvmExt {
     pub resolved_fee_token: Option<ResolvedFeeToken>,
     /// Access-key expiry resolved for the most recently handled transaction.
     pub key_expiry: Option<u64>,
+    /// Whether TempoBlockExecutor::set_state_hook should batch and deduplicate
+    /// per-transaction state updates on a background worker thread.
+    #[doc(hidden)]
+    pub batch_state_hook: bool,
 }
 
 impl Default for TempoEvmExt {
@@ -131,6 +135,7 @@ impl TempoEvmExt {
             skip_liquidity_check: false,
             resolved_fee_token: None,
             key_expiry: None,
+            batch_state_hook: false,
         }
     }
 }

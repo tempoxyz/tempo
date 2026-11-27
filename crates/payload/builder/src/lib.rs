@@ -433,7 +433,8 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = handle.take_state_hook();
+            let mut state_hook = handle.take_state_hook();
+            let mut hook = self.spawn_batched_state_hook(move |state| state_hook.on_state(state));
             executor.set_state_hook(move |state| hook.on_state(state));
         }
 
@@ -1135,6 +1136,23 @@ where
         Ok(BuildOutcome::Freeze(payload))
     }
 
+    /// Spawns a background task that batches and deduplicates per-transaction state updates
+    /// before forwarding them to the parallel state-root hook.
+    fn spawn_batched_state_hook(
+        &self,
+        mut on_state: impl FnMut(reth_evm::StateUpdate) + Send + 'static,
+    ) -> BatchedStateHook {
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<reth_evm::StateUpdate>>();
+        self.executor
+            .spawn_blocking_named("builder-state-hook", move || {
+                let mut scratch = tempo_evm::StateUpdateMergeScratch::default();
+                while let Ok(batch) = rx.recv() {
+                    tempo_evm::merge_and_emit_state_updates(batch, &mut scratch, &mut on_state);
+                }
+            });
+        BatchedStateHook::new(tx)
+    }
+
     fn spawn_roots_task(
         &self,
     ) -> (
@@ -1235,6 +1253,49 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
+}
+
+use tempo_evm::STATE_HOOK_BATCH_SIZE;
+
+struct BatchedStateHook {
+    tx: Option<Sender<Vec<reth_evm::StateUpdate>>>,
+    batch: Vec<reth_evm::StateUpdate>,
+}
+
+impl BatchedStateHook {
+    fn new(tx: Sender<Vec<reth_evm::StateUpdate>>) -> Self {
+        Self {
+            tx: Some(tx),
+            batch: Vec::with_capacity(STATE_HOOK_BATCH_SIZE),
+        }
+    }
+
+    #[inline]
+    fn on_state(&mut self, state: reth_evm::StateUpdate) {
+        if state.is_empty() {
+            return;
+        }
+        self.batch.push(state);
+        if self.batch.len() >= STATE_HOOK_BATCH_SIZE {
+            let batch =
+                std::mem::replace(&mut self.batch, Vec::with_capacity(STATE_HOOK_BATCH_SIZE));
+            if let Some(tx) = &self.tx {
+                let _ = tx.send(batch);
+            }
+        }
+    }
+}
+
+impl Drop for BatchedStateHook {
+    fn drop(&mut self) {
+        if !std::thread::panicking()
+            && !self.batch.is_empty()
+            && let Some(tx) = &self.tx
+        {
+            let _ = tx.send(std::mem::take(&mut self.batch));
+        }
+        drop(self.tx.take());
+    }
 }
 
 #[cfg(test)]
