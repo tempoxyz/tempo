@@ -39,8 +39,9 @@ use crate::{
     error::AuthenticateError,
     handlers::ZoneRpcApi,
     server::{
-        MAX_BATCH_SIZE, RpcState, append_batch_response, authenticate_token, dispatch_request,
-        ensure_not_retired_root, serialize_response_with_limit, validate_keychain_key_info,
+        ConnectionPermit, MAX_BATCH_SIZE, RpcState, append_batch_response, authenticate_token,
+        dispatch_request, ensure_not_retired_root, serialize_response_with_limit,
+        validate_keychain_key_info,
     },
     subscription::WsSubscriptionStream,
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, to_raw},
@@ -528,6 +529,7 @@ fn ensure_signed_configuration(
 
 /// WebSocket upgrade handler — authenticates via header or `?token=` query param.
 pub(crate) async fn handle_ws_upgrade(
+    permit: ConnectionPermit,
     State(state): State<Arc<RpcState>>,
     headers: HeaderMap,
     Query(query): Query<WsQuery>,
@@ -553,7 +555,10 @@ pub(crate) async fn handle_ws_upgrade(
     };
 
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| handle_ws_session(socket, auth, state))
+        .on_upgrade(move |socket| async move {
+            handle_ws_session(socket, auth, state).await;
+            drop(permit);
+        })
         .into_response()
 }
 

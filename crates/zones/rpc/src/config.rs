@@ -23,6 +23,12 @@ pub struct RedactedRpcConfig {
     /// The node sets this from reth's `rpc.max-response-size` so the regular and redacted
     /// transports enforce the same response budget.
     pub max_response_size: usize,
+    /// Maximum number of concurrent HTTP requests and WebSocket sessions.
+    ///
+    /// Requests past the limit are rejected with `429 Too Many Requests`. The node sets this from
+    /// reth's `rpc.max-connections`, so the redacted server gets the same connection budget as each
+    /// regular RPC server.
+    pub max_connections: u32,
     /// The ZonePortal contract address on L1 (used for querying deposits, not for auth tokens).
     pub zone_portal: alloy_primitives::Address,
 }

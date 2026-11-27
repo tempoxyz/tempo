@@ -964,6 +964,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--withdrawal-max-batch-gas` | 10000000 | Maximum planned gas for one `processWithdrawals` transaction (up to 20000000); an oversized FIFO head is still sent alone |
 | `--withdrawal-max-in-flight-batches` | 8 | Maximum ordered withdrawal transactions kept concurrently in flight |
 | `--http.port` | 8546 | HTTP JSON-RPC port |
+| `--rpc.max-connections` | 500 | Maximum concurrent connections per RPC server. The redacted RPC applies the same limit to its in-flight HTTP requests and WebSocket sessions and rejects the rest with `429 Too Many Requests`. |
 | `--redacted-rpc.port` | 8544 | Redacted RPC server port |
 | `--redacted-rpc.max-auth-token-validity-secs` | 2592000 | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
 

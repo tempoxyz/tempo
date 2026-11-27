@@ -806,6 +806,7 @@ where
             .rpc_max_response_size
             .get()
             .saturating_mul(1024 * 1024) as usize;
+        let max_connections = ctx.config.rpc.rpc_max_connections.get();
         let provider = ctx.node.provider().clone();
         let zone_provider = provider.clone();
         let pool = ctx.node.pool().clone();
@@ -952,6 +953,7 @@ where
             self.l1_state_cache.clone(),
             chain_id,
             max_response_size,
+            max_connections,
         )
         .await?;
 
@@ -1639,6 +1641,7 @@ where
         l1_state_cache: L1StateCache,
         chain_id: u64,
         max_response_size: usize,
+        max_connections: u32,
     ) -> eyre::Result<()> {
         let eth_handlers = handle.eth_handlers().clone();
         let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -1654,6 +1657,7 @@ where
             chain_id,
             max_auth_token_validity: config.max_auth_token_validity,
             max_response_size,
+            max_connections,
             zone_portal: portal_address,
         };
         let api: Arc<dyn ZoneRpcApi> = Arc::new(ZoneRpc::new(

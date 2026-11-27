@@ -4375,6 +4375,7 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 160 * 1024 * 1024,
+        max_connections: 500,
         zone_portal: Address::ZERO,
     };
 
@@ -4419,6 +4420,7 @@ pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption(
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 160 * 1024 * 1024,
+        max_connections: 500,
         zone_portal: portal_address,
     };
 

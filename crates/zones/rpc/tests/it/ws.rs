@@ -289,16 +289,17 @@ impl TestContext {
     }
 
     async fn start_shared(api: Arc<MockZoneRpcApi>) -> Self {
-        Self::start_shared_with_max_response_size(api, 160 * 1024 * 1024).await
+        Self::start_shared_with_limits(api, 160 * 1024 * 1024, 500).await
     }
 
     async fn start_with_max_response_size(api: MockZoneRpcApi, max_response_size: usize) -> Self {
-        Self::start_shared_with_max_response_size(Arc::new(api), max_response_size).await
+        Self::start_shared_with_limits(Arc::new(api), max_response_size, 500).await
     }
 
-    async fn start_shared_with_max_response_size(
+    async fn start_shared_with_limits(
         api: Arc<MockZoneRpcApi>,
         max_response_size: usize,
+        max_connections: u32,
     ) -> Self {
         let signer = PrivateKeySigner::random();
         let config = RedactedRpcConfig {
@@ -307,6 +308,7 @@ impl TestContext {
             chain_id: CHAIN_ID,
             max_auth_token_validity: zone_rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
             max_response_size,
+            max_connections,
             zone_portal: Address::ZERO,
         };
         let addr = start_redacted_rpc(config, api).await.unwrap();
@@ -327,6 +329,17 @@ impl TestContext {
 
     fn ws_url(&self) -> String {
         format!("ws://{}", self.addr)
+    }
+
+    /// Send an authenticated JSON-RPC request over HTTP.
+    async fn http_request(&self, body: String) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(format!("http://{}", self.addr))
+            .header("x-authorization-token", self.build_token())
+            .body(body)
+            .send()
+            .await
+            .expect("http request failed")
     }
 }
 
@@ -542,6 +555,49 @@ async fn ws_batch_response_limit_is_aggregate() {
         resp["error"]["data"],
         format!("Exceeded max limit of {max_response_size}")
     );
+}
+
+#[tokio::test]
+async fn ws_rejects_requests_past_max_connections() {
+    let ctx =
+        TestContext::start_shared_with_limits(Arc::new(MockZoneRpcApi::default()), 1 << 20, 1)
+            .await;
+    let mut ws = connect_with_header(&ctx).await;
+
+    // The open session holds the only permit, so upgrades and HTTP requests are rejected.
+    let err = connect_with_token(&ctx.ws_url(), ctx.addr, &ctx.build_token())
+        .await
+        .expect_err("a second session exceeds the connection limit");
+    let tungstenite::Error::Http(response) = err else {
+        panic!("expected HTTP error, got {err:?}");
+    };
+    assert_eq!(response.status(), 429);
+    let response = ctx.http_request(jsonrpc("eth_blockNumber", 1)).await;
+    assert_eq!(response.status(), 429);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "Too many connections. Please try again later."
+    );
+
+    // Closing the session releases its permit.
+    ws.close(None).await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let response = ctx.http_request(jsonrpc("eth_blockNumber", 2)).await;
+            if response.status() != 429 {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the closed session to release its permit");
+    assert_eq!(response.status(), 200);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["result"], "0x42");
+
+    // The HTTP request released its permit before responding.
+    connect_with_header(&ctx).await;
 }
 
 #[tokio::test]

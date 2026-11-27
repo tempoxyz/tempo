@@ -8,8 +8,8 @@
 use axum::{
     Router,
     body::Bytes,
-    extract::State,
-    http::{HeaderMap, StatusCode, header},
+    extract::{FromRequestParts, State},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     response::IntoResponse,
     routing::{get, post},
 };
@@ -18,6 +18,7 @@ use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
 };
 use tempo_primitives::transaction::tt_signature::TempoSignature;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 
 use crate::{
@@ -25,7 +26,7 @@ use crate::{
     config::RedactedRpcConfig,
     error::{AuthError, AuthenticateError},
     handlers::{self, ZoneRpcApi},
-    metrics::{RedactedRpcAuthMetrics, RedactedRpcCallMetrics},
+    metrics::{RedactedRpcAuthMetrics, RedactedRpcCallMetrics, RedactedRpcConnectionMetrics},
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
     ws::handle_ws_upgrade,
 };
@@ -42,6 +43,10 @@ pub struct RpcState {
     pub api: Arc<dyn ZoneRpcApi>,
     /// Authentication failure metric for the redacted RPC.
     auth_metrics: RedactedRpcAuthMetrics,
+    /// Permits for concurrent HTTP requests and WebSocket sessions.
+    connections: Arc<Semaphore>,
+    /// Connection limit metrics for the redacted RPC.
+    connection_metrics: RedactedRpcConnectionMetrics,
 }
 
 /// Start the redacted zone RPC server.
@@ -54,9 +59,11 @@ pub async fn start_redacted_rpc(
 ) -> eyre::Result<std::net::SocketAddr> {
     let listen_addr = config.listen_addr;
     let state = Arc::new(RpcState {
+        connections: Arc::new(Semaphore::new(config.max_connections as usize)),
         config,
         api,
         auth_metrics: RedactedRpcAuthMetrics::default(),
+        connection_metrics: RedactedRpcConnectionMetrics::default(),
     });
 
     let app = Router::new()
@@ -90,6 +97,38 @@ impl IntoResponse for RpcResult {
 impl RpcResult {
     fn single(response: JsonRpcResponse, max_response_size: usize) -> Self {
         Self(serialize_response_with_limit(response, max_response_size))
+    }
+}
+
+/// Connection limit permit, held for one HTTP request or for a WebSocket session's lifetime.
+///
+/// Handlers extract it before the request body and authentication, so a rejected request costs
+/// neither.
+pub(crate) struct ConnectionPermit(
+    #[expect(dead_code, reason = "dropping the permit frees its connection slot")]
+    OwnedSemaphorePermit,
+);
+
+impl FromRequestParts<Arc<RpcState>> for ConnectionPermit {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(
+        _parts: &mut Parts,
+        state: &Arc<RpcState>,
+    ) -> Result<Self, Self::Rejection> {
+        state
+            .connections
+            .clone()
+            .try_acquire_owned()
+            .map(Self)
+            .map_err(|_| {
+                state.connection_metrics.rejected_total.increment(1);
+                // The response reth's RPC server sends past `rpc.max-connections`.
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many connections. Please try again later.",
+                )
+            })
     }
 }
 
@@ -261,6 +300,7 @@ pub(crate) async fn dispatch_request(
 
 /// Main HTTP RPC handler — authenticates, dispatches, returns response.
 async fn handle_rpc(
+    _permit: ConnectionPermit,
     State(state): State<Arc<RpcState>>,
     headers: HeaderMap,
     body: Bytes,
@@ -558,6 +598,7 @@ mod tests {
             chain_id: CHAIN_ID,
             max_auth_token_validity: crate::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
             max_response_size: 160 * 1024 * 1024,
+            max_connections: 500,
             zone_portal: PORTAL,
         }
     }
