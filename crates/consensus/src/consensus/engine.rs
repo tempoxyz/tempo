@@ -152,24 +152,7 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
-        // The executor acknowledges finalized blocks only once the execution
-        // layer durably persisted them, which reth does in batches. Reth holds
-        // up to `persistence_backpressure_threshold + memory_block_buffer_target`
-        // unpersisted canonical blocks in memory before it stops processing
-        // engine requests, so marshal may dispatch as many unacknowledged
-        // blocks. Acknowledgements cannot stall with the queue full: reth's
-        // config validation requires this depth to exceed
-        // `persistence_threshold`, which must be crossed for reth to persist
-        // at all, and that in turn to exceed
-        // `memory_block_buffer_target + num_state_masking_blocks`, by which
-        // the durable frontier trails the head after a persistence run.
-        let engine_args = &execution_node.config.engine;
-        let max_pending_acks = engine_args
-            .persistence_backpressure_threshold()
-            .checked_add(engine_args.memory_block_buffer_target())
-            .and_then(|acks| usize::try_from(acks).ok())
-            .and_then(NonZeroUsize::new)
-            .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
+        let max_pending_acks = alias::marshal::max_pending_acks(&execution_node)?;
 
         // Boxed because marshal's init future is deeply nested: inlining it into
         // callers such as tempo-e2e's `TestingNode::start_inner` makes computing

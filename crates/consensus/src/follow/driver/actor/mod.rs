@@ -221,6 +221,12 @@ where
     }
 
     /// Fills in the missing scheme if the execution layer did not persist.
+    ///
+    /// Only nodes whose consensus state is ahead of the execution layer from
+    /// before acknowledgements waited on persistence need this.
+    ///
+    /// TODO: remove after the next release, as the consensus layer now only
+    /// progresses on reth's persistence.
     #[instrument(skip_all, err(Display))]
     async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
         let last_finalized_height = self.config.last_finalized_height;

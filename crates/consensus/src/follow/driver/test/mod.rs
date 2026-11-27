@@ -1696,6 +1696,54 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 }
 
 #[test_traced]
+fn startup_seeds_from_the_execution_finalized_boundary_without_reading_marshal() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let fixture = dkg_fixture(&mut context, Epoch::new(1));
+        let execution_boundary = strategy.last(Epoch::zero()).unwrap();
+        // The floor sits in epoch 3, but the execution layer lags at epoch 0's boundary.
+        let floor = Height::new(3 * EPOCH_LENGTH.get() + 1);
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(execution_boundary.get());
+        provider.add_header(&make_block(
+            execution_boundary.get(),
+            Some(&fixture.outcome),
+        ));
+        let marshal = StubMarshal::default();
+        let schemes = SchemeProvider::new();
+        let result = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider.clone(),
+                scheme_provider: schemes.clone(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *fixture.outcome.network_identity(),
+                },
+                last_finalized_height: floor,
+                finalized_tip: Some((
+                    floor,
+                    make_finalization(
+                        &make_block(floor.get(), None),
+                        Epoch::new(3),
+                        &fixture.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
+                marshal: marshal.clone(),
+                epoch_strategy: strategy.clone(),
+            },
+        )
+        .await;
+
+        assert!(result.is_ok(), "{:?}", result.err());
+        assert_eq!(provider.header_reads(), vec![execution_boundary.get()]);
+        assert!(marshal.block_reads().is_empty());
+        assert!(schemes.scoped(Epoch::new(1)).is_some());
+    });
+}
+
+#[test_traced]
 fn non_finalized_events_are_ignored() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
