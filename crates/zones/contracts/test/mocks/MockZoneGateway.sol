@@ -39,8 +39,18 @@ contract MockZoneGateway is IWithdrawalReceiver {
 
     bool public returnToZone = true;
 
+    /// @notice When set, the return deposit passes the Portal's own fee quote as its `maxFee`.
+    bool public capAtQuotedFee;
+
+    /// @notice The fee quote read inside the last callback that capped at it.
+    uint128 public lastQuotedFee;
+
     function setReturnToZone(bool enabled) external {
         returnToZone = enabled;
+    }
+
+    function setCapAtQuotedFee(bool enabled) external {
+        capAtQuotedFee = enabled;
     }
 
     function onWithdrawalReceived(
@@ -73,10 +83,22 @@ contract MockZoneGateway is IWithdrawalReceiver {
 
         // The mock returns the received token. The production gateway owns conversion semantics.
         if (!ITIP20(token).approve(sourcePortal, amount)) revert ApprovalFailed();
-        IZonePortal(sourcePortal)
-            .deposit(
+        if (capAtQuotedFee) {
+            uint128 quotedFee = portal.calculateDepositFee();
+            lastQuotedFee = quotedFee;
+            portal.deposit(
+                token,
+                amount,
+                callback.keyIndex,
+                callback.encrypted,
+                callback.tempoRefundRecipient,
+                quotedFee
+            );
+        } else {
+            portal.deposit(
                 token, amount, callback.keyIndex, callback.encrypted, callback.tempoRefundRecipient
             );
+        }
         if (!ITIP20(token).approve(sourcePortal, 0)) revert ApprovalFailed();
 
         return IWithdrawalReceiver.onWithdrawalReceived.selector;

@@ -3886,6 +3886,56 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(admin), adminBalance);
     }
 
+    function test_callbackWithdrawal_quotesFeeItIsCharged() public {
+        uint128 amount = 500e6;
+        _fundCallbackWithdrawal(amount);
+        _setZoneGasRate(1);
+        zoneGateway.setCapAtQuotedFee(true);
+
+        bytes memory callbackData = _callbackData(GatewayFlow.Deposit);
+        Withdrawal memory withdrawal = _withdrawal(
+            address(pathUSD),
+            alice,
+            address(zoneGateway),
+            amount,
+            bytes32(0),
+            2_000_000,
+            alice,
+            callbackData
+        );
+        _enqueueWithdrawal(withdrawal);
+
+        _depositMany(portal.DEPOSITS_PER_CONGESTION_TIER(), 1e6);
+        vm.roll(block.number + 1);
+        uint128 operationalFee = uint128(portal.FIXED_DEPOSIT_GAS()) * portal.zoneGasRate();
+        assertGt(operationalFee, 0);
+        assertGt(portal.calculateDepositFee(), operationalFee);
+
+        bytes32 queueHashBefore = portal.currentDepositQueueHash();
+        GatewayCallbackData memory callback = abi.decode(callbackData, (GatewayCallbackData));
+        Deposit memory expectedDeposit = Deposit({
+            token: address(pathUSD),
+            sender: address(zoneGateway),
+            amount: amount - operationalFee,
+            tempoRefundRecipient: alice,
+            keyIndex: callback.keyIndex,
+            encrypted: callback.encrypted
+        });
+        uint256 adminBalance = pathUSD.balanceOf(admin);
+
+        portal.processWithdrawals(_singleWithdrawal(withdrawal), bytes32(0));
+
+        // The callback's quote leaves out the premium its deposit is exempt from, so capping the
+        // deposit at that quote appends it instead of reverting with FeeTooHigh and bouncing.
+        assertEq(zoneGateway.lastQuotedFee(), operationalFee);
+        assertEq(
+            portal.currentDepositQueueHash(),
+            DepositQueueLib.enqueueDeposit(queueHashBefore, expectedDeposit)
+        );
+        assertEq(pathUSD.balanceOf(admin), adminBalance + operationalFee);
+        assertGt(portal.calculateDepositFee(), operationalFee);
+    }
+
     function test_callbackWithdrawal_completingBucketSpendsCredit() public {
         // The checkpoint write inside the callback spends the portal's credit directly.
         assertTrue(_callbackDepositCompletingBucket(400_000, 1));

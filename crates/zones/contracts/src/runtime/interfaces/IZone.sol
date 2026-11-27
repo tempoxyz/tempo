@@ -986,6 +986,8 @@ interface IZonePortal {
 
     /// @notice Total deposit fee from the current state: operational fee plus congestion premium.
     /// @dev Exact for the next block, and never below a later deposit's fee in the current block.
+    ///      Inside a withdrawal callback whose deposit is still unused, returns the operational fee
+    ///      alone, which is what that premium-exempt deposit is charged.
     function calculateDepositFee() external view returns (uint128 fee);
 
     /// @notice Calculate the reserved Tempo-side fee for a failed-deposit bounce-back

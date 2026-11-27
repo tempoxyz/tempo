@@ -986,7 +986,11 @@ contract ZonePortal is IZonePortal {
     /// @inheritdoc IZonePortal
     /// @return fee The deposit fee in zone token units
     function calculateDepositFee() external view returns (uint128 fee) {
-        fee = _operationalDepositFee() + _congestionFee(_unsettledCongestionTier());
+        fee = _operationalDepositFee();
+        // Match _chargeDepositFee: a withdrawal callback's one deposit pays no premium.
+        if (_withdrawalReentrancyStatus != CALLBACK_DEPOSIT_AVAILABLE) {
+            fee += _congestionFee(_unsettledCongestionTier());
+        }
     }
 
     function _operationalDepositFee() internal view returns (uint128) {
