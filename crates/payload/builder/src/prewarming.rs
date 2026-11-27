@@ -2,15 +2,16 @@ use std::{
     collections::HashSet,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
 };
 
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, U256, map::HashMap};
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerStatefulPool};
 use reth_transaction_pool::{
@@ -33,6 +34,12 @@ pub(crate) struct BestTransactionsPrewarming {
     /// Lanes passed to [`BestTransactions::mark_invalid`]. Buffered transactions on them are
     /// skipped in [`Iterator::next`] instead of re-scanning the buffer on every invalidation.
     invalidated: InvalidatedLanes,
+    /// Whether transactions are forwarded after prewarming, see
+    /// [`PrewarmingExecutionContext::parallel`].
+    parallel: bool,
+    /// Transactions taken from `transactions_rx`, which bounds how far sequential prewarming runs
+    /// ahead of the builder.
+    received: Arc<AtomicUsize>,
 }
 
 impl BestTransactionsPrewarming {
@@ -47,11 +54,14 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        let received = Arc::new(AtomicUsize::new(0));
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
             invalidated: InvalidatedLanes::default(),
+            parallel: prewarm.parallel,
+            received: Arc::clone(&received),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -67,6 +77,9 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        forwarded: 0,
+                        received,
+                        insufficient_fee_balances: HashMap::default(),
                     },
                 );
             });
@@ -93,11 +106,25 @@ impl BestTransactionsPrewarming {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
+            // Returns false once the source is empty.
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
-                    return;
+                    return false;
                 };
+
+                let parallel = ctx.prewarm.parallel;
+                if !parallel {
+                    let _ = ctx
+                        .transactions_tx
+                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    ctx.forwarded += 1;
+                    // The builder will skip it without executing it.
+                    if ctx.fee_payer_is_insufficient(&tx) {
+                        return true;
+                    }
+                }
+
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -105,44 +132,47 @@ impl BestTransactionsPrewarming {
                 } else {
                     None
                 };
-
-                let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
-                let commands_tx = ctx.commands_tx.clone();
-                // Only parallel jobs send their result; in sequential mode the transaction is
-                // forwarded below before its prewarm job runs.
-                let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
-
-                if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
-                }
+                // Only parallel jobs send their result and ask for the next transaction; in
+                // sequential mode the transaction is forwarded above before its prewarm job
+                // runs, and the builder asks for the next one.
+                let parallel_txs =
+                    parallel.then(|| (ctx.transactions_tx.clone(), ctx.commands_tx.clone()));
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                    if let Some(transactions_tx) = transactions_tx {
+                    if let Some((transactions_tx, commands_tx)) = parallel_txs {
                         let _ = transactions_tx.send(Some(tx));
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
+                true
             };
 
+            // We keep 2x the number of threads in flight to make sure that workers are never idle.
+            let lookahead = pool.current_num_threads() * 2;
+
             // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            for _ in 0..lookahead {
                 advance(&mut ctx);
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
-                    BestTransactionsCommand::Advance => {
+                    BestTransactionsCommand::Advance if ctx.prewarm.parallel => {
                         advance(&mut ctx);
                     }
-                    BestTransactionsCommand::Invalid(invalid) => {
-                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+                    // Sequential prewarming stays at most `lookahead` transactions ahead of the
+                    // builder, so a run of transactions the builder skips is not prewarmed in
+                    // the meantime.
+                    BestTransactionsCommand::Advance => {
+                        while ctx.forwarded - ctx.received.load(Ordering::Relaxed) < lookahead {
+                            if !advance(&mut ctx) {
+                                break;
+                            }
+                        }
                     }
+                    BestTransactionsCommand::Invalid(invalid) => ctx.on_invalid(invalid),
                     BestTransactionsCommand::NoUpdates => {
                         ctx.best_txs.no_updates();
                     }
@@ -252,9 +282,13 @@ impl BestTransactionsPrewarming {
     /// Returns the next already-received transaction that is not on an invalidated lane.
     fn next_buffered(&mut self) -> Option<PrewarmedTransaction> {
         let invalidated = &self.invalidated;
+        let received = &self.received;
         self.transactions_rx
             .try_iter()
             .flatten()
+            .inspect(|_| {
+                received.fetch_add(1, Ordering::Relaxed);
+            })
             .find(|tx| !invalidated.contains(&tx.tx))
     }
 }
@@ -279,6 +313,10 @@ impl Iterator for BestTransactionsPrewarming {
             // Empty replies describe earlier source polls. Drain them before deciding
             // whether a ready transaction exists, preserving the order of actual txs.
             if let Some(tx) = self.next_buffered() {
+                if !self.parallel {
+                    // Refill the sequential lookahead.
+                    let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
+                }
                 return Some(tx);
             }
             self.commands_tx
@@ -287,7 +325,11 @@ impl Iterator for BestTransactionsPrewarming {
             // An eager advance can also reply empty while this receive is waiting.
             // Check for buffered transactions before reporting empty to the builder,
             // but do not wait for more replies: it must still check its build budget.
-            match self.transactions_rx.recv().ok()? {
+            let reply = self.transactions_rx.recv().ok()?;
+            if reply.is_some() {
+                self.received.fetch_add(1, Ordering::Relaxed);
+            }
+            match reply {
                 // The source yielded a transaction on an invalidated lane before it saw the
                 // invalidation; poll again for one the builder can use.
                 Some(tx) if self.invalidated.contains(&tx.tx) => continue,
@@ -332,6 +374,44 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    /// Transactions sent on `transactions_tx` in sequential mode.
+    forwarded: usize,
+    /// See [`BestTransactionsPrewarming::received`].
+    received: Arc<AtomicUsize>,
+    /// Fee payer balances reported by insufficient-funds invalidations, keyed by
+    /// `(fee_token, balance_slot)`. A balance topped up later in the block is not observed, which
+    /// only costs prewarming: inclusion is still decided by the builder.
+    insufficient_fee_balances: HashMap<(Address, U256), U256>,
+}
+
+impl<Txs, Provider> BestTransactionsPrewarmingContext<Txs, Provider>
+where
+    Txs: BestTransactions<Item = BestTransaction>,
+{
+    /// Forwards a builder invalidation to the source, remembering the fee payer balance it reports.
+    fn on_invalid(&mut self, invalid: InvalidTransaction) {
+        if let InvalidPoolTransactionError::Consensus(InvalidTransactionError::InsufficientFunds(
+            funds,
+        )) = &invalid.kind
+            && let Some(slot) = invalid.tx.transaction.fee_balance_slot()
+        {
+            self.insufficient_fee_balances.insert(slot, funds.got);
+        }
+        self.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+    }
+
+    /// Returns whether an invalidation reported `tx`'s fee payer below its fee.
+    ///
+    /// Always false for fallback-fee-token transactions, which the builder may still execute with
+    /// another fallback token.
+    fn fee_payer_is_insufficient(&self, tx: &BestTransaction) -> bool {
+        !tx.transaction.is_fallback_fee_token()
+            && tx
+                .transaction
+                .fee_balance_slot()
+                .and_then(|slot| self.insufficient_fee_balances.get(&slot))
+                .is_some_and(|&balance| balance < tx.transaction.fee_token_cost())
+    }
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -524,7 +604,7 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempo_chainspec::TempoChainSpec;
-    use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+    use tempo_evm::{ResolvedFeeToken, TempoEvmConfig, TempoNextBlockEnvAttributes};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         storage::{StorageCtx, StorageKey, actions::StorageAction},
@@ -646,6 +726,29 @@ mod tests {
             calls: vec![Call::new(token, input)],
             nonce_key,
             valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+        Arc::new(ValidPoolTransaction {
+            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction: pooled,
+            propagate: true,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        })
+    }
+
+    /// Sender-paid AA transaction with a non-zero fee in a TIP-20 fee token.
+    fn test_fee_paying_tx(sender: Address, max_fee_per_gas: u128) -> BestTransaction {
+        let tx = TempoTransaction {
+            chain_id: 42431,
+            fee_token: Some(PATH_USD_ADDRESS),
+            max_fee_per_gas,
+            gas_limit: 21_000,
+            calls: vec![Call::new(Address::random(), Bytes::new())],
+            nonce_key: U256::random(),
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
@@ -807,22 +910,77 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_eagerly_drains_source_iterator() {
+    fn sequential_prewarming_stays_a_bounded_lookahead_ahead_of_the_builder() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let lookahead = executor.prewarming_pool().current_num_threads() * 2;
+        let txs = (0..lookahead + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
 
         let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
-        wait_until(|| log.lock().unwrap().yielded == expected.len());
+        wait_until(|| log.lock().unwrap().yielded == lookahead);
+        // Finished prewarm jobs don't pull more transactions.
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(log.lock().unwrap().yielded, lookahead);
 
-        let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").tx.hash())
-            .collect::<Vec<_>>();
+        let mut actual = vec![*prewarming.next().expect("transaction").tx.hash()];
+        wait_until(|| log.lock().unwrap().yielded == lookahead + 1);
+
+        actual.extend(
+            (1..expected.len()).map(|_| *prewarming.next().expect("transaction").tx.hash()),
+        );
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn insufficient_funds_invalidation_stops_prewarming_for_the_fee_payer() {
+        let (transactions_tx, _transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut ctx = BestTransactionsPrewarmingContext {
+            best_txs: TestBestTransactions::new(Vec::new(), log.clone()),
+            transactions_tx,
+            commands_tx,
+            commands_rx,
+            prewarm: prewarming_context(TaskExecutor::test(), false),
+            next_expiring_nonce_offset: 0,
+            forwarded: 0,
+            received: Arc::default(),
+            insufficient_fee_balances: HashMap::default(),
+        };
+        let (payer, other) = (Address::random(), Address::random());
+        let skipped = test_fee_paying_tx(payer, 20_000_000_000);
+        let fee = skipped.transaction.fee_token_cost();
+
+        ctx.on_invalid(InvalidTransaction {
+            tx: skipped,
+            kind: InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::InsufficientFunds((fee - U256::ONE, fee).into()),
+            ),
+        });
+        ctx.on_invalid(InvalidTransaction {
+            tx: test_fee_paying_tx(other, 20_000_000_000),
+            kind: InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::TxTypeNotSupported,
+            ),
+        });
+
+        assert_eq!(log.lock().unwrap().invalid, 2);
+        let tx = |sender, max_fee_per_gas| test_fee_paying_tx(sender, max_fee_per_gas);
+        assert!(ctx.fee_payer_is_insufficient(&tx(payer, 20_000_000_000)));
+        // A cheaper transaction of the same payer still fits the reported balance.
+        assert!(!ctx.fee_payer_is_insufficient(&tx(payer, 10_000_000_000)));
+        assert!(!ctx.fee_payer_is_insufficient(&tx(other, 20_000_000_000)));
+        assert!(!ctx.fee_payer_is_insufficient(&tx(Address::random(), 20_000_000_000)));
+        // The builder may pay a fallback-token transaction with another fallback token.
+        let fallback = tx(payer, 20_000_000_000);
+        fallback
+            .transaction
+            .set_resolved_fee_token(ResolvedFeeToken::Fallback(PATH_USD_ADDRESS));
+        assert!(!ctx.fee_payer_is_insufficient(&fallback));
     }
 
     #[test]
@@ -862,10 +1020,19 @@ mod tests {
                 commands_tx,
                 stop: Arc::default(),
                 invalidated: InvalidatedLanes::default(),
+                parallel: false,
+                received: Arc::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
             assert_eq!(prewarming.next().unwrap().tx.hash(), second.hash());
+            // Each buffered transaction only refills the lookahead.
+            for _ in 0..2 {
+                assert!(matches!(
+                    commands_rx.try_recv(),
+                    Ok(BestTransactionsCommand::Advance)
+                ));
+            }
             assert!(matches!(
                 commands_rx.try_recv(),
                 Err(mpsc::TryRecvError::Empty)
@@ -896,6 +1063,8 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            parallel: false,
+            received: Arc::default(),
         };
 
         let next = prewarming.next();
@@ -923,6 +1092,8 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            parallel: false,
+            received: Arc::default(),
         };
 
         assert!(prewarming.next().is_none());
@@ -951,6 +1122,8 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            parallel: false,
+            received: Arc::default(),
         };
 
         assert_eq!(
@@ -1234,6 +1407,8 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            parallel: false,
+            received: Arc::default(),
         };
 
         for invalid in [&invalid_regular, &invalid_2d] {
@@ -1250,8 +1425,14 @@ mod tests {
 
         assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[2].hash());
         assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
-        // Both transactions were already buffered, so no source poll was needed.
-        assert!(commands_rx.try_recv().is_err());
+        // Both transactions were already buffered, so the only commands refill the lookahead.
+        let commands: Vec<_> = commands_rx.try_iter().collect();
+        assert_eq!(commands.len(), 2);
+        assert!(
+            commands
+                .iter()
+                .all(|command| matches!(command, BestTransactionsCommand::Advance))
+        );
     }
 
     #[test]
@@ -1284,6 +1465,8 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            parallel: false,
+            received: Arc::default(),
         };
         prewarming.mark_invalid(
             &PrewarmedTransaction::without_replay(invalid),
@@ -1327,6 +1510,8 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            parallel: false,
+            received: Arc::default(),
         };
 
         // Leave the coordinator commands unprocessed: the original buffer must
