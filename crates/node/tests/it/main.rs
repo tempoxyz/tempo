@@ -18,6 +18,7 @@ mod payment_lane;
 mod pool;
 mod simulate;
 mod stablecoin_dex;
+mod state_proof;
 mod storage_credits;
 mod tempo_transaction;
 mod tip20;

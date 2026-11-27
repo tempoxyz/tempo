@@ -1,0 +1,18 @@
+---
+source: crates/node/tests/it/state_proof.rs
+expression: "serde_json::to_string_pretty(&response)?"
+---
+[
+  {
+    "accountProof": [
+      "0xf85180a0bcbc01be6a185a4a9f9cc36659fba9339bd411da659c56dbdbb56cb02b2a97dba0d1eff53eceaaad6a9c2f85f357c174d5cd3fa8eb436e4ca19352a5b289b1079d8080808080808080808080808080",
+      "0xe4820023a025b009f7414119f906ac924c5d39f7db8da38ac9941764bc0cca6f950751e8ec"
+    ],
+    "address": "0x000000000000000000000000000000000000018e",
+    "balance": "0x0",
+    "codeHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "nonce": "0x0",
+    "storageHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "storageProof": []
+  }
+]

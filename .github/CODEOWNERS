@@ -54,13 +54,16 @@ crates/zones/p2p/ @adityapk00 @legion2002 @klkvr @rkrasiuk @shekhirin @joshieDo 
 crates/zones/payload/ @mattsse @0xKitsune @0xrusowsky @adityapk00 @klkvr @shekhirin @joshieDo
 crates/zones/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @shekhirin @joshieDo
 crates/zones/primitives/ @mattsse @0xKitsune @0xrusowsky @klkvr @shekhirin @joshieDo
-crates/zones/prover/ @rkrasiuk @shekhirin @joshieDo @0xrusowsky
 crates/zones/rpc/ @mattsse @0xKitsune @klkvr @adityapk00 @rkrasiuk @shekhirin @joshieDo @0xrusowsky
 crates/zones/sequencer/ @mattsse @0xKitsune @adityapk00 @rkrasiuk @klkvr @shekhirin @joshieDo @0xrusowsky
-crates/zones/spf/ @rkrasiuk @shekhirin @klkvr @joshieDo @0xrusowsky
 xtask/src/zones/ @mattsse @0xKitsune @adityapk00 @klkvr @legion2002 @shekhirin @joshieDo @0xrusowsky
 zones/zone-genesis/ @mattsse @0xKitsune @klkvr @0xrusowsky @shekhirin @joshieDo
 zones/specs/ @dankrad @danrobinson
+
+## Prover and SPF
+crates/zones/prover/ @rkrasiuk @shekhirin @klkvr @joshieDo @0xrusowsky
+crates/zones/spf/ @rkrasiuk @shekhirin @klkvr @joshieDo @0xrusowsky
+crates/node/tests/it/snapshots/it__state_proof__*.snap @rkrasiuk @shekhirin @klkvr @joshieDo @0xrusowsky
 
 # Zone runtime integrity: the runtimes zone hardforks install must match the
 # Solidity sources, checked by the runtime-bytecode job in zones-contracts.yml.
