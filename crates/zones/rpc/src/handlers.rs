@@ -193,7 +193,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     fn zone_get_encryption_key(&self, auth: AuthContext) -> BoxFut<'_>;
 
     /// `zone_deriveDepositAddresses(request)` — derives TIP-1094 deposit addresses for a master
-    /// ID registered to the authenticated caller, from the last settled zone block.
+    /// ID whose recipient or creator is the authenticated caller, from the last settled zone block.
     fn zone_derive_deposit_addresses(
         &self,
         _request: crate::types::DeriveDepositAddressesRequest,

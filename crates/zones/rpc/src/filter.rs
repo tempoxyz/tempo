@@ -46,7 +46,7 @@ pub const VIRTUAL_DEPOSIT_PROCESSED_TOPIC: B256 =
 /// TIP-1094 `VirtualDepositFailed`, served to its resolved recipient.
 pub const VIRTUAL_DEPOSIT_FAILED_TOPIC: B256 = IZoneInbox::VirtualDepositFailed::SIGNATURE_HASH;
 
-/// TIP-1094 `MasterRegistered`, served to its recipient.
+/// TIP-1094 `MasterRegistered`, served to its recipient (topic1) and its creator (topic3).
 pub const MASTER_REGISTERED_TOPIC: B256 = IZoneAddressRegistry::MasterRegistered::SIGNATURE_HASH;
 
 /// All event topic hashes exposed by the redacted RPC.
@@ -73,8 +73,7 @@ const TWO_PARTY_TOPICS: [B256; 4] = [
     TRANSFER_WITH_MEMO_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
 ];
-const ACCOUNT_SCOPED_FILTER_ERROR: &str =
-    "private log filter must name the caller, or one other account, in topic1 or topic2";
+const ACCOUNT_SCOPED_FILTER_ERROR: &str = "private log filter must name the caller, or one other account, in topic1 or topic2, or in topic3 for MasterRegistered";
 
 /// `ZoneIdentity` events that name an org in topic1.
 const ORG_IN_TOPIC1: [B256; 6] = [
@@ -135,6 +134,8 @@ impl LogScope {
 /// - **VirtualDepositProcessed / VirtualDepositFailed**: topic1 (recipient), only when emitted by
 ///   the zone inbox. The originator is not eligible: the event names the recipient behind the
 ///   deposit address it paid.
+/// - **MasterRegistered**: topic1 (recipient) or topic3 (creator), only when emitted by the zone
+///   address registry. A zero creator matches no caller.
 pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
     let topics = log.topics();
     let Some(topic0) = log.topic0() else {
@@ -153,7 +154,8 @@ pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
 
     if *topic0 == MASTER_REGISTERED_TOPIC {
         return log.address() == ZONE_ADDRESS_REGISTRY_ADDRESS
-            && topics.get(1) == Some(&caller_word);
+            && !caller.is_zero()
+            && (topics.get(1) == Some(&caller_word) || topics.get(3) == Some(&caller_word));
     }
 
     if *topic0 == TRANSFER_TOPIC || *topic0 == APPROVAL_TOPIC || *topic0 == TRANSFER_WITH_MEMO_TOPIC
@@ -304,7 +306,8 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Scopes a filter to one account: `caller` if topic1 or topic2 names it, else their only address.
+/// Scopes a filter to one account: `caller` if topic1, topic2 or (for `MasterRegistered`) topic3
+/// names it, else their only address.
 fn scope_filter_to_account(filter: &mut Filter, caller: &Address) -> Result<Address, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
@@ -321,19 +324,25 @@ fn scope_filter_to_account(filter: &mut Filter, caller: &Address) -> Result<Addr
         let account = Address::from_word(*word);
         (account.into_word() == *word).then_some(account)
     };
-    let mut candidates = [(1, named(1)), (2, named(2))];
+    // topic3 names a creator only in `MasterRegistered`; in other events it is data such as a memo,
+    // so it scopes only a filter that asks for `MasterRegistered` alone.
+    let master_registered_only =
+        filter.topics[0].len() == 1 && filter.topics[0].contains(&MASTER_REGISTERED_TOPIC);
+    let mut candidates = [
+        (1, named(1)),
+        (2, named(2)),
+        (3, named(3).filter(|_| master_registered_only)),
+    ];
     // Positions naming the caller come first, so the caller's own filters keep their meaning.
     candidates.sort_by_key(|(_, account)| *account != Some(*caller));
     for (position, account) in candidates.into_iter().filter_map(|(p, a)| Some((p, a?))) {
         let topic0 = filter.topics[0]
             .iter()
             .copied()
-            .filter(|topic| {
-                if position == 1 {
-                    *topic != TRANSFER_BLOCKED_TOPIC
-                } else {
-                    TWO_PARTY_TOPICS.contains(topic)
-                }
+            .filter(|topic| match position {
+                1 => *topic != TRANSFER_BLOCKED_TOPIC,
+                2 => TWO_PARTY_TOPICS.contains(topic),
+                _ => *topic == MASTER_REGISTERED_TOPIC,
             })
             .collect::<Vec<_>>();
         if !topic0.is_empty() {
@@ -1111,21 +1120,68 @@ mod tests {
     }
 
     #[test]
-    fn master_registrations_are_visible_only_to_their_recipient() {
+    fn master_registrations_are_visible_only_to_their_recipient_and_creator() {
         let recipient = Address::with_last_byte(1);
+        let creator = Address::with_last_byte(2);
         let other = Address::with_last_byte(3);
-        let data = IZoneAddressRegistry::MasterRegistered {
-            recipient,
-            masterId: Default::default(),
-        }
-        .encode_log_data();
-        let mut log = make_log(ZONE_ADDRESS_REGISTRY_ADDRESS, Vec::new());
-        log.inner.data = data.clone();
+        let registered = |creator: Address| {
+            let mut log = make_log(ZONE_ADDRESS_REGISTRY_ADDRESS, Vec::new());
+            log.inner.data = IZoneAddressRegistry::MasterRegistered {
+                recipient,
+                masterId: Default::default(),
+                creator,
+                requestHash: B256::repeat_byte(0x11),
+            }
+            .encode_log_data();
+            log
+        };
+
+        let log = registered(creator);
         assert!(is_log_visible(&log, &recipient));
+        assert!(is_log_visible(&log, &creator));
         assert!(!is_log_visible(&log, &other));
+
+        let log = registered(Address::ZERO);
+        assert!(is_log_visible(&log, &recipient));
+        assert!(!is_log_visible(&log, &Address::ZERO));
+        assert!(!is_log_visible(&log, &other));
+
         let mut spoofed = make_log(Address::with_last_byte(0xee), Vec::new());
-        spoofed.inner.data = data;
+        spoofed.inner.data = registered(creator).inner.data;
         assert!(!is_log_visible(&spoofed, &recipient));
+        assert!(!is_log_visible(&spoofed, &creator));
+    }
+
+    #[test]
+    fn scope_filter_to_account_scopes_master_registered_creator_to_topic3() {
+        let caller = Address::with_last_byte(1);
+        let mut filter = Filter::default().event_signature(MASTER_REGISTERED_TOPIC);
+        filter.topics[3] = FilterSet::from(caller.into_word());
+        assert_eq!(
+            scope_filter_to_account(&mut filter, &caller).unwrap(),
+            caller
+        );
+        assert_eq!(filter.topics[0], FilterSet::from(MASTER_REGISTERED_TOPIC));
+        assert_eq!(filter.topics[3], FilterSet::from(caller.into_word()));
+
+        // A memo in topic3 that encodes the caller doesn't narrow a delegated memo-transfer filter.
+        let sender = Address::with_last_byte(2);
+        let mut memo = Filter::default().topic1(sender.into_word());
+        memo.topics[3] = FilterSet::from(caller.into_word());
+        assert_eq!(scope_filter_to_account(&mut memo, &caller).unwrap(), sender);
+        assert!(memo.topics[0].contains(&TRANSFER_WITH_MEMO_TOPIC));
+        assert_eq!(memo.topics[1], FilterSet::from(sender.into_word()));
+        assert_eq!(memo.topics[3], FilterSet::from(caller.into_word()));
+
+        // topic3 scopes only MasterRegistered.
+        let mut transfers = Filter::default().event_signature(TRANSFER_TOPIC);
+        transfers.topics[3] = FilterSet::from(caller.into_word());
+        assert_eq!(
+            scope_filter_to_account(&mut transfers, &caller)
+                .unwrap_err()
+                .message,
+            ACCOUNT_SCOPED_FILTER_ERROR
+        );
     }
 
     #[test]

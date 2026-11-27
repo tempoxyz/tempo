@@ -241,7 +241,7 @@ pub const MAX_DERIVE_DEPOSIT_ADDRESSES: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeriveDepositAddressesRequest {
-    /// A TIP-1094 master ID registered to the authenticated caller.
+    /// A TIP-1094 master ID whose recipient or creator is the authenticated caller.
     pub master_id: FixedBytes<4>,
     /// User tags to derive addresses for, at most [`MAX_DERIVE_DEPOSIT_ADDRESSES`].
     pub user_tags: Vec<u16>,
@@ -258,6 +258,10 @@ pub struct DeriveDepositAddressesResponse {
     pub zone_block_hash: B256,
     /// Address key version used.
     pub version: u8,
+    /// The recipient the master ID credits.
+    pub recipient: Address,
+    /// The creator named at registration, or zero when it has none.
+    pub creator: Address,
     /// One deposit address per requested user tag, in request order.
     pub addresses: Vec<Address>,
 }

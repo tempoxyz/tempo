@@ -1,7 +1,9 @@
 //! TIP-1094 zone address registry precompile.
 //!
-//! Assigns sequential 4-byte master IDs to recipients. Bindings are immutable and have no public
-//! getter: only the native inbox reads them, through `recipient_of`.
+//! Assigns sequential 4-byte master IDs to recipients, each with an optional creator that may also
+//! derive its addresses. Bindings are immutable and have no public getter: only the native inbox
+//! reads recipients, through `recipient_of`, and only the issuance service reads creators, through
+//! `creator_of`.
 
 use alloc::vec::Vec;
 
@@ -37,6 +39,9 @@ pub struct ZoneAddressRegistry {
     registrations: Mapping<B256, u64>,
     /// The next master ID to assign.
     next_master_id: u64,
+    /// Master ID (as a big-endian `u32`) to its creator; zero when it has none. Not read by
+    /// execution, only by the issuance service.
+    creators: Mapping<u32, Address>,
 }
 
 impl ZoneAddressRegistry {
@@ -56,18 +61,20 @@ impl ZoneAddressRegistry {
             |call| match call {
                 IZoneAddressRegistry::IZoneAddressRegistryCalls {
                     registerMaster(call) => crate::dispatch::mutate(call, msg_sender, |_, call| {
-                        self.register_master(zone_id, call.recipient, call.salt)
+                        self.register_master(zone_id, call.recipient, call.creator, call.salt)
                     }),
                 }
             },
         )
     }
 
-    /// TIP-1094 `registerMaster`: idempotent per `(zone, recipient, salt)`, sequential otherwise.
+    /// TIP-1094 `registerMaster`: idempotent per `(zone, recipient, creator, salt)`, sequential
+    /// otherwise. A zero `creator` means none.
     pub fn register_master(
         &mut self,
         zone_id: u32,
         recipient: Address,
+        creator: Address,
         salt: B256,
     ) -> ZoneResult<FixedBytes<4>> {
         // The registry exists only from T15, so deposit addresses are always invalid masters.
@@ -75,7 +82,7 @@ impl ZoneAddressRegistry {
             return Err(ZoneAddressRegistryError::invalid_master_address().into());
         }
 
-        let request_hash = request_hash(zone_id, recipient, salt)?;
+        let request_hash = request_hash(zone_id, recipient, creator, salt)?;
         let existing = self.registrations[request_hash].read()?;
         if existing != 0 {
             return Ok(master_id_bytes(existing - 1));
@@ -88,6 +95,9 @@ impl ZoneAddressRegistry {
 
         let master_id = master_id_bytes(next);
         self.recipients[next as u32].write(recipient)?;
+        if !creator.is_zero() {
+            self.creators[next as u32].write(creator)?;
+        }
         // The +1 offset lets the record of the last ID (0xFFFFFFFF) be distinguished from absence.
         self.registrations[request_hash].write(next + 1)?;
         self.next_master_id.write(next + 1)?;
@@ -96,6 +106,8 @@ impl ZoneAddressRegistry {
             IZoneAddressRegistry::MasterRegistered {
                 recipient,
                 masterId: master_id,
+                creator,
+                requestHash: request_hash,
             }
             .encode_log_data(),
         )?;
@@ -105,6 +117,12 @@ impl ZoneAddressRegistry {
     /// The recipient bound to `master_id`, or zero when unregistered.
     pub fn recipient_of(&self, master_id: FixedBytes<4>) -> tempo_precompiles::Result<Address> {
         self.recipients[u32::from_be_bytes(master_id.0)].read()
+    }
+
+    /// The creator named when `master_id` was registered, or zero when it has none or is
+    /// unregistered.
+    pub fn creator_of(&self, master_id: FixedBytes<4>) -> tempo_precompiles::Result<Address> {
+        self.creators[u32::from_be_bytes(master_id.0)].read()
     }
 }
 
@@ -120,12 +138,18 @@ fn master_id_bytes(id: u64) -> FixedBytes<4> {
     FixedBytes::from((id as u32).to_be_bytes())
 }
 
-/// `keccak256(abi.encodePacked("TEMPO-ZVDA-MASTER-v1", bytes4(zoneId), recipient, salt))`.
-fn request_hash(zone_id: u32, recipient: Address, salt: B256) -> tempo_precompiles::Result<B256> {
-    let mut data = Vec::with_capacity(ZVDA_MASTER_REQUEST_DOMAIN.len() + 4 + 20 + 32);
+/// `keccak256(abi.encodePacked("TEMPO-ZVDA-MASTER-v1", bytes4(zoneId), recipient, creator, salt))`.
+fn request_hash(
+    zone_id: u32,
+    recipient: Address,
+    creator: Address,
+    salt: B256,
+) -> tempo_precompiles::Result<B256> {
+    let mut data = Vec::with_capacity(ZVDA_MASTER_REQUEST_DOMAIN.len() + 4 + 20 + 20 + 32);
     data.extend_from_slice(ZVDA_MASTER_REQUEST_DOMAIN);
     data.extend_from_slice(&zone_id.to_be_bytes());
     data.extend_from_slice(recipient.as_slice());
+    data.extend_from_slice(creator.as_slice());
     data.extend_from_slice(salt.as_slice());
     StorageCtx::default().keccak256(&data)
 }
@@ -146,16 +170,16 @@ pub(crate) mod tests {
         with_registry(|registry| {
             let acme = Address::repeat_byte(0xac);
             let bob = Address::repeat_byte(0xb0);
-            let first = registry.register_master(7, acme, B256::repeat_byte(1))?;
-            let second = registry.register_master(7, bob, B256::repeat_byte(1))?;
-            let third = registry.register_master(7, acme, B256::repeat_byte(2))?;
+            let first = registry.register_master(7, acme, Address::ZERO, B256::repeat_byte(1))?;
+            let second = registry.register_master(7, bob, Address::ZERO, B256::repeat_byte(1))?;
+            let third = registry.register_master(7, acme, Address::ZERO, B256::repeat_byte(2))?;
             assert_eq!(first, FixedBytes::from([0, 0, 0, 0]));
             assert_eq!(second, FixedBytes::from([0, 0, 0, 1]));
             assert_eq!(third, FixedBytes::from([0, 0, 0, 2]));
 
             // A copied request returns the same ID without advancing the counter.
             assert_eq!(
-                registry.register_master(7, acme, B256::repeat_byte(1))?,
+                registry.register_master(7, acme, Address::ZERO, B256::repeat_byte(1))?,
                 first
             );
             assert_eq!(registry.recipient_of(first)?, acme);
@@ -184,7 +208,7 @@ pub(crate) mod tests {
                 .encode(),
             ] {
                 assert!(matches!(
-                    registry.register_master(7, recipient, B256::ZERO),
+                    registry.register_master(7, recipient, Address::ZERO, B256::ZERO),
                     Err(crate::ZonePrecompileError::AddressRegistry(
                         ZoneAddressRegistryError::InvalidMasterAddress(_)
                     ))
@@ -199,28 +223,95 @@ pub(crate) mod tests {
             let last = MASTER_ID_SPACE - 1;
             registry.next_master_id.write(last)?;
             let recipient = Address::repeat_byte(0x11);
-            let id = registry.register_master(7, recipient, B256::ZERO)?;
+            let id = registry.register_master(7, recipient, Address::ZERO, B256::ZERO)?;
             assert_eq!(id, FixedBytes::from([0xff; 4]));
             assert!(matches!(
-                registry.register_master(7, recipient, B256::repeat_byte(9)),
+                registry.register_master(7, recipient, Address::ZERO, B256::repeat_byte(9)),
                 Err(crate::ZonePrecompileError::AddressRegistry(
                     ZoneAddressRegistryError::MasterIdSpaceExhausted(_)
                 ))
             ));
             // The request record of the last ID is 0x100000000 and still resolves after exhaustion.
-            assert_eq!(registry.register_master(7, recipient, B256::ZERO)?, id);
+            assert_eq!(
+                registry.register_master(7, recipient, Address::ZERO, B256::ZERO)?,
+                id
+            );
             Ok(())
         })
     }
 
     #[test]
-    fn request_hash_binds_zone_and_recipient() -> eyre::Result<()> {
+    fn request_hash_binds_zone_recipient_and_creator() -> eyre::Result<()> {
         with_registry(|_| {
             let salt = B256::repeat_byte(3);
-            let base = request_hash(7, Address::repeat_byte(1), salt)?;
-            assert_ne!(base, request_hash(8, Address::repeat_byte(1), salt)?);
-            assert_ne!(base, request_hash(7, Address::repeat_byte(2), salt)?);
+            let base = request_hash(7, Address::repeat_byte(1), Address::ZERO, salt)?;
+            assert_ne!(
+                base,
+                request_hash(8, Address::repeat_byte(1), Address::ZERO, salt)?
+            );
+            assert_ne!(
+                base,
+                request_hash(7, Address::repeat_byte(2), Address::ZERO, salt)?
+            );
+            assert_ne!(
+                base,
+                request_hash(7, Address::repeat_byte(1), Address::repeat_byte(9), salt)?
+            );
             Ok(())
         })
+    }
+
+    #[test]
+    fn creator_is_bound_and_part_of_the_request() -> eyre::Result<()> {
+        with_registry(|registry| {
+            let recipient = Address::repeat_byte(0xb0);
+            let creator = Address::repeat_byte(0xc0);
+            let salt = B256::repeat_byte(1);
+
+            let plain = registry.register_master(7, recipient, Address::ZERO, salt)?;
+            let created = registry.register_master(7, recipient, creator, salt)?;
+            // Same recipient and salt with a different creator is a new request.
+            assert_ne!(plain, created);
+            assert_eq!(registry.creator_of(plain)?, Address::ZERO);
+            assert_eq!(registry.creator_of(created)?, creator);
+            assert_eq!(registry.recipient_of(created)?, recipient);
+
+            // A copied request returns the same ID and cannot change the creator.
+            assert_eq!(
+                registry.register_master(7, recipient, creator, salt)?,
+                created
+            );
+            assert_eq!(registry.creator_of(created)?, creator);
+            assert_eq!(registry.next_master_id.read()?, 2);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn registration_event_names_creator_and_request_hash() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let recipient = Address::repeat_byte(0xb0);
+        let creator = Address::repeat_byte(0xc0);
+        let salt = B256::repeat_byte(4);
+        let (id, hash) = StorageCtx::enter(&mut storage, || -> eyre::Result<_> {
+            let mut registry = ZoneAddressRegistry::new();
+            let id = registry.register_master(7, recipient, creator, salt)?;
+            // An exact retry emits nothing.
+            registry.register_master(7, recipient, creator, salt)?;
+            Ok((id, request_hash(7, recipient, creator, salt)?))
+        })?;
+        assert_eq!(
+            storage.get_events(ZONE_ADDRESS_REGISTRY_ADDRESS),
+            &vec![
+                IZoneAddressRegistry::MasterRegistered {
+                    recipient,
+                    masterId: id,
+                    creator,
+                    requestHash: hash,
+                }
+                .encode_log_data()
+            ]
+        );
+        Ok(())
     }
 }

@@ -9,13 +9,16 @@ crate::sol! {
     #[sol(abi)]
     #[derive(Debug, PartialEq, Eq)]
     interface IZoneAddressRegistry {
-        /// Register `recipient` and return its master ID. Repeating a (recipient, salt) request
-        /// returns the original ID.
-        function registerMaster(address recipient, bytes32 salt) external returns (bytes4 masterId);
+        /// Register `recipient` and return its master ID. A nonzero `creator` may also derive the
+        /// master ID's addresses. Repeating a (recipient, creator, salt) request returns the
+        /// original ID.
+        function registerMaster(address recipient, address creator, bytes32 salt) external returns (bytes4 masterId);
 
         /// Emitted the first time a master ID is assigned. The redacted RPC serves it only to
-        /// `recipient`, so a recipient registered by someone else can find its master IDs.
-        event MasterRegistered(address indexed recipient, bytes4 indexed masterId);
+        /// `recipient` (topic 1) and to a nonzero `creator` (topic 3), so a recipient registered
+        /// by someone else, or a creator, can find its master IDs. `requestHash` lets a client
+        /// find the ID of its exact request.
+        event MasterRegistered(address indexed recipient, bytes4 indexed masterId, address indexed creator, bytes32 requestHash);
 
         error InvalidMasterAddress();
         error MasterIdSpaceExhausted();
