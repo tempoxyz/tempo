@@ -44,18 +44,25 @@ impl ConfigurableAccount {
         directly_authorized: Address,
         upgrade_eligibility: UpgradeEligibility,
     ) -> Result<()> {
-        crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, CONFIGURABLE_ACCOUNT_ADDRESS)
-            .t_write(origin)?;
-        crate::storage::Slot::<Address>::new(
+        use crate::storage::{FromWord as _, PrecompileStorageProvider as _, StorageCtx};
+        use alloy::primitives::U256;
+        const {
+            assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT_OFFSET == 0);
+            assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT.const_eq(&slots::UPGRADE_ELIGIBILITY));
+        }
+        let mut storage = StorageCtx;
+        storage.tstore(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            slots::TX_ORIGIN,
+            origin.to_word(),
+        )?;
+        let packed = directly_authorized.to_word()
+            | (U256::from(upgrade_eligibility as u8) << (slots::UPGRADE_ELIGIBILITY_OFFSET * 8));
+        storage.tstore(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
             slots::DIRECTLY_AUTHORIZED_ACCOUNT,
-            CONFIGURABLE_ACCOUNT_ADDRESS,
+            packed,
         )
-        .t_write(directly_authorized)?;
-        crate::storage::Slot::<UpgradeEligibility>::new(
-            slots::UPGRADE_ELIGIBILITY,
-            CONFIGURABLE_ACCOUNT_ADDRESS,
-        )
-        .t_write(upgrade_eligibility)
     }
 
     pub fn set_authority(

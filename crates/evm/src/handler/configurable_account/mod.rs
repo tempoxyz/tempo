@@ -193,9 +193,14 @@ impl TempoTxEnv {
             }
             None => Address::ZERO,
         };
+        const {
+            assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT_OFFSET == 0);
+            assert!(slots::DIRECTLY_AUTHORIZED_ACCOUNT.const_eq(&slots::UPGRADE_ELIGIBILITY));
+        }
         let caller_word = self.caller().to_word();
-        let direct_word = direct.to_word();
-        let eligibility_word = alloy_primitives::U256::from(eligibility as u8);
+        let packed_word = direct.to_word()
+            | (alloy_primitives::U256::from(eligibility as u8)
+                << (slots::UPGRADE_ELIGIBILITY_OFFSET * 8));
         let state = host.state_mut();
         state.tstore(
             &CONFIGURABLE_ACCOUNT_ADDRESS,
@@ -205,12 +210,7 @@ impl TempoTxEnv {
         state.tstore(
             &CONFIGURABLE_ACCOUNT_ADDRESS,
             &slots::DIRECTLY_AUTHORIZED_ACCOUNT,
-            &direct_word,
-        );
-        state.tstore(
-            &CONFIGURABLE_ACCOUNT_ADDRESS,
-            &slots::UPGRADE_ELIGIBILITY,
-            &eligibility_word,
+            &packed_word,
         );
         Ok(())
     }
