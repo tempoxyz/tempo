@@ -162,8 +162,7 @@ pub struct ReplayCommand {
     /// Replay only the blocks a block list file names, such as a fuzz corpus minimizer's.
     #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
     blocks: Option<PathBuf>,
-    /// Also replay each verified block under this candidate hardfork's rules and compare it with
-    /// the canonical execution.
+    /// Also replay each verified block under this candidate hardfork and compare the results.
     #[arg(long, value_name = "HARDFORK", conflicts_with = "tx_from")]
     shadow: Option<TempoHardfork>,
     /// Exit unsuccessfully on unexplained shadow findings or inconclusive comparisons.
