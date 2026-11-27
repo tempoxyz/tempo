@@ -19,6 +19,7 @@ use reth_payload_builder::PayloadBuilderResources;
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock, SealedHeader};
 use reth_storage_api::HeaderProvider;
 use reth_storage_overlay::OverlayManager;
+use std::sync::Arc;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
 
@@ -40,9 +41,9 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     fn convert_payload_to_block(
         &self,
         payload: TempoExecutionData,
-    ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
+    ) -> Result<Arc<SealedBlock<Self::Block>>, NewPayloadError> {
         let TempoExecutionData { block } = payload;
-        Ok(block.into_sealed_block())
+        Ok(Arc::new(block.into_sealed_block()))
     }
 
     fn validate_payload_attributes_against_header(
