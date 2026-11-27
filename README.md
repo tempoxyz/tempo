@@ -14,7 +14,7 @@ Edit the template or JSON files, then run: uv run --no-project python scripts/ge
 
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/tempoxyz/tempo?utm_source=badge)
 
-The blockchain for payments at scale.
+A purpose-built blockchain for stablecoin financial products.
 
 Tempo nodes use published [network identities](#network-identities) to verify consensus finalisation and authenticate snapshots.
 
