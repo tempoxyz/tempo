@@ -682,8 +682,9 @@ where
     /// failed lane transaction rolls the bump back. Other lane transactions leave it alone. Walking
     /// the block from the sender's account nonce before it assigns each successful lane CREATE its
     /// nonce, accepted only if the walk ends at the account nonce after the block, so any other
-    /// bump, such as an EIP-7702 authorization, leaves the sender's CREATEs without an address. The
-    /// outcome of a lane CREATE missing from `receipts` is read from the block's stored receipts.
+    /// bump, such as an EIP-7702 authorization, leaves the sender's CREATEs without an address. Each
+    /// transaction's outcome comes from the block's stored receipts, since `receipts` may hold only
+    /// some of them.
     ///
     /// Returns no addresses if the block is not stored, such as a pending block, or its state is
     /// pruned, not yet synced or gone after a reorg.
@@ -721,18 +722,8 @@ where
                 .provider
                 .state_by_block_hash(block.header().inner.parent_hash)?;
             let state = self.provider.state_by_block_hash(block_hash)?;
-            // The outcome of every transaction in the block, from the stored receipts unless
-            // `receipts` already covers the whole block.
-            let success = if receipts.len() == block.body().transactions.len() {
-                receipts
-                    .iter()
-                    .map(|r| r.receipt.success)
-                    .collect::<Vec<_>>()
-            } else {
-                match self.provider.receipts_by_block(block_hash.into())? {
-                    Some(receipts) => receipts.iter().map(|r| r.success).collect(),
-                    None => return Ok(HashMap::default()),
-                }
+            let Some(block_receipts) = self.provider.receipts_by_block(block_hash.into())? else {
+                return Ok(HashMap::default());
             };
 
             let mut addresses = HashMap::default();
@@ -747,14 +738,14 @@ where
                 let after = account_nonce(&state)?;
                 let mut nonce = account_nonce(&parent_state)?;
                 let mut created = Vec::new();
-                for (index, ((signer, tx), success)) in
-                    (0u64..).zip(block.transactions_with_sender().zip(&success))
+                for (index, ((signer, tx), receipt)) in
+                    (0u64..).zip(block.transactions_with_sender().zip(&block_receipts))
                 {
                     if *signer != sender {
                         continue;
                     }
                     if !is_protocol_nonce(tx.nonce_key()) {
-                        if !tx.kind().is_create() || !success {
+                        if !tx.kind().is_create() || !receipt.success {
                             continue;
                         }
                         created.push((index, sender.create(nonce)));
