@@ -289,23 +289,26 @@ async fn test_send_raw_transaction_requires_enabled_token_balance() -> eyre::Res
     let user_signer = PrivateKeySigner::random();
     let fee_payer = PrivateKeySigner::random();
 
-    // A zero-fee transaction passes the fee check, so only the enabled-token check rejects it.
-    let unfunded_raw =
+    // Zero-fee transactions pass the fee check, so only the enabled-token check rejects them:
+    // a self-paid one from an unfunded sender, and one sponsored by an unfunded fee payer.
+    let self_paid_raw =
+        signed_raw_transaction_with_fee(&user_signer, None, ctx.config.chain_id, 0)?;
+    let unfunded_sponsored_raw =
         signed_raw_transaction_with_fee(&user_signer, Some(&fee_payer), ctx.config.chain_id, 0)?;
-    for method in ["eth_sendRawTransaction", "eth_sendRawTransactionSync"] {
-        let response = ctx
-            .call_as_user(method, json!([unfunded_raw]), &user_signer)
-            .await?;
-        assert_eq!(
-            response["error"]["code"].as_i64(),
-            Some(-32603),
-            "{method} should reject a transaction when neither sender nor fee payer holds an enabled token: {response}",
-        );
-        assert_eq!(
-            response["error"]["message"].as_str(),
-            Some("sender or fee payer must hold a nonzero balance of an enabled zone token"),
-            "{method} should explain why the transaction was rejected: {response}",
-        );
+    for raw in [&self_paid_raw, &unfunded_sponsored_raw] {
+        for method in ["eth_sendRawTransaction", "eth_sendRawTransactionSync"] {
+            let response = ctx.call_as_user(method, json!([raw]), &user_signer).await?;
+            assert_eq!(
+                response["error"]["code"].as_i64(),
+                Some(-32603),
+                "{method} should reject a transaction when neither sender nor fee payer holds an enabled token: {response}",
+            );
+            assert_eq!(
+                response["error"]["message"].as_str(),
+                Some("sender or fee payer must hold a nonzero balance of an enabled zone token"),
+                "{method} should explain why the transaction was rejected: {response}",
+            );
+        }
     }
 
     // A funded fee payer admits a transaction from a sender that holds nothing.
