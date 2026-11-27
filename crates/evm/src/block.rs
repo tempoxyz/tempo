@@ -970,9 +970,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
-        let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
+        let next_section = self
+            .validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)
+            .inspect_err(|_| self.replay_state.reset_tx_changes())?;
 
-        let gas_output = self.inner.commit_transaction(inner)?;
+        let gas_output = self
+            .inner
+            .commit_transaction(inner)
+            .inspect_err(|_| self.replay_state.reset_tx_changes())?;
         self.record_committed_tx(next_section, block_gas_used, is_payment);
 
         Ok(gas_output)

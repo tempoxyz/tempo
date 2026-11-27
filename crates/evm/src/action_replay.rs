@@ -23,15 +23,16 @@ use tempo_precompiles::{
 use tempo_primitives::account::encode_config_commitment;
 
 impl TempoBlockExecutor<'_> {
-    /// Commits a precomputed transaction by replaying recorded storage actions.
+    /// Builds a precomputed transaction's result by replaying recorded storage actions, without
+    /// committing it.
     ///
-    /// `result_closure` observes the synthesized result before the replayed state is committed.
-    pub fn execute_transaction_with_actions(
+    /// Pass the result to `commit_transaction` to apply it, or to `discard_transaction` to drop
+    /// it without touching the executor's committed state.
+    pub fn execute_transaction_with_actions_without_commit(
         &mut self,
         tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
-        result_closure: impl FnOnce(&TempoTxResult),
-    ) -> Result<(), BlockExecutionError> {
+    ) -> Result<TempoTxResult, BlockExecutionError> {
         let (_, recovered) = tx.into_parts();
         let original = recovered.tx();
 
@@ -71,20 +72,23 @@ impl TempoBlockExecutor<'_> {
         )
         .inspect_err(|_| self.replay_state.reset_tx_changes())?;
 
-        let result = TempoTxResult::new_precomputed(
+        Ok(TempoTxResult::new_precomputed(
             original,
             result,
             state,
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-        );
-        result_closure(&result);
+        ))
+    }
 
-        self.commit_transaction(result)
-            .inspect_err(|_| self.replay_state.reset_tx_changes())?;
-
-        Ok(())
+    /// Discards a transaction result instead of committing it.
+    ///
+    /// Clears the storage changes a replayed transaction recorded, so a later commit in the same
+    /// block can't apply them.
+    pub fn discard_transaction(&mut self, result: TempoTxResult) {
+        drop(result);
+        self.replay_state.reset_tx_changes();
     }
 
     fn replay_actions(
@@ -636,7 +640,7 @@ impl StorageActionReplayState {
     }
 
     /// Resets the accumulated transaction changes.
-    fn reset_tx_changes(&mut self) {
+    pub(crate) fn reset_tx_changes(&mut self) {
         self.tx_changes.clear();
         self.expiring_nonce.reset_pending_ring_ptr();
     }
@@ -787,11 +791,12 @@ mod tests {
                 actions: vec![StorageAction::ConfigCommitment(sender, recorded, recorded)],
                 expiring_nonce: None,
             };
-            let result = executor.execute_transaction_with_actions(
-                tx.clone().with_signer(sender),
-                replay,
-                |_| {},
-            );
+            let result = executor
+                .execute_transaction_with_actions_without_commit(
+                    tx.clone().with_signer(sender),
+                    replay,
+                )
+                .and_then(|result| executor.commit_transaction(result));
             let reason = result
                 .as_ref()
                 .err()
@@ -871,9 +876,10 @@ mod tests {
             ],
             expiring_nonce: None,
         };
-        executor
-            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+        let result = executor
+            .execute_transaction_with_actions_without_commit(tx.with_signer(sender), replay)
             .unwrap();
+        executor.commit_transaction(result).unwrap();
         let info = executor
             .evm_mut()
             .overlay_db_mut()
@@ -923,11 +929,60 @@ mod tests {
         };
 
         let err = executor
-            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+            .execute_transaction_with_actions_without_commit(tx.with_signer(sender), replay)
             .unwrap_err();
         assert_eq!(err.to_string(), "transaction exceeds its gas lane");
         assert_eq!(executor.replay_state.expiring_nonce.pending_ring_ptr, None);
         assert!(executor.replay_state.tx_changes.is_empty());
+    }
+
+    #[test]
+    fn discarded_replay_does_not_leak_expiring_nonce_pointer() {
+        let sender = Address::repeat_byte(0x11);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 40_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let chainspec = test_chainspec();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T4)
+            .build(InMemoryDB::default(), &chainspec);
+        let valid_before = executor.evm().block().timestamp.to::<u64>() + 1;
+        let replay = StorageActionReplay {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                total_gas_spent: 21_000,
+                ..Default::default()
+            },
+            accounts: vec![],
+            actions: vec![],
+            expiring_nonce: Some(ExpiringNonceReplay {
+                hash: B256::repeat_byte(0x99),
+                valid_before,
+            }),
+        };
+
+        let result = executor
+            .execute_transaction_with_actions_without_commit(tx.with_signer(sender), replay)
+            .unwrap();
+        assert!(
+            executor
+                .replay_state
+                .expiring_nonce
+                .pending_ring_ptr
+                .is_some()
+        );
+
+        executor.discard_transaction(result);
+        assert_eq!(executor.replay_state.expiring_nonce.pending_ring_ptr, None);
+        assert!(executor.replay_state.tx_changes.is_empty());
+        assert_eq!(executor.receipts().len(), 0);
     }
 
     #[test]
