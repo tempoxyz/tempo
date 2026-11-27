@@ -31,7 +31,7 @@ use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::{Report, StepChanges};
 use evm2::AnyError;
-use expectations::Rules;
+use expectations::{Check, Rules};
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutionError, InternalBlockExecutionError};
@@ -103,9 +103,11 @@ impl ShadowReplayer {
         if canonical >= self.shadow_hardfork {
             return Ok(None);
         }
-        let skipped_header_checks = self.rules.skipped_header_checks(canonical);
-        let evidence = self.execute(input, block, executed, skipped_header_checks)?;
         let rules = self.rules.between(canonical);
+        let check_header = !rules
+            .iter()
+            .any(|rule| matches!(rule.check, Check::SkipHeaderChecks));
+        let evidence = self.execute(input, block, executed, check_header)?;
         let report = Report::analyze(&evidence, &rules, block);
         let outcome = report.outcome(&evidence);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
@@ -138,14 +140,13 @@ impl ShadowReplayer {
     }
 
     /// Runs the candidate's steps of `block` and pairs each with its canonical counterpart.
-    /// The candidate skips its checks of the header against state if `skipped_header_checks`
-    /// names any rule.
+    /// Without `check_header`, the candidate skips its checks of the header against state.
     fn execute(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
         executed: &Executed,
-        skipped_header_checks: Vec<&'static str>,
+        check_header: bool,
     ) -> eyre::Result<Evidence> {
         let phases = input
             .phases
@@ -158,11 +159,7 @@ impl ShadowReplayer {
             real_pre == phases.pre,
             "canonical pre-block changes differ from their verified record"
         );
-        let check_header = skipped_header_checks.is_empty();
-        let mut evidence = Evidence {
-            skipped_header_checks,
-            ..Default::default()
-        };
+        let mut evidence = Evidence::default();
         let (shadow_pre, shadow_pre_state) =
             match block::run_pre_block(&self.shadow_config, block, &origin, check_header) {
                 Ok(pre) => pre,
@@ -318,14 +315,12 @@ struct Failure {
 /// Both arms' evidence at each compared boundary, in order.
 ///
 /// `None` for pre/post-block means the candidate did not complete that boundary.
-/// `skipped_header_checks` names the rules that made the candidate skip its header checks.
 #[derive(Debug, Default)]
 struct Evidence {
     pre_block: Option<Arms<StepChanges>>,
     txs: Vec<TxEvidence>,
     post_block: Option<Arms<StepChanges>>,
     failure: Option<Failure>,
-    skipped_header_checks: Vec<&'static str>,
 }
 
 impl Evidence {

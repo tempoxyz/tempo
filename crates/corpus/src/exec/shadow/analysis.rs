@@ -2,7 +2,7 @@
 
 use super::{
     Arms, Boundary, Evidence, ReplayOutcome, TxEvidence,
-    expectations::{Context, Expectation},
+    expectations::{Check, Context, Expectation},
     fees::fee_wrote,
     uncaptured,
 };
@@ -59,8 +59,11 @@ impl Report {
     ) -> Self {
         let mut report = Self::default();
         // The candidate's verdict on a skipped header check is assumed, so it counts as expected.
-        for &id in &evidence.skipped_header_checks {
-            *report.expected.entry(id).or_default() += 1;
+        for rule in rules
+            .iter()
+            .filter(|rule| matches!(rule.check, Check::SkipHeaderChecks))
+        {
+            *report.expected.entry(rule.id).or_default() += 1;
         }
         let base_fee = block.header().base_fee_per_gas();
         let context = |boundary| Context {

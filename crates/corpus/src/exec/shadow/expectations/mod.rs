@@ -32,6 +32,7 @@ impl Expectation {
     pub(super) fn accepts(&self, ctx: &Context<'_>, field: &Field) -> Option<()> {
         let upgrades = match &self.check {
             Check::Fn(check) => return check(ctx, field),
+            Check::SkipHeaderChecks => return None,
             Check::RuntimeUpgrade(upgrades) => upgrades,
         };
         if ctx.boundary != Boundary::PreBlock || field.name != "code" || field.slot.is_some() {
@@ -67,6 +68,9 @@ pub(crate) enum Check {
     Fn(fn(&Context<'_>, &Field) -> Option<()>),
     /// Pre-block code changes the candidate makes to these accounts.
     RuntimeUpgrade(Vec<RuntimeUpgrade>),
+    /// The candidate skips the header checks the rule's fork introduces, which read state blocks
+    /// of earlier forks never read. Explains no field difference.
+    SkipHeaderChecks,
 }
 
 /// A code change the candidate's pre-block setup makes to `address`.
@@ -166,36 +170,22 @@ static FEE_STATE: Expectation = Expectation {
     }),
 };
 
-/// What replay under one candidate hardfork expects, from its rule file.
-#[derive(Debug, Default)]
-pub(crate) struct Rules {
-    /// Expectations, each with the fork that introduces it, in fork order.
-    expectations: Vec<(TempoHardfork, Expectation)>,
-    /// Rules that skip the header checks their fork introduces, in fork order.
-    skip_header_checks: Vec<(TempoHardfork, &'static str)>,
-}
+/// The rules of one candidate hardfork's rule file, each with the fork that introduces it, in fork
+/// order.
+#[derive(Debug)]
+pub(crate) struct Rules(Vec<(TempoHardfork, Expectation)>);
 
 impl Rules {
-    /// The baseline check, then the expectations of forks `canonical` does not have, in order.
+    /// The baseline check, then the rules of forks `canonical` does not have, in order.
     pub(crate) fn between(&self, canonical: TempoHardfork) -> Vec<&Expectation> {
         // Gas-derived fee differences can occur for any fork pair.
         std::iter::once(&FEE_STATE)
             .chain(
-                self.expectations
+                self.0
                     .iter()
                     .filter(|(fork, _)| *fork > canonical)
                     .map(|(_, rule)| rule),
             )
-            .collect()
-    }
-
-    /// The rules that make the candidate skip its header checks on a block of the `canonical`
-    /// fork. Any one skips them all, since the executor can only skip them all at once.
-    pub(crate) fn skipped_header_checks(&self, canonical: TempoHardfork) -> Vec<&'static str> {
-        self.skip_header_checks
-            .iter()
-            .filter(|(fork, _)| *fork > canonical)
-            .map(|(_, id)| *id)
             .collect()
     }
 }
@@ -219,7 +209,7 @@ fn rule_file(candidate: TempoHardfork) -> Option<&'static str> {
 fn parse(candidate: TempoHardfork, json: &'static str) -> eyre::Result<Rules> {
     let mut ids = HashSet::from([FEE_STATE.id]);
     let mut previous = TempoHardfork::Genesis;
-    let mut rules = Rules::default();
+    let mut rules = Vec::new();
     for rule in serde_json::from_str::<Vec<Rule<'static>>>(json)? {
         let (Rule::RuntimeUpgrade { id, fork, .. } | Rule::SkipHeaderChecks { id, fork }) = rule;
         eyre::ensure!(ids.insert(id), "duplicate expectation {id}");
@@ -228,7 +218,7 @@ fn parse(candidate: TempoHardfork, json: &'static str) -> eyre::Result<Rules> {
             "expectation {id} for {fork} is out of fork order or after {candidate}"
         );
         previous = fork;
-        match rule {
+        let check = match rule {
             Rule::RuntimeUpgrade { accounts, .. } => {
                 let mut addresses = HashSet::new();
                 if let Some(upgrade) = accounts
@@ -237,13 +227,13 @@ fn parse(candidate: TempoHardfork, json: &'static str) -> eyre::Result<Rules> {
                 {
                     eyre::bail!("expectation {id} lists account {} twice", upgrade.address);
                 }
-                let check = Check::RuntimeUpgrade(accounts);
-                rules.expectations.push((fork, Expectation { id, check }));
+                Check::RuntimeUpgrade(accounts)
             }
-            Rule::SkipHeaderChecks { .. } => rules.skip_header_checks.push((fork, id)),
-        }
+            Rule::SkipHeaderChecks { .. } => Check::SkipHeaderChecks,
+        };
+        rules.push((fork, Expectation { id, check }));
     }
-    Ok(rules)
+    Ok(Rules(rules))
 }
 
 /// A fork rule as a rule file lists it, naming `tempo-contracts` constants.
@@ -255,9 +245,10 @@ enum Rule<'a> {
         fork: TempoHardfork,
         accounts: Vec<RuntimeUpgrade>,
     },
-    /// The candidate skips the header checks the fork introduces, which read state blocks of
-    /// earlier forks never read.
-    SkipHeaderChecks { id: &'a str, fork: TempoHardfork },
+    SkipHeaderChecks {
+        id: &'a str,
+        fork: TempoHardfork,
+    },
 }
 
 /// Defines `$name`, deserializing `$map` of a constant a rule file names.
@@ -347,7 +338,7 @@ mod tests {
     fn rule(id: &str) -> Expectation {
         load(TempoHardfork::T15)
             .unwrap()
-            .expectations
+            .0
             .into_iter()
             .find_map(|(_, rule)| (rule.id == id).then_some(rule))
             .unwrap()
@@ -435,26 +426,17 @@ mod tests {
                 .map(|rule| rule.id)
                 .collect::<Vec<_>>()
         };
-        let [fee, t14, t15] = [
+        let [fee, t14, fee_recipient, t15, dkg_outcome] = [
             FEE_STATE.id,
             "t14.zone-portal-upgrade",
-            "t15.zone-runtime-upgrade",
-        ];
-        assert_eq!(ids(T13, T14), [fee, t14]);
-        assert_eq!(ids(T14, T14), [fee]);
-        assert_eq!(ids(T14, T15), [fee, t15]);
-        assert_eq!(ids(T13, T15), [fee, t14, t15]);
-        let skipped =
-            |canonical, candidate| load(candidate).unwrap().skipped_header_checks(canonical);
-        let [fee_recipient, dkg_outcome] = [
             "t14.proposer-fee-recipient-check",
+            "t15.zone-runtime-upgrade",
             "t15.boundary-dkg-outcome-check",
         ];
-        assert_eq!(skipped(T13, T14), [fee_recipient]);
-        assert!(skipped(T14, T14).is_empty());
-        assert_eq!(skipped(T13, T15), [fee_recipient, dkg_outcome]);
-        assert_eq!(skipped(T14, T15), [dkg_outcome]);
-        assert!(skipped(T15, T15).is_empty());
+        assert_eq!(ids(T13, T14), [fee, t14, fee_recipient]);
+        assert_eq!(ids(T14, T14), [fee]);
+        assert_eq!(ids(T14, T15), [fee, t15, dkg_outcome]);
+        assert_eq!(ids(T13, T15), [fee, t14, fee_recipient, t15, dkg_outcome]);
         assert_eq!(
             load(T13).unwrap_err().to_string(),
             "no shadow expectations for T13"
@@ -519,7 +501,7 @@ mod tests {
             pre_block: Some(Arms::default()),
             txs: (0..txs).map(|_| TxEvidence::Same).collect(),
             post_block: Some(Arms::default()),
-            ..Default::default()
+            failure: None,
         }
     }
 
@@ -574,9 +556,12 @@ mod tests {
 
     #[test]
     fn skipped_header_checks_are_expected() {
-        let mut evidence = evidence(1);
-        evidence.skipped_header_checks = vec!["t14.proposer-fee-recipient-check"];
-        let report = Report::analyze(&evidence, &[], &block(1));
+        let evidence = evidence(1);
+        let rule = Expectation {
+            id: "t14.proposer-fee-recipient-check",
+            check: Check::SkipHeaderChecks,
+        };
+        let report = Report::analyze(&evidence, &[&rule], &block(1));
         assert_eq!(
             report.expected,
             [("t14.proposer-fee-recipient-check", 1)].into()
