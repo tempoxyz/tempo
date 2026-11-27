@@ -101,6 +101,9 @@ engine = ["dep:tempo-payload-types", "dep:rayon"]
 genesis = ["dep:alloy-genesis", "dep:eyre"]
 # Native EVM2 JIT compilation; building requires LLVM.
 jit = ["dep:evm2-jit", "reth-evm-ethereum/jit"]
+# Runs the BN254 precompiles on MCL instead of arkworks; building requires CMake, and clang++ on
+# targets other than x86_64.
+bn254-mcl = ["evm2/bn254-mcl"]
 
 [[bench]]
 name = "tip20_execution"

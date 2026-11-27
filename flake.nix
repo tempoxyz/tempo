@@ -41,6 +41,7 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustStable;
 
         nativeBuildInputs = [
+          pkgs.cmake
           pkgs.pkg-config
           pkgs.libgit2
           pkgs.perl
