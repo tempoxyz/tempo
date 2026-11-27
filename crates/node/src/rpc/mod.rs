@@ -609,6 +609,8 @@ where
             .iter()
             .map(|r| (r.tx, r.meta, r.receipt.success))
             .collect::<Vec<_>>();
+        // All receipts are from the same block, so its data is loaded at most once.
+        let mut lane_creates = None;
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
@@ -630,16 +632,20 @@ where
                 if receipt.inner.contract_address.is_some()
                     && tx.nonce_key().is_some_and(|key| !key.is_zero())
                 {
-                    receipt.inner.contract_address = success
-                        .then(|| {
-                            lane_create_address(
-                                &self.provider,
-                                meta.block_hash,
-                                meta.index,
-                                tx.signer(),
-                            )
-                        })
-                        .flatten();
+                    receipt.inner.contract_address = if success {
+                        if lane_creates.is_none() {
+                            lane_creates =
+                                Some(LaneCreates::load(&self.provider, meta.block_hash)?);
+                        }
+                        lane_creates
+                            .as_ref()
+                            .and_then(Option::as_ref)
+                            .map(|lane_creates| lane_creates.address(meta.index, tx.signer()))
+                            .transpose()?
+                            .flatten()
+                    } else {
+                        None
+                    };
                 }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
@@ -657,74 +663,104 @@ where
     }
 }
 
-/// Returns the address a 2D or expiring nonce CREATE at `index` in block `block_hash` deployed,
-/// or `None` if it cannot be determined.
-///
-/// Reads the sender's account nonce before and after the block and attributes the account nonce
-/// bumps of the sender's transactions in the block, see [`lane_create_nonce`]. The result is
-/// accepted only if the address holds code after the block. Provider errors yield `None`.
-fn lane_create_address<Provider>(
-    provider: &Provider,
-    block_hash: B256,
-    index: u64,
-    sender: Address,
-) -> Option<Address>
-where
-    Provider: BlockReader<Block = tempo_primitives::Block>
-        + ReceiptProvider<Receipt = TempoReceipt>
-        + StateProviderFactory,
-{
-    let block = provider
-        .recovered_block(block_hash.into(), TransactionVariant::NoHash)
-        .ok()??;
-    let account_nonce = |state: &StateProviderBox| {
-        state
-            .basic_account(&sender)
-            .ok()
-            .map(|account| account.map_or(0, |account| account.nonce))
-    };
-    let before = account_nonce(
-        &provider
-            .state_by_block_hash(block.header().inner.parent_hash)
-            .ok()?,
-    )?;
-    let end_state = provider.state_by_block_hash(block_hash).ok()?;
-    let after = account_nonce(&end_state)?;
+/// Block data for finding the addresses of the 2D and expiring nonce CREATEs in one block.
+struct LaneCreates {
+    block: RecoveredBlock<tempo_primitives::Block>,
+    receipts: Vec<TempoReceipt>,
+    /// State before the block.
+    parent_state: StateProviderBox,
+    /// State after the block.
+    state: StateProviderBox,
+}
 
-    let index = usize::try_from(index).ok()?;
-    let mut receipts = None;
-    let mut transactions = Vec::new();
-    for (position, (signer, tx)) in block.transactions_with_sender().enumerate() {
-        if *signer != sender {
-            continue;
-        }
-        let is_lane = tx.nonce_key().is_some_and(|key| !key.is_zero());
-        let transaction = if !is_lane {
-            SenderTransaction::Protocol(tx.nonce())
-        } else if !tx.kind().is_create() {
-            continue;
-        } else if position == index {
-            SenderTransaction::Target
-        } else {
-            // A failed lane CREATE may or may not have used its nonce, depending on the fork.
-            let receipts = receipts.get_or_insert_with(|| {
-                provider.receipts_by_block(block_hash.into()).ok().flatten()
-            });
-            match receipts.as_ref()?.get(position) {
-                Some(receipt) if receipt.success => SenderTransaction::LaneCreate,
-                _ => return None,
-            }
+impl LaneCreates {
+    /// Loads the block `block_hash`, its receipts and the state around it. Returns `None` if the
+    /// block is not stored, such as a pending block, or its state was pruned.
+    fn load<Provider>(provider: &Provider, block_hash: B256) -> Result<Option<Self>, ProviderError>
+    where
+        Provider: BlockReader<Block = tempo_primitives::Block>
+            + ReceiptProvider<Receipt = TempoReceipt>
+            + StateProviderFactory,
+    {
+        let Some(block) =
+            provider.recovered_block(block_hash.into(), TransactionVariant::NoHash)?
+        else {
+            return Ok(None);
         };
-        transactions.push(transaction);
+        let Some(receipts) = provider.receipts_by_block(block_hash.into())? else {
+            return Ok(None);
+        };
+        let state = |hash| match provider.state_by_block_hash(hash) {
+            Ok(state) => Ok(Some(state)),
+            Err(ProviderError::StateAtBlockPruned(_)) => Ok(None),
+            Err(err) => Err(err),
+        };
+        let (Some(parent_state), Some(state)) =
+            (state(block.header().inner.parent_hash)?, state(block_hash)?)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            block,
+            receipts,
+            parent_state,
+            state,
+        }))
     }
 
-    let address = sender.create(lane_create_nonce(before, after, transactions)?);
-    end_state
-        .basic_account(&address)
-        .ok()??
-        .bytecode_hash
-        .is_some_and(|hash| hash != alloy::consensus::constants::KECCAK_EMPTY)
-        .then_some(address)
+    /// Returns the address the 2D or expiring nonce CREATE at `index` from `sender` deployed, or
+    /// `None` if it cannot be determined.
+    ///
+    /// Attributes the bumps of the sender's account nonce in the block to its transactions, see
+    /// [`lane_create_nonce`], and accepts the result only if the CREATE left an account there.
+    fn address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
+        let account_nonce = |state: &StateProviderBox| {
+            Ok::<_, ProviderError>(
+                state
+                    .basic_account(&sender)?
+                    .map_or(0, |account| account.nonce),
+            )
+        };
+        let before = account_nonce(&self.parent_state)?;
+        let after = account_nonce(&self.state)?;
+
+        let mut transactions = Vec::new();
+        for (position, (signer, tx)) in self.block.transactions_with_sender().enumerate() {
+            if *signer != sender {
+                continue;
+            }
+            let transaction = if tx.nonce_key().is_none_or(|key| key.is_zero()) {
+                SenderTransaction::Protocol(tx.nonce())
+            } else if !tx.kind().is_create() {
+                continue;
+            } else if position as u64 == index {
+                SenderTransaction::Target
+            } else if self
+                .receipts
+                .get(position)
+                .is_some_and(|receipt| receipt.success)
+            {
+                SenderTransaction::LaneCreate
+            } else {
+                // A failed lane CREATE may or may not have used its nonce, depending on the fork.
+                return Ok(None);
+            };
+            transactions.push(transaction);
+        }
+
+        let Some(nonce) = lane_create_nonce(before, after, transactions) else {
+            return Ok(None);
+        };
+        let address = sender.create(nonce);
+        // A successful CREATE leaves an account with nonce 1 or code there.
+        let created = self.state.basic_account(&address)?.is_some_and(|account| {
+            account.nonce > 0
+                || account
+                    .bytecode_hash
+                    .is_some_and(|hash| hash != alloy::consensus::constants::KECCAK_EMPTY)
+        });
+        Ok(created.then_some(address))
+    }
 }
 
 /// A transaction from the sender of a lane CREATE, in block order.
