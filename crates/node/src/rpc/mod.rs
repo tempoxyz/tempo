@@ -8,7 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy::consensus::Transaction;
+use alloy::consensus::{Transaction, constants::KECCAK_EMPTY};
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
@@ -23,7 +23,7 @@ use reth_primitives_traits::{
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcBlock, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
-use std::{marker::PhantomData, sync::Arc};
+use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
@@ -584,7 +584,7 @@ where
     Provider: BlockReader<Block = tempo_primitives::Block>
         + ReceiptProvider<Receipt = TempoReceipt>
         + StateProviderFactory
-        + std::fmt::Debug
+        + Debug
         + 'static,
     ChainSpec: EthChainSpec + 'static,
 {
@@ -714,6 +714,15 @@ impl LaneCreates {
     /// Attributes the bumps of the sender's account nonce in the block to its transactions, see
     /// [`lane_create_nonce`], and accepts the result only if the CREATE left an account there.
     fn address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
+        match self.try_address(index, sender) {
+            Err(ProviderError::StateAtBlockPruned(_)) => Ok(None),
+            result => result,
+        }
+    }
+
+    /// [`Self::address`], failing with [`ProviderError::StateAtBlockPruned`] if the history it
+    /// reads was pruned.
+    fn try_address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
         let account_nonce = |state: &StateProviderBox| {
             Ok::<_, ProviderError>(
                 state
@@ -757,7 +766,7 @@ impl LaneCreates {
             account.nonce > 0
                 || account
                     .bytecode_hash
-                    .is_some_and(|hash| hash != alloy::consensus::constants::KECCAK_EMPTY)
+                    .is_some_and(|hash| hash != KECCAK_EMPTY)
         });
         Ok(created.then_some(address))
     }
@@ -887,33 +896,20 @@ mod tests {
     use super::*;
     use SenderTransaction::{LaneCreate, Protocol, Target};
 
-    #[test]
-    fn lane_create_nonce_attributes_account_nonce_bumps() {
-        // The only account nonce bump in the block.
-        assert_eq!(lane_create_nonce(5, 6, [Target]), Some(5));
-        // Protocol nonce and lane CREATE transactions around the target.
-        assert_eq!(
-            lane_create_nonce(5, 9, [Protocol(5), LaneCreate, Target, Protocol(8)]),
-            Some(7)
-        );
-        // An unexplained bump before the last protocol nonce ahead of the target is pinned by it.
-        assert_eq!(
-            lane_create_nonce(5, 10, [Protocol(7), Target, LaneCreate]),
-            Some(8)
-        );
-    }
-
-    #[test]
-    fn lane_create_nonce_rejects_unexplained_bumps() {
-        // A bump that no transaction explains, before or after the target.
-        assert_eq!(lane_create_nonce(5, 7, [Target]), None);
-        assert_eq!(lane_create_nonce(5, 8, [Protocol(5), Target]), None);
-        // A later protocol nonce that leaves room for a bump between it and the target.
-        assert_eq!(lane_create_nonce(5, 9, [Target, Protocol(8)]), None);
-        // Fewer bumps than the transactions account for.
-        assert_eq!(lane_create_nonce(5, 5, [Target]), None);
-        // The target is not among the transactions.
-        assert_eq!(lane_create_nonce(5, 6, [Protocol(5)]), None);
+    #[test_case::test_case(5, 6, &[Target] => Some(5); "only bump in the block")]
+    #[test_case::test_case(5, 9, &[Protocol(5), LaneCreate, Target, Protocol(8)] => Some(7); "protocol and lane creates around the target")]
+    #[test_case::test_case(5, 10, &[Protocol(7), Target, LaneCreate] => Some(8); "unexplained bump pinned by an earlier protocol nonce")]
+    #[test_case::test_case(5, 7, &[Target] => None; "unexplained bump")]
+    #[test_case::test_case(5, 8, &[Protocol(5), Target] => None; "unexplained bump after the target")]
+    #[test_case::test_case(5, 9, &[Target, Protocol(8)] => None; "room for a bump before a later protocol nonce")]
+    #[test_case::test_case(5, 5, &[Target] => None; "fewer bumps than transactions")]
+    #[test_case::test_case(5, 6, &[Protocol(5)] => None; "no target")]
+    fn lane_create_nonce_attributes_bumps(
+        before: u64,
+        after: u64,
+        transactions: &[SenderTransaction],
+    ) -> Option<u64> {
+        lane_create_nonce(before, after, transactions.iter().copied())
     }
 
     #[test]
