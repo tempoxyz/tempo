@@ -9,6 +9,7 @@ use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
 };
+use parking_lot::RwLock;
 use reth_primitives_traits::{InMemorySize, transaction::error::InvalidTransactionError};
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
@@ -803,11 +804,84 @@ impl AA2dPool {
     }
 
     /// Returns the best, executable transactions for this sub-pool
+    #[cfg(test)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
         self.best_transactions_with_base_fee(self.base_fee)
     }
 
+    /// Returns an iterator over all pending transactions from a shared pool lock, snapshotting
+    /// expiring-nonce transactions in bounded chunks so large pools do not clone tens of
+    /// thousands of entries up front.
+    pub(crate) fn best_transactions_from_lock(
+        pool: &Arc<RwLock<Self>>,
+        base_fee: Option<u64>,
+    ) -> BestAA2dTransactions {
+        let guard = pool.read();
+        let base_fee = base_fee.unwrap_or(guard.base_fee);
+        let snapshot_submission_id = guard.submission_id;
+        let (
+            expiring_nonce_order,
+            expiring_nonce_cursor,
+            remaining_expiring_in_pool,
+            expiring_nonce_pool,
+        ) = if base_fee == guard.base_fee
+            && guard.expiring_nonce_eviction_order.len() > EXPIRING_NONCE_SNAPSHOT_CHUNK
+        {
+            let mut order: Vec<_> = guard
+                .expiring_nonce_eviction_order
+                .iter()
+                .rev()
+                .take(EXPIRING_NONCE_SNAPSHOT_CHUNK)
+                .cloned()
+                .collect();
+            let cursor = order.last().map(|k| k.order.clone());
+            let remaining = guard
+                .expiring_nonce_eviction_order
+                .len()
+                .saturating_sub(order.len());
+            order.reverse();
+            (order, cursor, remaining, Some(Arc::clone(pool)))
+        } else if base_fee == guard.base_fee {
+            (
+                guard
+                    .expiring_nonce_eviction_order
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                None,
+                0,
+                None,
+            )
+        } else {
+            let mut order = guard
+                .expiring_nonce_txs
+                .values()
+                .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
+                .collect::<Vec<_>>();
+            order.sort_unstable();
+            (order, None, 0, None)
+        };
+
+        BestAA2dTransactions {
+            independent: guard.independent_transactions.eviction_order_for(base_fee),
+            by_id: guard.by_id.clone(),
+            expiring_nonce_order,
+            expiring_nonce_pool,
+            expiring_nonce_cursor,
+            remaining_expiring_in_pool,
+            snapshot_submission_id,
+            live_expiring_nonce_order: BTreeSet::new(),
+            invalid: Default::default(),
+            new_transaction_receiver: Some(guard.new_transaction_notifier.subscribe()),
+            broadcast_seq: Arc::clone(&guard.broadcast_seq),
+            last_seen_broadcast_seq: guard.broadcast_seq.load(Ordering::Acquire),
+            last_priority: None,
+            base_fee,
+        }
+    }
+
     /// Returns the best, executable transactions for this sub-pool at `base_fee`.
+    #[cfg(test)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
             self.expiring_nonce_eviction_order
@@ -828,6 +902,10 @@ impl AA2dPool {
             independent: self.independent_transactions.eviction_order_for(base_fee),
             by_id: self.by_id.clone(),
             expiring_nonce_order,
+            expiring_nonce_pool: None,
+            expiring_nonce_cursor: None,
+            remaining_expiring_in_pool: 0,
+            snapshot_submission_id: self.submission_id,
             live_expiring_nonce_order: BTreeSet::new(),
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
@@ -2434,6 +2512,9 @@ enum PoppedAA2dTransaction {
     Expiring(PendingTransaction<TxOrdering>),
 }
 
+/// Number of expiring-nonce transactions snapshotted per chunk when reading from a shared pool.
+const EXPIRING_NONCE_SNAPSHOT_CHUNK: usize = 8192;
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
@@ -2451,6 +2532,17 @@ pub(crate) struct BestAA2dTransactions {
     /// transaction is at the back of the set, and the key carries the pending
     /// transaction so this snapshot does not clone the pool's expiring hash map.
     expiring_nonce_order: Vec<ExpiringNonceEvictionKey>,
+    /// Backing pool lock for refilling additional expiring-nonce chunks when the initial
+    /// snapshot chunk is exhausted.
+    expiring_nonce_pool: Option<Arc<RwLock<AA2dPool>>>,
+    /// Exclusive upper bound (`EvictionOrderKey`) for the next expiring-nonce refill chunk.
+    expiring_nonce_cursor: Option<EvictionOrderKey>,
+    /// Approximate count of pre-snapshot expiring-nonce entries not yet pulled into
+    /// `expiring_nonce_order` (used as upper bound in `size_hint`).
+    remaining_expiring_in_pool: usize,
+    /// Pool `submission_id` at snapshot creation; refill chunks ignore transactions with
+    /// `submission_id >= snapshot_submission_id` because those arrive via `new_transaction_receiver`.
+    snapshot_submission_id: u64,
     live_expiring_nonce_order: BTreeSet<ExpiringNonceEvictionKey>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
@@ -2479,6 +2571,56 @@ impl BestAA2dTransactions {
         Some((id, tx))
     }
 
+    #[cold]
+    #[inline(never)]
+    fn refill_expiring_nonce_chunk(&mut self) {
+        let Some(cursor) = self.expiring_nonce_cursor.take() else {
+            return;
+        };
+        let Some(pool) = self.expiring_nonce_pool.as_ref() else {
+            self.remaining_expiring_in_pool = 0;
+            return;
+        };
+        let guard = pool.read();
+        if guard.base_fee == self.base_fee {
+            self.expiring_nonce_order.extend(
+                guard
+                    .expiring_nonce_eviction_order
+                    .range::<EvictionOrderKey, _>((
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Excluded(&cursor),
+                    ))
+                    .rev()
+                    .filter(|k| k.order.submission_id < self.snapshot_submission_id)
+                    .take(EXPIRING_NONCE_SNAPSHOT_CHUNK)
+                    .cloned(),
+            );
+            if self.expiring_nonce_order.len() == EXPIRING_NONCE_SNAPSHOT_CHUNK {
+                self.expiring_nonce_cursor =
+                    self.expiring_nonce_order.last().map(|k| k.order.clone());
+                self.remaining_expiring_in_pool = self
+                    .remaining_expiring_in_pool
+                    .saturating_sub(self.expiring_nonce_order.len());
+            } else {
+                self.remaining_expiring_in_pool = 0;
+            }
+            self.expiring_nonce_order.reverse();
+        } else {
+            self.expiring_nonce_order.extend(
+                guard
+                    .expiring_nonce_txs
+                    .values()
+                    .filter(|tx| tx.submission_id < self.snapshot_submission_id)
+                    .map(|tx| {
+                        ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee)
+                    })
+                    .filter(|k| k.order < cursor),
+            );
+            self.expiring_nonce_order.sort_unstable();
+            self.remaining_expiring_in_pool = 0;
+        }
+    }
+
     /// Peeks at the best expiring nonce transaction across the snapshot and live updates.
     #[inline]
     fn peek_best_expiring_nonce(&self) -> Option<&ExpiringNonceEvictionKey> {
@@ -2496,6 +2638,9 @@ impl BestAA2dTransactions {
     /// Removes the best expiring nonce transaction from the snapshot or live set.
     #[inline]
     fn pop_best_expiring_nonce(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+        if self.expiring_nonce_order.is_empty() && self.expiring_nonce_cursor.is_some() {
+            self.refill_expiring_nonce_chunk();
+        }
         let key = if self.live_expiring_nonce_order.is_empty() {
             self.expiring_nonce_order.pop()?
         } else {
@@ -2514,6 +2659,9 @@ impl BestAA2dTransactions {
 
     /// Removes the best regular or expiring nonce transaction.
     fn pop_best(&mut self) -> Option<PoppedAA2dTransaction> {
+        if self.expiring_nonce_order.is_empty() && self.expiring_nonce_cursor.is_some() {
+            self.refill_expiring_nonce_chunk();
+        }
         match (
             self.independent.last_key_value().map(|(key, _)| key),
             self.peek_best_expiring_nonce(),
@@ -2679,7 +2827,8 @@ impl Iterator for BestAA2dTransactions {
             self.by_id
                 .len()
                 .checked_add(self.expiring_nonce_order.len())
-                .and_then(|n| n.checked_add(self.live_expiring_nonce_order.len())),
+                .and_then(|n| n.checked_add(self.live_expiring_nonce_order.len()))
+                .and_then(|n| n.checked_add(self.remaining_expiring_in_pool)),
         )
     }
 }
@@ -8741,5 +8890,78 @@ mod tests {
         assert!(first.is_some(), "should yield the expiring nonce tx");
         assert_eq!(*first.unwrap().hash(), tx_hash);
         assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn test_best_transactions_chunked_expiring_nonce_order_and_live_updates() {
+        use reth_transaction_pool::SubPoolLimit;
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+        let pool = Arc::new(RwLock::new(AA2dPool::new(AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 20_000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_authority: 20_000,
+            ..Default::default()
+        })));
+        let total = EXPIRING_NONCE_SNAPSHOT_CHUNK + 200;
+        {
+            let mut guard = pool.write();
+            for i in 0..total {
+                let tx = TxBuilder::aa(Address::from_word(B256::with_last_byte(
+                    (i % 200) as u8 + 1,
+                )))
+                .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                .nonce(i as u64)
+                .valid_before(100)
+                .max_priority_fee(1_000 + (i % 50) as u128)
+                .max_fee(2_000 + (i % 50) as u128)
+                .build();
+                guard
+                    .add_transaction(
+                        Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
+                        0,
+                        TempoHardfork::T12,
+                    )
+                    .unwrap();
+            }
+        }
+        let full_hashes: Vec<_> = pool.read().best_transactions().map(|t| *t.hash()).collect();
+        assert_eq!(full_hashes.len(), total);
+
+        let mut chunked = AA2dPool::best_transactions_from_lock(&pool, None);
+        assert_eq!(chunked.size_hint().1, Some(total));
+        let mut yielded = Vec::with_capacity(total + 1);
+        for _ in 0..10 {
+            yielded.push(*chunked.next().unwrap().hash());
+        }
+        let live_tx = TxBuilder::aa(Address::with_last_byte(0xfe))
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(999_999)
+            .valid_before(100)
+            .max_priority_fee(1_000)
+            .max_fee(2_000)
+            .build();
+        let live_hash = *live_tx.hash();
+        pool.write()
+            .add_transaction(
+                Arc::new(wrap_valid_tx(live_tx, TransactionOrigin::External)),
+                0,
+                TempoHardfork::T12,
+            )
+            .unwrap();
+        for tx in chunked {
+            yielded.push(*tx.hash());
+        }
+        assert_eq!(yielded.len(), total + 1);
+        let live_positions: Vec<_> = yielded
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| **h == live_hash)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(live_positions.len(), 1);
+        let without_live: Vec<_> = yielded.into_iter().filter(|h| *h != live_hash).collect();
+        assert_eq!(without_live, full_hashes);
     }
 }

@@ -16,7 +16,12 @@ use evm2::{
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     version::GasId,
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    any::TypeId,
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, LazyLock},
+};
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::TIPFeeAMMError;
 use tempo_precompiles::{
@@ -88,6 +93,14 @@ pub struct TempoTxResultExt {
     pub validator_fee: U256,
 }
 
+static DEFAULT_FEE_MANAGER: LazyLock<Arc<dyn ProtocolFeeManager>> =
+    LazyLock::new(|| Arc::new(TempoFeeManager));
+
+#[inline]
+fn is_default_fee_manager(fm: &Arc<dyn ProtocolFeeManager>) -> bool {
+    Arc::ptr_eq(fm, &*DEFAULT_FEE_MANAGER)
+}
+
 /// Tempo-specific state owned by an EVM2 instance.
 #[derive(Clone, Debug)]
 pub struct TempoEvmExt {
@@ -125,6 +138,10 @@ pub struct TempoEvmExt {
     /// Per-transaction transient storage seeds for precompile context slots.
     #[doc(hidden)]
     pub tx_transient_seeds: TxTransientSeeds,
+    /// Whether TempoBlockExecutor::set_state_hook should batch and deduplicate
+    /// per-transaction state updates on a background worker thread.
+    #[doc(hidden)]
+    pub batch_state_hook: bool,
 }
 
 /// Per-transaction transient storage seeds stored inline on [`TempoEvmExt`] so normal
@@ -134,6 +151,7 @@ pub struct TempoEvmExt {
 pub struct TxTransientSeeds {
     active: u8,
     has_transaction_key: bool,
+    pub(crate) has_storage_credit_refunds: bool,
     keychain_tx_origin: U256,
     channel_open_context_hash: U256,
     ca_tx_origin: U256,
@@ -150,6 +168,7 @@ impl TxTransientSeeds {
     pub(crate) fn clear(&mut self) {
         self.active = 0;
         self.has_transaction_key = false;
+        self.has_storage_credit_refunds = false;
     }
 
     #[inline]
@@ -158,6 +177,7 @@ impl TxTransientSeeds {
         self.channel_open_context_hash = context_hash;
         self.active = Self::MASK_KEYCHAIN_ORIGIN | Self::MASK_CHANNEL_CONTEXT;
         self.has_transaction_key = false;
+        self.has_storage_credit_refunds = false;
     }
 
     #[inline]
@@ -220,6 +240,8 @@ impl TxTransientSeeds {
             {
                 self.active &= !Self::MASK_CA_PACKED;
             }
+        } else if address == STORAGE_CREDITS_ADDRESS && value.as_limbs()[3] != 0 {
+            self.has_storage_credit_refunds = true;
         }
     }
 }
@@ -245,14 +267,25 @@ const SLOT_NONCE_OUTER: u8 = 1 << 3;
 #[doc(hidden)]
 #[derive(Debug, Default, Clone)]
 pub struct SenderSlotCache {
+    inline_entry: SenderSlotEntry,
     entries: Option<Box<[SenderSlotEntry]>>,
 }
 
 impl SenderSlotCache {
     #[cold]
     #[inline(never)]
-    fn alloc_entries() -> Box<[SenderSlotEntry]> {
-        vec![SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN].into_boxed_slice()
+    fn promote_to_table(&mut self, addr: Address) -> &mut SenderSlotEntry {
+        let mut table = vec![SenderSlotEntry::default(); SENDER_SLOT_CACHE_LEN].into_boxed_slice();
+        if (self.inline_entry.flags & SLOT_VALID) != 0 {
+            table[Self::idx(self.inline_entry.addr)] = self.inline_entry;
+        }
+        let table = self.entries.insert(table);
+        let e = &mut table[Self::idx(addr)];
+        if (e.flags & SLOT_VALID) == 0 || e.addr != addr {
+            e.addr = addr;
+            e.flags = SLOT_VALID;
+        }
+        e
     }
 
     #[inline]
@@ -265,13 +298,24 @@ impl SenderSlotCache {
 
     #[inline]
     fn entry_for(&mut self, addr: Address) -> &mut SenderSlotEntry {
-        let table = self.entries.get_or_insert_with(Self::alloc_entries);
-        let e = &mut table[Self::idx(addr)];
-        if (e.flags & SLOT_VALID) == 0 || e.addr != addr {
-            e.addr = addr;
-            e.flags = SLOT_VALID;
+        if self.entries.is_some() {
+            let table = self.entries.as_deref_mut().unwrap();
+            let e = &mut table[Self::idx(addr)];
+            if (e.flags & SLOT_VALID) == 0 || e.addr != addr {
+                e.addr = addr;
+                e.flags = SLOT_VALID;
+            }
+            return e;
         }
-        e
+        if (self.inline_entry.flags & SLOT_VALID) == 0 {
+            self.inline_entry.addr = addr;
+            self.inline_entry.flags = SLOT_VALID;
+            return &mut self.inline_entry;
+        }
+        if self.inline_entry.addr == addr {
+            return &mut self.inline_entry;
+        }
+        self.promote_to_table(addr)
     }
 
     #[inline]
@@ -388,10 +432,15 @@ impl Default for TempoEvmExt {
 impl TempoEvmExt {
     /// Creates the extension state of an EVM of `kind`, whose transaction hooks collect fees
     /// through `fee_manager`.
-    pub fn new(kind: TempoEvmKind, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
+    pub fn new<F: ProtocolFeeManager + 'static>(kind: TempoEvmKind, fee_manager: F) -> Self {
+        let fee_manager = if TypeId::of::<F>() == TypeId::of::<TempoFeeManager>() {
+            Arc::clone(&DEFAULT_FEE_MANAGER)
+        } else {
+            Arc::new(fee_manager)
+        };
         Self {
             kind,
-            fee_manager: Arc::new(fee_manager),
+            fee_manager,
             actions: StorageActions::disabled(),
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             skip_valid_after_check: false,
@@ -404,7 +453,13 @@ impl TempoEvmExt {
             fee_slot_cache: FeeSlotCache::default(),
             sender_slot_cache: SenderSlotCache::default(),
             tx_transient_seeds: TxTransientSeeds::default(),
+            batch_state_hook: false,
         }
+    }
+
+    #[inline]
+    pub(crate) fn on_storage_credits_tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.tx_transient_seeds.on_tstore(address, key, value);
     }
 }
 
@@ -561,7 +616,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
 
     fn settle_transaction(
         host: &mut Evm<'_, TempoEvmTypes>,
-        envelope: &TempoTxEnv,
+        _envelope: &TempoTxEnv,
         mut gas: GasSettlement<TempoEvmTypes>,
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         settle_storage_credit_refunds(host, &mut gas.result)?;
@@ -589,9 +644,6 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             return Ok(result);
         }
 
-        let fee_payer = envelope
-            .fee_payer()
-            .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
         let fee_token = host
             .ext()
             .resolved_fee_token
@@ -599,11 +651,21 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                 HandlerError::Fatal("fee token was not resolved before settlement".into())
             })?
             .address();
-        let fee_manager = host.ext().fee_manager.clone();
+        let fee_payer = host.ext().resolved_fee_payer;
         let beneficiary = host.block().beneficiary;
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
+        } else if is_default_fee_manager(&host.ext().fee_manager) {
+            TempoFeeManager.collect_fee_post_tx(
+                ProtocolFeeContext { host },
+                fee_payer,
+                actual_spending,
+                refund,
+                fee_token,
+                beneficiary,
+            )?
         } else {
+            let fee_manager = host.ext().fee_manager.clone();
             fee_manager.collect_fee_post_tx(
                 ProtocolFeeContext { host },
                 fee_payer,
@@ -653,19 +715,23 @@ impl TempoHandlerHooks {
             }
         }
 
-        let fee_manager = host.ext().fee_manager.clone();
-        let resolved_fee_token = fee_manager
-            .get_fee_token(host, envelope, fee_payer, max_fee, spec)
-            .map_err(|error| match error {
-                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
-                    TempoInvalidTransaction::from(FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: error.required,
-                        balance: error.available,
-                    })
-                    .into()
-                }
-                error => HandlerError::from(error),
-            })?;
+        let use_default_fm = is_default_fee_manager(&host.ext().fee_manager);
+        let fee_manager = (!use_default_fm).then(|| host.ext().fee_manager.clone());
+        let resolved_fee_token = if let Some(fm) = fee_manager.as_ref() {
+            fm.get_fee_token(host, envelope, fee_payer, max_fee, spec)
+        } else {
+            TempoFeeManager.get_fee_token(host, envelope, fee_payer, max_fee, spec)
+        }
+        .map_err(|error| match error {
+            TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
+                TempoInvalidTransaction::from(FeePaymentError::InsufficientFeeTokenBalance {
+                    fee: error.required,
+                    balance: error.available,
+                })
+                .into()
+            }
+            error => HandlerError::from(error),
+        })?;
         host.ext_mut().resolved_fee_token = Some(resolved_fee_token);
         let fee_token = resolved_fee_token.address();
         if !fee_token.is_tip20() {
@@ -675,13 +741,23 @@ impl TempoHandlerHooks {
         host.ext_mut().resolved_fee_payer = fee_payer;
         host.ext_mut().resolved_fee_balance_slot = fee_payer_balance_slot;
         host.ext_mut().has_two_hop_intermediate = false;
-        let balance = fee_manager.validate_and_load_fee_balance(
-            host,
-            fee_token,
-            fee_payer_balance_slot,
-            max_fee,
-            spec,
-        )?;
+        let balance = if let Some(fm) = fee_manager.as_ref() {
+            fm.validate_and_load_fee_balance(
+                host,
+                fee_token,
+                fee_payer_balance_slot,
+                max_fee,
+                spec,
+            )?
+        } else {
+            TempoFeeManager.validate_and_load_fee_balance(
+                host,
+                fee_token,
+                fee_payer_balance_slot,
+                max_fee,
+                spec,
+            )?
+        };
         if host.feature(EvmFeatures::FEE_CHARGE) && balance < max_fee {
             return Err(TempoInvalidTransaction::from(
                 FeePaymentError::InsufficientFeeTokenBalance {
@@ -709,9 +785,11 @@ impl TempoHandlerHooks {
         let features = host.version().features;
         let beneficiary = host.block().beneficiary;
         let skip_liquidity_check = host.ext().skip_liquidity_check;
-        let fee_manager = host.ext().fee_manager.clone();
-        if !context.collected.is_zero()
-            && let Err(error) = fee_manager.collect_fee_pre_tx(
+        let use_default_fm = is_default_fee_manager(&host.ext().fee_manager);
+        let pre_res = if context.collected.is_zero() {
+            Ok(Address::ZERO)
+        } else if use_default_fm {
+            TempoFeeManager.collect_fee_pre_tx(
                 ProtocolFeeContext { host },
                 context.fee_payer,
                 context.fee_token,
@@ -719,11 +797,27 @@ impl TempoHandlerHooks {
                 beneficiary,
                 skip_liquidity_check,
             )
-        {
+        } else {
+            let fee_manager = host.ext().fee_manager.clone();
+            fee_manager.collect_fee_pre_tx(
+                ProtocolFeeContext { host },
+                context.fee_payer,
+                context.fee_token,
+                context.collected,
+                beneficiary,
+                skip_liquidity_check,
+            )
+        };
+        if let Err(error) = pre_res {
             host.state_mut().rollback(checkpoint, features);
             return Err(match error {
                 TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
-                    let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
+                    let validator_token = if use_default_fm {
+                        TempoFeeManager.get_validator_token(host, beneficiary).ok()
+                    } else {
+                        let fee_manager = host.ext().fee_manager.clone();
+                        fee_manager.get_validator_token(host, beneficiary).ok()
+                    };
                     TempoInvalidTransaction::from(FeePaymentError::InsufficientAmmLiquidity {
                         user_token: validator_token.map(|_| context.fee_token),
                         validator_token,
@@ -772,7 +866,10 @@ fn settle_storage_credit_refunds(
     host: &mut Evm<'_, TempoEvmTypes>,
     result: &mut evm2::interpreter::MessageResult<TempoEvmTypes>,
 ) -> HandlerResult<()> {
-    if !host.config_spec_id().is_t7() || !result.is_success() {
+    if !host.config_spec_id().is_t7()
+        || !result.is_success()
+        || !host.ext().tx_transient_seeds.has_storage_credit_refunds
+    {
         return Ok(());
     }
 

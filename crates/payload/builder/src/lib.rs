@@ -496,7 +496,8 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = handle.take_state_hook();
+            let mut state_hook = handle.take_state_hook();
+            let mut hook = self.spawn_batched_state_hook(move |state| state_hook.on_state(state));
             executor.set_state_hook(move |state| hook.on_state(state));
         }
 
@@ -1254,6 +1255,23 @@ where
         Ok(BuildOutcome::Freeze(payload))
     }
 
+    /// Spawns a background task that batches and deduplicates per-transaction state updates
+    /// before forwarding them to the parallel state-root hook.
+    fn spawn_batched_state_hook(
+        &self,
+        mut on_state: impl FnMut(reth_evm::StateUpdate) + Send + 'static,
+    ) -> BatchedStateHook {
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<reth_evm::StateUpdate>>();
+        self.executor
+            .spawn_blocking_named("builder-state-hook", move || {
+                let mut scratch = tempo_evm::StateUpdateMergeScratch::default();
+                while let Ok(batch) = rx.recv() {
+                    tempo_evm::merge_and_emit_state_updates(batch, &mut scratch, &mut on_state);
+                }
+            });
+        BatchedStateHook::new(tx)
+    }
+
     fn spawn_roots_tasks(&self, collect_receipts: bool) -> RootsTaskHandles {
         let (txs_tx, txs_rx) = crossbeam_channel::unbounded::<Vec<BestTransaction>>();
         let (tx_result_tx, tx_result_rx) = oneshot::channel();
@@ -1384,6 +1402,49 @@ type RootsTaskHandles = (
     oneshot::Receiver<ReceiptRootTaskResult>,
 );
 
+use tempo_evm::STATE_HOOK_BATCH_SIZE;
+
+struct BatchedStateHook {
+    tx: Option<Sender<Vec<reth_evm::StateUpdate>>>,
+    batch: Vec<reth_evm::StateUpdate>,
+}
+
+impl BatchedStateHook {
+    fn new(tx: Sender<Vec<reth_evm::StateUpdate>>) -> Self {
+        Self {
+            tx: Some(tx),
+            batch: Vec::with_capacity(STATE_HOOK_BATCH_SIZE),
+        }
+    }
+
+    #[inline]
+    fn on_state(&mut self, state: reth_evm::StateUpdate) {
+        if state.is_empty() {
+            return;
+        }
+        self.batch.push(state);
+        if self.batch.len() >= STATE_HOOK_BATCH_SIZE {
+            let batch =
+                std::mem::replace(&mut self.batch, Vec::with_capacity(STATE_HOOK_BATCH_SIZE));
+            if let Some(tx) = &self.tx {
+                let _ = tx.send(batch);
+            }
+        }
+    }
+}
+
+impl Drop for BatchedStateHook {
+    fn drop(&mut self) {
+        if !std::thread::panicking()
+            && !self.batch.is_empty()
+            && let Some(tx) = &self.tx
+        {
+            let _ = tx.send(std::mem::take(&mut self.batch));
+        }
+        drop(self.tx.take());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1430,5 +1491,140 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
+    }
+
+    #[test]
+    fn test_merge_state_updates_matches_unbatched_hashed_post_state() {
+        use alloy_primitives::{B256, keccak256};
+        use reth_primitives_traits::Account;
+        use reth_trie_common::{HashedPostState, HashedStorage, bundle_state::StorageSlot};
+        use tempo_evm::{AccountInfo, AccountUpdate};
+
+        fn to_hashed(update: &reth_evm::StateUpdate) -> HashedPostState {
+            let mut out = HashedPostState::with_capacity(update.accounts.len());
+            for account in &update.accounts {
+                let hashed_addr = keccak256(account.address);
+                let destroyed = account.current.is_none();
+                let info = account.current.clone().unwrap_or_default();
+                let unchanged = account.original.as_ref() == Some(&info);
+                if destroyed {
+                    out.accounts.insert(hashed_addr, None);
+                } else if !unchanged {
+                    out.accounts.insert(hashed_addr, Some(Account::from(&info)));
+                }
+                if !destroyed && !account.storage.is_empty() {
+                    out.storages.insert(
+                        hashed_addr,
+                        HashedStorage::from_iter(
+                            account
+                                .storage
+                                .iter()
+                                .map(|(k, slot)| (keccak256(B256::from(*k)), slot.present_value)),
+                        ),
+                    );
+                }
+            }
+            out
+        }
+
+        let a1 = Address::repeat_byte(0x11);
+        let a2 = Address::repeat_byte(0x22);
+        let a3 = Address::repeat_byte(0x33);
+        let info = |nonce: u64| AccountInfo {
+            nonce,
+            ..Default::default()
+        };
+
+        let updates = vec![
+            reth_evm::StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: a1,
+                    original: Some(info(1)),
+                    current: Some(info(2)),
+                    created: false,
+                    wiped: false,
+                    storage: vec![
+                        (
+                            U256::from(1),
+                            StorageSlot::new_changed(U256::ZERO, U256::from(10)),
+                        ),
+                        (
+                            U256::from(2),
+                            StorageSlot::new_changed(U256::from(5), U256::from(6)),
+                        ),
+                    ],
+                }],
+            },
+            reth_evm::StateUpdate {
+                accounts: vec![
+                    AccountUpdate {
+                        address: a1,
+                        original: Some(info(2)),
+                        current: Some(info(3)),
+                        created: false,
+                        wiped: false,
+                        storage: vec![
+                            (
+                                U256::from(1),
+                                StorageSlot::new_changed(U256::from(10), U256::ZERO),
+                            ),
+                            (
+                                U256::from(3),
+                                StorageSlot::new_changed(U256::ZERO, U256::from(99)),
+                            ),
+                        ],
+                    },
+                    AccountUpdate {
+                        address: a2,
+                        original: Some(info(1)),
+                        current: Some(info(1)),
+                        created: false,
+                        wiped: false,
+                        storage: vec![(
+                            U256::from(7),
+                            StorageSlot::new_changed(U256::ZERO, U256::from(42)),
+                        )],
+                    },
+                ],
+            },
+            reth_evm::StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: a3,
+                    original: Some(info(1)),
+                    current: None,
+                    created: false,
+                    wiped: true,
+                    storage: vec![],
+                }],
+            },
+            reth_evm::StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: a1,
+                    original: Some(info(3)),
+                    current: Some(info(4)),
+                    created: false,
+                    wiped: false,
+                    storage: vec![(
+                        U256::from(2),
+                        StorageSlot::new_changed(U256::from(6), U256::from(8)),
+                    )],
+                }],
+            },
+        ];
+
+        let mut expected = HashedPostState::default();
+        for u in &updates {
+            expected.extend(to_hashed(u));
+        }
+
+        let mut actual = HashedPostState::default();
+        let mut emitted = 0usize;
+        let mut scratch = tempo_evm::StateUpdateMergeScratch::default();
+        tempo_evm::merge_and_emit_state_updates(updates, &mut scratch, |u| {
+            emitted += 1;
+            actual.extend(to_hashed(&u));
+        });
+        assert_eq!(emitted, 3);
+        assert_eq!(actual, expected);
     }
 }

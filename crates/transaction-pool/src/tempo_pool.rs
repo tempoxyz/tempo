@@ -1168,18 +1168,20 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        Box::new(self.aa_2d_pool.read().best_transactions())
+        Box::new(AA2dPool::best_transactions_from_lock(
+            &self.aa_2d_pool,
+            None,
+        ))
     }
 
     fn best_transactions_with_attributes(
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        Box::new(
-            self.aa_2d_pool
-                .read()
-                .best_transactions_with_base_fee(attributes.basefee),
-        )
+        Box::new(AA2dPool::best_transactions_from_lock(
+            &self.aa_2d_pool,
+            Some(attributes.basefee),
+        ))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {

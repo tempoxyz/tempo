@@ -9,7 +9,7 @@ use crate::{
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnv as _, database::StateProviderDatabase};
 use reth_primitives_traits::{
@@ -91,6 +91,23 @@ const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
 /// Validator for Tempo transactions.
+/// Reusable tip-scoped pool of StateProviderBox instances.
+struct StateProviderPool {
+    providers: Mutex<(B256, Vec<StateProviderBox>)>,
+    /// Pure address-to-slot cache reused across validations (deterministic across blocks).
+    slot_caches: Mutex<Vec<tempo_evm::SenderSlotCache>>,
+}
+
+impl core::fmt::Debug for StateProviderPool {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let guard = self.providers.lock();
+        f.debug_struct("StateProviderPool")
+            .field("tip", &guard.0)
+            .field("len", &guard.1.len())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Inner validator that performs default Ethereum tx validation.
@@ -112,6 +129,9 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
+    /// Reusable tip-scoped state providers to avoid per-validation overlay setup,
+    /// drained on every on_new_head_block so no DB reader outlives the tip.
+    state_provider_pool: StateProviderPool,
     /// The Tempo hardfork active at the current tip, stored as an index into
     /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
     ///
@@ -161,6 +181,10 @@ where
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
+            state_provider_pool: StateProviderPool {
+                providers: Mutex::new((latest_header.hash(), Vec::new())),
+                slot_caches: Mutex::new(Vec::new()),
+            },
             active_hardfork,
             metrics: ValidationMetrics::default(),
             admission_epoch: RwLock::default(),
@@ -415,49 +439,63 @@ where
         while transactions.peek().is_some() {
             // Not `read`, which would park behind an advance that waits on an admission's insert.
             let admission_epoch = *self.admission_epoch.read_recursive();
-            let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-                Ok(provider_and_cache) => provider_and_cache,
-                Err(err) => {
-                    for (tag, _, transaction) in transactions {
-                        on_outcome(
-                            tag,
-                            admission_epoch,
-                            TransactionValidationOutcome::Error(
-                                *transaction.hash(),
-                                Box::new(err.clone()),
-                            ),
-                        );
+            let (tip_hash, poolable, state_provider, cached_state) =
+                match self.latest_state_provider_and_cache_pooled() {
+                    Ok(provider_and_cache) => provider_and_cache,
+                    Err(err) => {
+                        for (tag, _, transaction) in transactions {
+                            on_outcome(
+                                tag,
+                                admission_epoch,
+                                TransactionValidationOutcome::Error(
+                                    *transaction.hash(),
+                                    Box::new(err.clone()),
+                                ),
+                            );
+                        }
+                        break;
                     }
-                    break;
-                }
-            };
-            let db = StateCacheDb::new(
-                &cached_state,
-                StateProviderDatabase::new(
-                    (&state_provider as &dyn StateProvider).into_evm_state_provider(),
-                ),
-            );
-            let mut evm_env = self
-                .cached_evm_env
-                .read()
-                .clone()
-                .with_nonce_check_disabled();
-            evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
-
-            // Reuse the configured EVM and its loaded reads for every transaction of this epoch.
-            let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
-            evm.ext_mut().skip_valid_after_check = true;
-            evm.ext_mut().skip_liquidity_check = true;
-
-            for (tag, origin, transaction) in transactions.by_ref() {
-                on_outcome(
-                    tag,
-                    admission_epoch,
-                    self.validate_one_with_evm(origin, transaction, &mut evm),
+                };
+            {
+                let db = StateCacheDb::new(
+                    &cached_state,
+                    StateProviderDatabase::new(
+                        (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+                    ),
                 );
-                if *self.admission_epoch.read_recursive() != admission_epoch {
-                    break;
+                let mut evm_env = self
+                    .cached_evm_env
+                    .read()
+                    .clone()
+                    .with_nonce_check_disabled();
+                evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
+
+                // Reuse the configured EVM and its loaded reads for every transaction of this epoch.
+                let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
+                evm.ext_mut().skip_valid_after_check = true;
+                evm.ext_mut().skip_liquidity_check = true;
+                if let Some(slot_cache) = self.state_provider_pool.slot_caches.lock().pop() {
+                    evm.ext_mut().sender_slot_cache = slot_cache;
                 }
+
+                for (tag, origin, transaction) in transactions.by_ref() {
+                    on_outcome(
+                        tag,
+                        admission_epoch,
+                        self.validate_one_with_evm(origin, transaction, &mut evm),
+                    );
+                    if *self.admission_epoch.read_recursive() != admission_epoch {
+                        break;
+                    }
+                }
+                let slot_cache = core::mem::take(&mut evm.ext_mut().sender_slot_cache);
+                let mut slot_caches = self.state_provider_pool.slot_caches.lock();
+                if slot_caches.len() < Self::MAX_POOLED_STATE_PROVIDERS {
+                    slot_caches.push(slot_cache);
+                }
+            }
+            if poolable && *self.admission_epoch.read_recursive() == admission_epoch {
+                self.return_state_provider(tip_hash, state_provider);
             }
         }
         self.metrics.batch_duration_seconds.record(start.elapsed());
@@ -466,12 +504,39 @@ where
     /// Returns the current tip's state provider and matching read cache.
     ///
     /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
+    const MAX_POOLED_STATE_PROVIDERS: usize = 32;
+
+    #[cfg(test)]
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+        let (_, _, provider, cache) = self.latest_state_provider_and_cache_pooled()?;
+        Ok((provider, cache))
+    }
+
+    fn latest_state_provider_and_cache_pooled(
+        &self,
+    ) -> ProviderResult<(B256, bool, StateProviderBox, Arc<StateCache>)> {
         let tip = self.inner.client().chain_info()?.best_hash;
+        {
+            let mut pool = self.state_provider_pool.providers.lock();
+            if pool.0 == tip
+                && let Some(provider) = pool.1.pop()
+            {
+                return Ok((tip, true, provider, self.state_cache_for_tip(tip)));
+            }
+        }
         let tip_provider = self.inner.client().state_by_block_hash(tip);
-        self.provider_and_cache_for_tip(tip, tip_provider)
+        let tip_matched = tip_provider.is_ok();
+        let (provider, cache) = self.provider_and_cache_for_tip(tip, tip_provider)?;
+        Ok((tip, tip_matched, provider, cache))
+    }
+
+    fn return_state_provider(&self, tip: B256, provider: StateProviderBox) {
+        let mut pool = self.state_provider_pool.providers.lock();
+        if pool.0 == tip && pool.1.len() < Self::MAX_POOLED_STATE_PROVIDERS {
+            pool.1.push(provider);
+        }
     }
 
     /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
@@ -940,6 +1005,11 @@ where
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+        {
+            let mut pool = self.state_provider_pool.providers.lock();
+            pool.0 = new_tip_block.hash();
+            pool.1.clear();
+        }
 
         // Reth calls this before it updates its pool for the new tip, so the advance comes after
         // everything refreshed above and before that repair.

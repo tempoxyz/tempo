@@ -16,6 +16,7 @@ pub mod account_keychain;
 pub mod address_registry;
 pub mod configurable_account;
 pub mod current_committee;
+pub mod modexp_fast;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -230,6 +231,7 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
+        crate::modexp_fast::install_tempo_crypto();
         Self {
             base,
             spec,

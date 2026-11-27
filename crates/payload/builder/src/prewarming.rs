@@ -23,6 +23,22 @@ use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
 
+/// Maximum concurrent sequential prewarming batches so high-core-count hosts do not thrash
+/// work-stealing queues or starve the payload builder and state-root threads.
+const SEQUENTIAL_PREWARM_MAX_INFLIGHT: usize = 16;
+
+/// Number of transactions prewarmed per sequential worker task.
+const SEQUENTIAL_PREWARM_BATCH_SIZE: usize = 8;
+
+#[inline]
+fn initial_prewarm_jobs(threads: usize, parallel: bool) -> usize {
+    if parallel {
+        threads * 2
+    } else {
+        threads.min(SEQUENTIAL_PREWARM_MAX_INFLIGHT)
+    }
+}
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -89,12 +105,45 @@ impl BestTransactionsPrewarming {
         let pool = &stateful_pool;
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
+            if ctx.prewarm.parallel {
+                let prewarm = ctx.prewarm.clone();
+                scope.spawn(move |_| {
+                    pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                });
+            }
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                if !ctx.prewarm.parallel {
+                    let mut batch = Vec::with_capacity(SEQUENTIAL_PREWARM_BATCH_SIZE);
+                    for _ in 0..SEQUENTIAL_PREWARM_BATCH_SIZE {
+                        let Some(tx) = ctx.best_txs.next() else {
+                            let _ = ctx.transactions_tx.send(None);
+                            break;
+                        };
+                        let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                            let offset = ctx.next_expiring_nonce_offset;
+                            ctx.next_expiring_nonce_offset += 1;
+                            Some(offset)
+                        } else {
+                            None
+                        };
+                        let _ = ctx
+                            .transactions_tx
+                            .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                        batch.push((tx, expiring_nonce_offset));
+                    }
+                    if batch.is_empty() {
+                        return;
+                    }
+                    let prewarm = ctx.prewarm.clone();
+                    let commands_tx = ctx.commands_tx.clone();
+                    scope.spawn(move |_| {
+                        Self::prewarm_sequential_batch(pool, prewarm, batch);
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    });
+                    return;
+                }
+
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
@@ -107,32 +156,20 @@ impl BestTransactionsPrewarming {
                     None
                 };
 
-                let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                // Only parallel jobs send their result; in sequential mode the transaction is
-                // forwarded below before its prewarm job runs.
-                let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
-
-                if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
-                }
+                let transactions_tx = ctx.transactions_tx.clone();
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                    if let Some(transactions_tx) = transactions_tx {
-                        let _ = transactions_tx.send(Some(tx));
-                    }
+                    let _ = transactions_tx.send(Some(tx));
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
 
-            // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            let initial_jobs =
+                initial_prewarm_jobs(pool.current_num_threads(), ctx.prewarm.parallel);
+            for _ in 0..initial_jobs {
                 advance(&mut ctx);
             }
 
@@ -158,6 +195,41 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
+    }
+
+    /// Prewarms a batch of transactions sequentially on a single worker thread.
+    fn prewarm_sequential_batch<Provider>(
+        pool: &WorkerStatefulPool,
+        prewarm: PrewarmingExecutionContext<Provider>,
+        batch: Vec<(BestTransaction, Option<usize>)>,
+    ) where
+        Provider: StateProviderFactory + Clone + 'static,
+    {
+        if prewarm.is_stopped() {
+            return;
+        }
+        pool.get_or_init(
+            || prewarm.evm_for_ctx(),
+            |evm| {
+                let Some(evm) = evm.as_mut() else {
+                    return;
+                };
+                for (tx, expiring_nonce_offset) in batch {
+                    if prewarm.is_stopped() {
+                        break;
+                    }
+                    let mut tx_env = tx.transaction.clone_tx_env();
+                    tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
+                    let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
+                    if let Err(err) = evm.transact(&tx_env).map(|_| ()) {
+                        evm.ext().actions.clear();
+                        trace!(target: "payload_builder", %err, "Failed to prewarm transaction by execution");
+                    } else {
+                        trace!(target: "payload_builder", "Prewarmed transaction");
+                    }
+                }
+            },
+        );
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -843,7 +915,8 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances =
+            initial_prewarm_jobs(executor.prewarming_pool().current_num_threads(), false);
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 

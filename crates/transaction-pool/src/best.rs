@@ -4,10 +4,25 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_primitives::{Address, U256};
 use std::{
     collections::HashMap,
-    hash::{BuildHasher, Hasher, RandomState},
+    hash::{BuildHasher, Hash, Hasher, RandomState},
 };
 
-/// Randomly seeded fast hasher for `(token_address, storage_slot)` keys.
+/// `(token_address, storage_slot)` key with fast hashing for Keccak-derived TIP-20 slots.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TokenSlotKey(Address, U256);
+
+impl Hash for TokenSlotKey {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let b = self.0.0.0;
+        let addr_tail =
+            u64::from_ne_bytes([b[12], b[13], b[14], b[15], b[16], b[17], b[18], b[19]]);
+        let limbs = self.1.as_limbs();
+        state.write_u64(limbs[0] ^ limbs[1].rotate_left(17) ^ addr_tail);
+    }
+}
+
+/// Randomly seeded fast hasher for [`TokenSlotKey`].
 #[derive(Clone, Copy)]
 struct SlotKeyBuildHasher(u64);
 
@@ -32,36 +47,27 @@ struct SlotKeyHasher(u64);
 impl Hasher for SlotKeyHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        let mut h = self.0;
-        h ^= h >> 33;
-        h = h.wrapping_mul(0xff51afd7ed558ccd);
-        h ^= h >> 33;
-        h
+        self.0
     }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        let (chunks, rem) = bytes.as_chunks::<8>();
-        for &chunk in chunks {
-            let v = u64::from_ne_bytes(chunk);
-            self.0 = (self.0 ^ v).wrapping_mul(0x9e3779b97f4a7c15);
+        let mut acc = self.0;
+        for &b in bytes {
+            acc = (acc ^ u64::from(b)).wrapping_mul(0x9e3779b97f4a7c15);
         }
-        if !rem.is_empty() {
-            let mut tail = 0u64;
-            for &b in rem {
-                tail = (tail << 8) | u64::from(b);
-            }
-            self.0 = (self.0 ^ tail).wrapping_mul(0x9e3779b97f4a7c15);
-        }
+        self.0 = acc;
     }
 
     #[inline]
     fn write_u64(&mut self, i: u64) {
-        self.0 = (self.0 ^ i).wrapping_mul(0x9e3779b97f4a7c15);
+        let mut h = (self.0 ^ i).wrapping_mul(0x9e3779b97f4a7c15);
+        h ^= h >> 33;
+        self.0 = h;
     }
 }
 
-type BalanceMap = HashMap<(Address, U256), U256, SlotKeyBuildHasher>;
+type BalanceMap = HashMap<TokenSlotKey, U256, SlotKeyBuildHasher>;
 pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;
@@ -87,10 +93,14 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
         }
 
         if change.current < change.original {
-            self.0.insert((change.address, change.key), change.current);
-        } else if !self.0.is_empty()
+            self.0
+                .insert(TokenSlotKey(change.address, change.key), change.current);
+        } else if change.current > change.original
+            && !self.0.is_empty()
             && change.key != tempo_precompiles::tip20::TIP_FEE_MANAGER_BALANCE_SLOT
-            && let Some(balance) = self.0.get_mut(&(change.address, change.key))
+            && change.key != tempo_precompiles::tip20::TIP20_CHANNEL_RESERVE_BALANCE_SLOT
+            && (change.key.as_limbs()[1] | change.key.as_limbs()[2] | change.key.as_limbs()[3]) != 0
+            && let Some(balance) = self.0.get_mut(&TokenSlotKey(change.address, change.key))
         {
             *balance = change.current;
         }
@@ -123,7 +133,10 @@ where
     pub fn new(inner: I, fallback_fee_tokens: &'static [Address]) -> Self {
         Self {
             inner,
-            decreased_balances: BalanceMap::default(),
+            decreased_balances: BalanceMap::with_capacity_and_hasher(
+                1024,
+                SlotKeyBuildHasher::default(),
+            ),
             fallback_fee_tokens,
         }
     }
@@ -157,7 +170,7 @@ where
                 candidate != token
                     && self
                         .decreased_balances
-                        .get(&(candidate, slot))
+                        .get(&TokenSlotKey(candidate, slot))
                         .is_none_or(|&balance| balance >= fee)
             })
     }
@@ -181,7 +194,7 @@ where
             };
 
             let fee = best_tx.transaction.fee_token_cost();
-            if let Some(&balance) = self.decreased_balances.get(&key)
+            if let Some(&balance) = self.decreased_balances.get(&TokenSlotKey(key.0, key.1))
                 && balance < fee
                 && !self.may_use_other_fallback_token(best_tx, key, fee)
             {
@@ -254,7 +267,7 @@ mod tests {
             StateAwareBestTransactions::new(pool.best_transactions(), fallback_fee_tokens);
         for &token in drained {
             best.decreased_balances
-                .insert((token, slot), fee - U256::ONE);
+                .insert(TokenSlotKey(token, slot), fee - U256::ONE);
         }
         best.next().is_some()
     }

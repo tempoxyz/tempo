@@ -30,8 +30,9 @@ pub use action_replay::{
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{
-    ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
-    deploy_precompile_at_boundary,
+    ExecutorState, STATE_HOOK_BATCH_SIZE, StateUpdateMergeScratch, TempoBlockExecutor,
+    TempoReceiptBuilder, TempoTxResult, deploy_precompile_at_boundary,
+    merge_and_emit_state_updates,
 };
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
@@ -253,7 +254,8 @@ impl ConfigureEvm for TempoEvmConfig {
     where
         DB: Database + 'a,
     {
-        let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
+        let mut ext = self.evm_factory.evm_ext(TempoEvmExt::default());
+        ext.batch_state_hook = true;
         let precompiles =
             self.evm_factory
                 .cached_precompiles(&evm_env, &ext, cache_map, metrics_enabled);
@@ -397,6 +399,9 @@ impl ConfigureEvm for TempoEvmConfig {
         })
     }
 }
+
+#[doc(hidden)]
+pub use evm2::{block::AccountUpdate, evm::AccountInfo};
 
 #[cfg(test)]
 mod tests {
