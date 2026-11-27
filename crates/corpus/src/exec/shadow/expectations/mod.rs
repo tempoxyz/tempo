@@ -1,7 +1,7 @@
 //! Reviewed baseline and fork-specific expectations for shadow replay.
 //!
-//! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
-//! accepts it.
+//! Checks receive one difference, not a transaction, and accept it or leave it unexplained. Fork
+//! rules come from one JSON file per candidate hardfork, compiled into the binary.
 
 use super::{
     Arms, Boundary, Evidence, ObservedTx, TxEvidence,
@@ -10,9 +10,12 @@ use super::{
 };
 use alloy_consensus::Transaction as _;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use eyre::WrapErr as _;
+use serde::Deserialize;
+use std::collections::HashSet;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
-    precompiles::*,
+    precompiles::{ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS},
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
         T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME,
@@ -25,7 +28,34 @@ use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 #[derive(Debug)]
 pub(crate) struct Expectation {
     pub id: &'static str,
-    pub check: fn(&Context<'_>, &Field) -> Option<()>,
+    pub check: Check,
+}
+
+impl Expectation {
+    /// Whether this expectation explains the difference in `field`.
+    pub(super) fn accepts(&self, ctx: &Context<'_>, field: &Field) -> bool {
+        match &self.check {
+            Check::Fn(check) => check(ctx, field).is_some(),
+            Check::RuntimeUpgrade(upgrades) => runtime_upgrade(ctx, field, upgrades).is_some(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Check {
+    /// A check written in Rust. `None` leaves the difference unexplained.
+    Fn(fn(&Context<'_>, &Field) -> Option<()>),
+    /// Pre-block code changes the candidate makes to these accounts.
+    RuntimeUpgrade(Vec<RuntimeUpgrade>),
+}
+
+/// A code change the candidate's pre-block setup makes to `address`.
+#[derive(Debug)]
+pub(crate) struct RuntimeUpgrade {
+    address: Address,
+    /// Code hashes the account may have before the change, besides empty code.
+    from: Vec<B256>,
+    to: B256,
 }
 
 #[derive(Clone, Copy)]
@@ -62,9 +92,9 @@ impl Context<'_> {
 }
 
 /// Accepts only the storage effect of a verified, gas-derived post-transaction fee hook.
-const FEE_STATE: Expectation = Expectation {
+static FEE_STATE: Expectation = Expectation {
     id: "fee.post-tx-state",
-    check: |ctx, field| {
+    check: Check::Fn(|ctx, field| {
         if field.name != "storage" || !field.fee_associated {
             return None;
         }
@@ -107,70 +137,17 @@ const FEE_STATE: Expectation = Expectation {
         let shadow_net = shadow.changes.account(address).storage(slot)?;
         (real_net.0 == shadow_net.0 && real_net.1 == real_after && shadow_net.1 == shadow_after)
             .then_some(())
-    },
+    }),
 };
 
-const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
-    id: "t13.zone-runtime-upgrade",
-    check: |ctx, field| {
-        shadow_runtime_upgrade(ctx, field, |address| match address {
-            ZONE_PORTAL_IMPL_ADDRESS => Some((vec![ZONE_PORTAL_RUNTIME], T13_ZONE_PORTAL_RUNTIME)),
-            ZONE_VERIFIER_ADDRESS => Some((vec![ZONE_VERIFIER_RUNTIME], T13_ZONE_VERIFIER_RUNTIME)),
-            ZONE_MESSENGER_ADDRESS => {
-                Some((vec![ZONE_MESSENGER_RUNTIME], T13_ZONE_MESSENGER_RUNTIME))
-            }
-            _ => None,
-        })
-    },
-};
-
-const T14_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
-    id: "t14.zone-portal-upgrade",
-    check: |ctx, field| {
-        // T14 replaces only the portal runtime. A shadow arm that skips T13 upgrades directly.
-        shadow_runtime_upgrade(ctx, field, |address| {
-            (address == ZONE_PORTAL_IMPL_ADDRESS).then(|| {
-                (
-                    vec![ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
-                    T14_ZONE_PORTAL_RUNTIME,
-                )
-            })
-        })
-    },
-};
-
-const T15_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
-    id: "t15.zone-runtime-upgrade",
-    check: |ctx, field| {
-        // T15 replaces only the portal runtime. A shadow arm that skips earlier upgrades moves
-        // directly to it.
-        shadow_runtime_upgrade(ctx, field, |address| {
-            (address == ZONE_PORTAL_IMPL_ADDRESS).then(|| {
-                (
-                    vec![
-                        ZONE_PORTAL_RUNTIME,
-                        T13_ZONE_PORTAL_RUNTIME,
-                        T14_ZONE_PORTAL_RUNTIME,
-                    ],
-                    T15_ZONE_PORTAL_RUNTIME,
-                )
-            })
-        })
-    },
-};
-
-/// Accepts a pre-block code change made by the shadow arm, from empty code or one of the selected
-/// old runtimes to the selected new runtime.
-fn shadow_runtime_upgrade(
-    ctx: &Context<'_>,
-    field: &Field,
-    runtimes: impl FnOnce(Address) -> Option<(Vec<Bytes>, Bytes)>,
-) -> Option<()> {
+/// Accepts a pre-block code change made by the shadow arm, from empty code or one of an
+/// upgrade's old runtimes to its new runtime.
+fn runtime_upgrade(ctx: &Context<'_>, field: &Field, upgrades: &[RuntimeUpgrade]) -> Option<()> {
     if ctx.boundary != Boundary::PreBlock || field.name != "code" || field.slot.is_some() {
         return None;
     }
     let address = field.address?;
-    let (old_runtimes, new_runtime) = runtimes(address)?;
+    let upgrade = upgrades.iter().find(|upgrade| upgrade.address == address)?;
     let Arms { real, shadow } = ctx.evidence.pre_block.as_ref()?;
 
     // The canonical arm may activate an earlier expected runtime on this block, while the shadow
@@ -178,43 +155,140 @@ fn shadow_runtime_upgrade(
     if real
         .account(address)
         .info(|info| info.code_hash)
-        .is_some_and(|(_, after)| !old_runtimes.iter().any(|old| after == keccak256(old)))
+        .is_some_and(|(_, after)| !upgrade.from.contains(&after))
     {
         return None;
     }
     let change = shadow.account(address).0?;
     let after = change.after.as_ref()?.code_hash;
 
-    (change.before.as_ref().is_none_or(|info| {
-        info.is_empty_code_hash()
-            || old_runtimes
-                .iter()
-                .any(|old| info.code_hash == keccak256(old))
-    }) && after == keccak256(&new_runtime))
-    .then_some(())
+    (change
+        .before
+        .as_ref()
+        .is_none_or(|info| info.is_empty_code_hash() || upgrade.from.contains(&info.code_hash))
+        && after == upgrade.to)
+        .then_some(())
 }
 
-/// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
-    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
-    (TempoHardfork::T14, &[T14_ZONE_PORTAL_UPGRADE]),
-    (TempoHardfork::T15, &[T15_ZONE_RUNTIME_UPGRADE]),
-];
-
+/// The baseline check, then the `rules` of forks `canonical` does not have, in order.
 pub(crate) fn between(
+    rules: &[(TempoHardfork, Expectation)],
     canonical: TempoHardfork,
-    candidate: TempoHardfork,
-) -> Vec<&'static Expectation> {
+) -> Vec<&Expectation> {
     // Gas-derived fee differences can occur for any fork pair.
     std::iter::once(&FEE_STATE)
         .chain(
-            REGISTRY
+            rules
                 .iter()
-                .filter(|(fork, _)| *fork > canonical && *fork <= candidate)
-                .flat_map(|(_, rules)| *rules),
+                .filter(|(fork, _)| *fork > canonical)
+                .map(|(_, rule)| rule),
         )
         .collect()
 }
+
+/// The fork rules for replay under `candidate`, each with the fork that introduces it, in fork
+/// order. Errors if `candidate` has no rule file.
+pub(crate) fn load(candidate: TempoHardfork) -> eyre::Result<Vec<(TempoHardfork, Expectation)>> {
+    let json = rule_file(candidate)
+        .ok_or_else(|| eyre::eyre!("no shadow expectations for {candidate}"))?;
+    parse(candidate, json).wrap_err_with(|| format!("invalid shadow expectations for {candidate}"))
+}
+
+fn rule_file(candidate: TempoHardfork) -> Option<&'static str> {
+    match candidate {
+        TempoHardfork::T13 => Some(include_str!("t13.json")),
+        TempoHardfork::T14 => Some(include_str!("t14.json")),
+        TempoHardfork::T15 => Some(include_str!("t15.json")),
+        _ => None,
+    }
+}
+
+/// A fork rule as a rule file lists it, naming `tempo-contracts` constants.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum Rule<'a> {
+    RuntimeUpgrade {
+        id: &'a str,
+        fork: TempoHardfork,
+        #[serde(borrow)]
+        accounts: Vec<RuntimeUpgradeNames<'a>>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeUpgradeNames<'a> {
+    address: &'a str,
+    #[serde(borrow)]
+    from: Vec<&'a str>,
+    to: &'a str,
+}
+
+fn parse(
+    candidate: TempoHardfork,
+    json: &'static str,
+) -> eyre::Result<Vec<(TempoHardfork, Expectation)>> {
+    let mut ids = HashSet::new();
+    let mut previous = TempoHardfork::Genesis;
+    serde_json::from_str::<Vec<Rule<'static>>>(json)?
+        .into_iter()
+        .map(|Rule::RuntimeUpgrade { id, fork, accounts }| {
+            eyre::ensure!(ids.insert(id), "duplicate expectation {id}");
+            eyre::ensure!(
+                previous <= fork && fork <= candidate,
+                "expectation {id} for {fork} is out of fork order or after {candidate}"
+            );
+            previous = fork;
+            let runtime_hash = |name| runtime(name).map(keccak256);
+            let upgrades = accounts
+                .into_iter()
+                .map(|upgrade| {
+                    Ok(RuntimeUpgrade {
+                        address: address(upgrade.address)?,
+                        from: upgrade
+                            .from
+                            .into_iter()
+                            .map(runtime_hash)
+                            .collect::<eyre::Result<_>>()?,
+                        to: runtime_hash(upgrade.to)?,
+                    })
+                })
+                .collect::<eyre::Result<_>>()
+                .wrap_err_with(|| format!("expectation {id}"))?;
+            let check = Check::RuntimeUpgrade(upgrades);
+            Ok((fork, Expectation { id, check }))
+        })
+        .collect()
+}
+
+/// Defines a lookup from a constant's name to its value, for the constants rule files may name.
+macro_rules! named_constants {
+    ($lookup:ident -> $ty:ty { $($constant:ident),* $(,)? }) => {
+        fn $lookup(name: &str) -> eyre::Result<$ty> {
+            match name {
+                $(stringify!($constant) => Ok($constant),)*
+                _ => eyre::bail!("unknown constant {name}"),
+            }
+        }
+    };
+}
+
+named_constants!(address -> Address {
+    ZONE_MESSENGER_ADDRESS,
+    ZONE_PORTAL_IMPL_ADDRESS,
+    ZONE_VERIFIER_ADDRESS,
+});
+
+named_constants!(runtime -> Bytes {
+    ZONE_MESSENGER_RUNTIME,
+    ZONE_PORTAL_RUNTIME,
+    ZONE_VERIFIER_RUNTIME,
+    T13_ZONE_MESSENGER_RUNTIME,
+    T13_ZONE_PORTAL_RUNTIME,
+    T13_ZONE_VERIFIER_RUNTIME,
+    T14_ZONE_PORTAL_RUNTIME,
+    T15_ZONE_PORTAL_RUNTIME,
+});
 
 #[cfg(test)]
 mod tests {
@@ -262,7 +336,16 @@ mod tests {
             base_fee: None,
             tx: None,
         };
-        (rule.check)(&ctx, field).is_some()
+        rule.accepts(&ctx, field)
+    }
+
+    /// The rule `id` from the T15 rule file, which lists every fork rule.
+    fn rule(id: &str) -> Expectation {
+        load(TempoHardfork::T15)
+            .unwrap()
+            .into_iter()
+            .find_map(|(_, rule)| (rule.id == id).then_some(rule))
+            .unwrap()
     }
 
     #[test]
@@ -277,8 +360,8 @@ mod tests {
             slot: None,
             fee_associated: false,
         };
-        let t13 = &T13_ZONE_RUNTIME_UPGRADE;
-        let t14 = &T14_ZONE_PORTAL_UPGRADE;
+        let t13 = &rule("t13.zone-runtime-upgrade");
+        let t14 = &rule("t14.zone-portal-upgrade");
         assert!(accepts_pre_block(
             t13,
             &code,
@@ -325,7 +408,7 @@ mod tests {
         // T14 and T15 leave the verifier on its T13 runtime.
         assert!(!accepts_pre_block(t14, &verifier, real(), upgraded()));
         assert!(!accepts_pre_block(
-            &T15_ZONE_RUNTIME_UPGRADE,
+            &rule("t15.zone-runtime-upgrade"),
             &verifier,
             real(),
             upgraded()
@@ -341,18 +424,14 @@ mod tests {
             slot: None,
             fee_associated: false,
         };
+        let t15 = rule("t15.zone-runtime-upgrade");
         let accepts = |before: &Bytes, after: &Bytes| {
             let before = AccountInfo {
                 code_hash: keccak256(before),
                 ..Default::default()
             };
             let shadow = changes(address, code_change(Some(before), keccak256(after)));
-            accepts_pre_block(
-                &T15_ZONE_RUNTIME_UPGRADE,
-                &code,
-                StepChanges::default(),
-                shadow,
-            )
+            accepts_pre_block(&t15, &code, StepChanges::default(), shadow)
         };
         for before in [
             ZONE_PORTAL_RUNTIME,
@@ -367,36 +446,99 @@ mod tests {
     #[test]
     fn selects_only_newly_active_forks() {
         use TempoHardfork::*;
-        let ids = |a, b| {
-            between(a, b)
+        let ids = |canonical, candidate| {
+            between(&load(candidate).unwrap(), canonical)
                 .into_iter()
                 .map(|rule| rule.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(T11, T12), [FEE_STATE.id]);
-        assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
+        let [fee, t13, t14, t15] = [
+            FEE_STATE.id,
+            "t13.zone-runtime-upgrade",
+            "t14.zone-portal-upgrade",
+            "t15.zone-runtime-upgrade",
+        ];
+        assert_eq!(ids(T12, T13), [fee, t13]);
         assert_eq!(ids(T11, T13), ids(T12, T13));
-        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_PORTAL_UPGRADE.id]);
-        assert_eq!(ids(T12, T14).len(), 3);
-        assert_eq!(ids(T12, T12), [FEE_STATE.id]);
-        assert_eq!(ids(T13, T12), [FEE_STATE.id]);
-        assert_eq!(ids(T14, T15), [FEE_STATE.id, T15_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(ids(T13, T13), [fee]);
+        assert_eq!(ids(T13, T14), [fee, t14]);
+        assert_eq!(ids(T12, T14), [fee, t13, t14]);
+        assert_eq!(ids(T14, T15), [fee, t15]);
+        assert_eq!(ids(T13, T15), [fee, t14, t15]);
+        assert_eq!(ids(T12, T15), [fee, t13, t14, t15]);
         assert_eq!(
-            ids(T13, T15),
-            [
-                FEE_STATE.id,
-                T14_ZONE_PORTAL_UPGRADE.id,
-                T15_ZONE_RUNTIME_UPGRADE.id
-            ]
+            load(T12).unwrap_err().to_string(),
+            "no shadow expectations for T12"
+        );
+    }
+
+    #[test]
+    fn rule_files_load_and_agree_on_shared_rules() {
+        let mut rules = std::collections::HashMap::new();
+        for &fork in TempoHardfork::VARIANTS {
+            let Some(json) = rule_file(fork) else {
+                continue;
+            };
+            load(fork).unwrap();
+            for rule in serde_json::from_str::<Vec<serde_json::Value>>(json).unwrap() {
+                let id = rule["id"].as_str().unwrap().to_owned();
+                let first = rules.entry(id.clone()).or_insert_with(|| rule.clone());
+                assert_eq!(*first, rule, "{id} differs in the {fork} rule file");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_rule_files_are_rejected() {
+        let upgrade = |id: &str, fork: &str, address: &str| {
+            format!(
+                r#"{{"id": "{id}", "fork": "{fork}", "kind": "runtime-upgrade", "accounts": [{{"address": "{address}", "from": [], "to": "T14_ZONE_PORTAL_RUNTIME"}}]}}"#
+            )
+        };
+        let portal = "ZONE_PORTAL_IMPL_ADDRESS";
+        let error = |rules: Vec<String>| {
+            let json = String::leak(format!("[{}]", rules.join(", ")));
+            format!("{:#}", parse(TempoHardfork::T14, json).unwrap_err())
+        };
+        assert_eq!(
+            error(vec![
+                upgrade("a", "T14", portal),
+                upgrade("a", "T14", portal)
+            ]),
+            "duplicate expectation a"
         );
         assert_eq!(
-            ids(T12, T15),
-            [
-                FEE_STATE.id,
-                T13_ZONE_RUNTIME_UPGRADE.id,
-                T14_ZONE_PORTAL_UPGRADE.id,
-                T15_ZONE_RUNTIME_UPGRADE.id
-            ]
+            error(vec![
+                upgrade("a", "T14", portal),
+                upgrade("b", "T13", portal)
+            ]),
+            "expectation b for T13 is out of fork order or after T14"
+        );
+        assert_eq!(
+            error(vec![upgrade("a", "T15", portal)]),
+            "expectation a for T15 is out of fork order or after T14"
+        );
+        assert_eq!(
+            error(vec![upgrade("a", "T14", "ZONE_PORTAL")]),
+            "expectation a: unknown constant ZONE_PORTAL"
+        );
+        assert_eq!(
+            error(vec![
+                upgrade("a", "T14", portal).replace(r#""to""#, r#""extra": 1, "to""#)
+            ]),
+            "unknown field `extra`, expected one of `address`, `from`, `to` at line 1 column 167"
+        );
+        assert_eq!(
+            error(vec![
+                upgrade("a", "T14", portal).replace(r#""kind""#, r#""extra": 1, "kind""#)
+            ]),
+            "unknown field `extra`, expected one of `id`, `fork`, `accounts` at line 1 column 167"
+        );
+        assert_eq!(
+            error(vec![
+                upgrade("a", "T14", portal).replace("runtime-upgrade", "storage")
+            ]),
+            "unknown variant `storage`, expected `runtime-upgrade` at line 1 column 45"
         );
     }
 
@@ -458,7 +600,7 @@ mod tests {
     fn equal_boundaries_do_not_invoke_rules() {
         let rule = Expectation {
             id: "must-not-run",
-            check: |_, _| panic!("equal values"),
+            check: Check::Fn(|_, _| panic!("equal values")),
         };
         let mut evidence = evidence(2);
         differs(&mut evidence, 1, [21_000, 21_000]);
@@ -552,15 +694,15 @@ mod tests {
     fn first_accepting_rule_owns_attribution() {
         let first = Expectation {
             id: "test.first-output",
-            check: |_, field| (field.name == "output").then_some(()),
+            check: Check::Fn(|_, field| (field.name == "output").then_some(())),
         };
         let second = Expectation {
             id: "test.second-output",
-            check: |_, field| (field.name == "output").then_some(()),
+            check: Check::Fn(|_, field| (field.name == "output").then_some(())),
         };
         let unreachable = Expectation {
             id: "must-not-run",
-            check: |_, _| panic!("already accepted"),
+            check: Check::Fn(|_, _| panic!("already accepted")),
         };
         let mut evidence = evidence(1);
         differs(&mut evidence, 0, [21_000, 21_200])

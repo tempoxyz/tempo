@@ -31,6 +31,7 @@ use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::{Report, StepChanges};
 use evm2::AnyError;
+use expectations::Expectation;
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutionError, InternalBlockExecutionError};
@@ -65,17 +66,20 @@ pub struct ShadowReplayer {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
+    rules: Vec<(TempoHardfork, Expectation)>,
 }
 
 impl ShadowReplayer {
     /// Compares execution under `real_config` with execution under `shadow_hardfork`'s rules.
-    pub fn new(real_config: TempoEvmConfig, shadow_hardfork: TempoHardfork) -> Self {
+    /// Errors if `shadow_hardfork` has no shadow expectations.
+    pub fn new(real_config: TempoEvmConfig, shadow_hardfork: TempoHardfork) -> eyre::Result<Self> {
         let shadow_spec = shadow_spec(real_config.chain_spec(), shadow_hardfork);
-        Self {
+        Ok(Self {
             real_config,
             shadow_config: TempoEvmConfig::new(Arc::new(shadow_spec)),
             shadow_hardfork,
-        }
+            rules: expectations::load(shadow_hardfork)?,
+        })
     }
 
     /// The candidate hardfork blocks are replayed under.
@@ -100,7 +104,7 @@ impl ShadowReplayer {
             return Ok(None);
         }
         let evidence = self.execute(input, block, executed)?;
-        let rules = expectations::between(canonical, self.shadow_hardfork);
+        let rules = expectations::between(&self.rules, canonical);
         let report = Report::analyze(&evidence, &rules, block);
         let outcome = report.outcome(&evidence);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {

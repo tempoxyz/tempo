@@ -60,7 +60,7 @@ alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 alloy-eip7928 = { workspace = true, optional = true }
 alloy-eips.workspace = true
-tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-chainspec = { workspace = true, features = ["reth", "serde"] }
 tempo-fuzz-types.workspace = true
 
 bincode.workspace = true

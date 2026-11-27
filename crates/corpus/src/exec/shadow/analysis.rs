@@ -134,7 +134,7 @@ impl Report {
         }
         let accepted = rules
             .iter()
-            .find_map(|rule| (rule.check)(ctx, &field).map(|()| rule.id));
+            .find_map(|rule| rule.accepts(ctx, &field).then_some(rule.id));
         let rule_id = match accepted {
             Some(id) => {
                 *self.expected.entry(id).or_default() += 1;
