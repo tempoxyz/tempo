@@ -47,6 +47,13 @@ slow-timeout = { period = "5m", terminate-after = 1 }
 filter = "package(tempo-node) & binary(it)"
 threads-required = 4
 
+# Waits for 8192 L1 blocks to cross the real EIP-2935 window. Start it first.
+[[profile.default.overrides]]
+filter = "package(zone-node) & test(test_pending_batch_settles_via_ancestry_after_quorum_outage)"
+slow-timeout = { period = "8m", terminate-after = 1 }
+retries = 0
+priority = 100
+
 [[profile.default.overrides]]
 filter = "test(can_restart_after_joining_from_snapshot)"
 failure-output = "final"
