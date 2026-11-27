@@ -63,6 +63,7 @@ RUN apt-get -o Acquire::Check-Valid-Until=false update && \
         libjemalloc-dev \
         libclang-dev \
         clang \
+        cmake \
         libssl-dev \
         pkg-config \
         mold && \

@@ -27,6 +27,7 @@ RUN apt-get update \
     libssl-dev \
     build-essential \
     clang \
+    cmake \
     libclang-dev \
     mold \
     && rm -rf /var/lib/apt/lists/*

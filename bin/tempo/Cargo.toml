@@ -153,7 +153,7 @@ path = "src/localnet.rs"
 required-features = ["localnet"]
 
 [features]
-default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
+default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global", "bn254-mcl"]
 
 # Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
 # contrib/antithesis/zones/Dockerfile). Linux only.
@@ -185,6 +185,10 @@ asm-keccak = [
 	"reth-ethereum-cli/asm-keccak",
 	"reth-ethereum/asm-keccak",
 ]
+# Runs the BN254 precompiles on MCL instead of arkworks. On x86-64 CPUs with BMI2 and ADX, MCL's
+# static destructor frees its JIT code at process exit, so a BN254 call still running on another
+# thread then can crash the process.
+bn254-mcl = ["tempo-evm/bn254-mcl"]
 keccak-cache-global = [
 	"alloy-primitives/keccak-cache-global",
 	"reth-ethereum/keccak-cache-global"

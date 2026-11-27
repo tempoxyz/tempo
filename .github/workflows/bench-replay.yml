@@ -197,7 +197,7 @@ jobs:
       BENCH_ACTOR: ${{ inputs.actor }}
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp,min-debug-logs' || 'jemalloc,asm-keccak,keccak-cache-global,min-debug-logs' }}
+      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,bn254-mcl,otlp,min-debug-logs' || 'jemalloc,asm-keccak,keccak-cache-global,bn254-mcl,min-debug-logs' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
