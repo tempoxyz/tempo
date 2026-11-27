@@ -637,7 +637,7 @@ where
                 };
                 break stop_reason;
             };
-            let tx = pool_tx.tx.clone();
+            let tx = &pool_tx.tx;
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used =
@@ -827,7 +827,7 @@ where
             if !executor.receipts().last().unwrap().success {
                 reverted_transactions += 1;
             }
-            tx_roots_batch.push(tx);
+            tx_roots_batch.push(pool_tx.tx);
             if !drain_receipts {
                 rcpt_roots_batch.push(executor.receipts().last().unwrap().clone());
             }

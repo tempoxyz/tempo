@@ -297,7 +297,7 @@ impl TempoBlockExecutor<'_> {
         let ptr_u32 = ptr
             .try_into()
             .map_err(|_| StorageActionReplayError::ActionConflict)?;
-        let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
+        let ring_slot = tempo_precompiles::nonce::expiring_nonce_ring_slot(ptr_u32);
         let old_hash = db
             .get_storage(&NONCE_PRECOMPILE_ADDRESS, &ring_slot)
             .map_err(map_database_error)?;

@@ -232,6 +232,33 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
+    // Fast path for primitive-signed AA transactions on Tempo L1 without key authorization or fee payer.
+    if spec.is_t14()
+        && host.ext().kind == TempoEvmKind::L1
+        && let Some(aa) = envelope.as_aa()
+        && matches!(aa.signature(), TempoSignature::Primitive(_))
+        && aa.tx().key_authorization.is_none()
+        && aa.tx().fee_payer_signature.is_none()
+    {
+        if !matches!(envelope.execution_context(), ExecutionContext::Simulation) {
+            let caller = aa.signer();
+            let mut account = host.state_mut().account(&caller)?;
+            account.warm();
+            if let Some(info) = account.get()
+                && !info.extension.is_empty()
+                && !account_config_commitment(info, spec)?.is_zero()
+            {
+                return Err(TempoInvalidTransaction::RootKeyRetired {
+                    account: caller,
+                    role: RootKeyRole::Sender,
+                }
+                .into());
+            }
+            drop(account);
+            host.state_mut().prewarm(&caller);
+        }
+        return Ok((0, 0));
+    }
     let ConfigurableRoleCharges {
         mut extra_gas,
         state_gas,

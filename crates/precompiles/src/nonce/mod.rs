@@ -40,12 +40,46 @@ use alloy::primitives::{Address, B256, U256};
 ///
 /// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
+
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
     expiring_nonce_seen: Mapping<B256, u64>,
     expiring_nonce_ring: Mapping<u32, B256>,
     expiring_nonce_ring_ptr: u32,
+}
+
+const RING_SLOT_CHUNK_SHIFT: u32 = 12;
+const RING_SLOT_CHUNK_LEN: usize = 1 << RING_SLOT_CHUNK_SHIFT;
+const RING_SLOT_CHUNK_MASK: usize = RING_SLOT_CHUNK_LEN - 1;
+const RING_SLOT_MAX_CHUNKS: usize = 80; // covers 0..327_680 (> 300_000 capacity)
+
+static EXPIRING_NONCE_RING_SLOTS: [std::sync::OnceLock<Box<[U256]>>; RING_SLOT_MAX_CHUNKS] =
+    [const { std::sync::OnceLock::new() }; RING_SLOT_MAX_CHUNKS];
+
+#[cold]
+#[inline(never)]
+fn init_ring_slot_chunk(chunk_idx: usize) -> Box<[U256]> {
+    use crate::storage::StorageKey as _;
+    let base = (chunk_idx << RING_SLOT_CHUNK_SHIFT) as u32;
+    (0..RING_SLOT_CHUNK_LEN as u32)
+        .map(|offset| (base + offset).mapping_slot(slots::EXPIRING_NONCE_RING))
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+/// Returns the storage slot for `expiring_nonce_ring[ptr]`, cached in lazy 4096-entry chunks.
+#[inline]
+pub fn expiring_nonce_ring_slot(ptr: u32) -> U256 {
+    let chunk_idx = (ptr >> RING_SLOT_CHUNK_SHIFT) as usize;
+    if chunk_idx < RING_SLOT_MAX_CHUNKS {
+        let chunk =
+            EXPIRING_NONCE_RING_SLOTS[chunk_idx].get_or_init(|| init_ring_slot_chunk(chunk_idx));
+        chunk[(ptr as usize) & RING_SLOT_CHUNK_MASK]
+    } else {
+        use crate::storage::StorageKey as _;
+        ptr.mapping_slot(slots::EXPIRING_NONCE_RING)
+    }
 }
 
 impl NonceManager {
@@ -146,7 +180,10 @@ impl NonceManager {
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
         let idx = ptr;
-        let mut ring_slot = self.expiring_nonce_ring.entry(&idx);
+        let mut ring_slot = crate::storage::Slot::<B256>::new(
+            expiring_nonce_ring_slot(idx),
+            NONCE_PRECOMPILE_ADDRESS,
+        );
         let old_hash = ring_slot.read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
@@ -177,6 +214,17 @@ impl NonceManager {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_expiring_nonce_ring_slot_cache_matches_mapping_slot() {
+        use crate::storage::StorageKey as _;
+        for ptr in [0u32, 1, 4095, 4096, 4097, 300_000, 327_679, 327_680] {
+            assert_eq!(
+                super::expiring_nonce_ring_slot(ptr),
+                ptr.mapping_slot(super::slots::EXPIRING_NONCE_RING),
+                "mismatch at ptr={ptr}"
+            );
+        }
+    }
 
     use crate::{
         error::TempoPrecompileError,

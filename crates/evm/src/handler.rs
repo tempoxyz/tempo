@@ -17,7 +17,6 @@ use crate::{
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, map::AddressSet};
 use evm2::{
     Evm, EvmFeatures, TxResult,
-    env::TxEnv,
     ethereum::{
         access_list_counts, execute_initial_frame, initial_gas_and_reservoir,
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
@@ -1240,10 +1239,18 @@ fn apply_nonce(
             (None, 0u32)
         };
 
+        let valid_before_word = U256::from(valid_before);
+        // If seen_word is zero, replay_hash cannot be in the ring (every active ring entry has
+        // nonzero expiry in seen), so writing valid_before here cannot alias old_seen_key below.
+        // On ExpiringNonceSetFull error, evm2 discards the transaction state overlay.
         let seen_word = {
             let mut slot = account.storage().into_slot(seen_key)?;
             slot.warm();
-            slot.current()
+            let w = slot.current();
+            if w.is_zero() {
+                slot.write(valid_before_word);
+            }
+            w
         };
         actions.record(StorageAction::Sload(
             NONCE_PRECOMPILE_ADDRESS,
@@ -1255,27 +1262,32 @@ fn apply_nonce(
             return Err(TempoInvalidTransaction::ExpiringNonceReplay.into());
         }
 
-        let (ptr, ptr_word) = if previous_pointer.is_some() {
+        let (ptr, ptr_word, next_word) = if previous_pointer.is_some() {
             let w = U256::from(ptr);
             actions.record(StorageAction::Sload(
                 NONCE_PRECOMPILE_ADDRESS,
                 ring_ptr_key,
                 w,
             ));
-            (ptr, w)
+            let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
+            (ptr, w, U256::from(next))
         } else {
             let mut slot = account.storage().into_slot(ring_ptr_key)?;
             slot.warm();
             let w = slot.current();
+            let p = w.as_limbs()[0] as u32;
+            let next = if p + 1 >= capacity { 0 } else { p + 1 };
+            let nw = U256::from(next);
+            slot.write(nw);
             actions.record(StorageAction::Sload(
                 NONCE_PRECOMPILE_ADDRESS,
                 ring_ptr_key,
                 w,
             ));
-            (w.as_limbs()[0] as u32, w)
+            (p, w, nw)
         };
 
-        let ring_key = ptr.mapping_slot(nonce_slots::EXPIRING_NONCE_RING);
+        let ring_key = tempo_precompiles::nonce::expiring_nonce_ring_slot(ptr);
         let new_hash_word = U256::from_be_bytes(replay_hash.0);
         let old_hash_word = {
             let mut slot = account.storage().into_slot(ring_key)?;
@@ -1322,8 +1334,7 @@ fn apply_nonce(
             old_hash_word,
             new_hash_word,
         ));
-        let valid_before_word = U256::from(valid_before);
-        {
+        if !seen_word.is_zero() {
             let mut slot = account.storage().into_slot(seen_key)?;
             slot.write(valid_before_word);
         }
@@ -1333,8 +1344,6 @@ fn apply_nonce(
             seen_word,
             valid_before_word,
         ));
-        let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
-        let next_word = U256::from(next);
         actions.record(StorageAction::Sstore(
             NONCE_PRECOMPILE_ADDRESS,
             ring_ptr_key,
@@ -1350,9 +1359,6 @@ fn apply_nonce(
                 next_word,
                 orig_word,
             ));
-        } else {
-            let mut slot = account.storage().into_slot(ring_ptr_key)?;
-            slot.write(next_word);
         }
         return Ok(protocol_nonce);
     }
@@ -1458,12 +1464,12 @@ fn execute_batch(
     let mut state_gas = 0i64;
     let mut spilled_state_gas = 0u64;
     let mut final_result = None;
-    *host.tx_env_mut() = TxEnv::<TempoEvmTypes> {
-        origin: caller,
-        gas_price,
-        chain_id: U256::from(host.version().chain_id),
-        ..TxEnv::<TempoEvmTypes>::default()
-    };
+    let chain_id = U256::from(host.version().chain_id);
+    let tx_env = host.tx_env_mut();
+    tx_env.origin = caller;
+    tx_env.gas_price = gas_price;
+    tx_env.chain_id = chain_id;
+    tx_env.blob_hashes.clear();
 
     for (call_idx, call) in calls.iter().enumerate() {
         if call_idx > 0

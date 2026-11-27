@@ -89,6 +89,7 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
         if change.current < change.original {
             self.0.insert((change.address, change.key), change.current);
         } else if !self.0.is_empty()
+            && change.key != tempo_precompiles::tip20::TIP_FEE_MANAGER_BALANCE_SLOT
             && let Some(balance) = self.0.get_mut(&(change.address, change.key))
         {
             *balance = change.current;
