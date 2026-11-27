@@ -8,7 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy::consensus::{Transaction, constants::KECCAK_EMPTY};
+use alloy::consensus::Transaction;
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
@@ -711,8 +711,8 @@ impl LaneCreates {
     /// Returns the address the 2D or expiring nonce CREATE at `index` from `sender` deployed, or
     /// `None` if it cannot be determined.
     ///
-    /// Attributes the bumps of the sender's account nonce in the block to its transactions, see
-    /// [`lane_create_nonce`], and accepts the result only if the CREATE left an account there.
+    /// Counts the sender's transactions in the block that bump its account nonce and, if they
+    /// account for the whole change, assigns them consecutive nonces in block order.
     fn address(&self, index: u64, sender: Address) -> Result<Option<Address>, ProviderError> {
         match self.try_address(index, sender) {
             Err(ProviderError::StateAtBlockPruned(_)) => Ok(None),
@@ -733,87 +733,41 @@ impl LaneCreates {
         let before = account_nonce(&self.parent_state)?;
         let after = account_nonce(&self.state)?;
 
-        let mut transactions = Vec::new();
+        // Each of the sender's protocol nonce transactions and successful lane CREATEs bumps its
+        // account nonce once, in block order: a CREATE may only be a Tempo transaction's first
+        // call, and other lane transactions don't touch the account nonce.
+        let mut bumps = 0u64;
+        let mut target = None;
         for (position, (signer, tx)) in self.block.transactions_with_sender().enumerate() {
             if *signer != sender {
                 continue;
             }
-            let transaction = if tx.nonce_key().is_none_or(|key| key.is_zero()) {
-                SenderTransaction::Protocol(tx.nonce())
-            } else if !tx.kind().is_create() {
+            let is_lane = tx.nonce_key().is_some_and(|key| !key.is_zero());
+            if is_lane && !tx.kind().is_create() {
                 continue;
-            } else if position as u64 == index {
-                SenderTransaction::Target
-            } else if self
-                .receipts
-                .get(position)
-                .is_some_and(|receipt| receipt.success)
+            }
+            if is_lane
+                && !self
+                    .receipts
+                    .get(position)
+                    .is_some_and(|receipt| receipt.success)
             {
-                SenderTransaction::LaneCreate
-            } else {
                 // A failed lane CREATE may or may not have used its nonce, depending on the fork.
                 return Ok(None);
-            };
-            transactions.push(transaction);
-        }
-
-        let Some(nonce) = lane_create_nonce(before, after, transactions) else {
-            return Ok(None);
-        };
-        let address = sender.create(nonce);
-        // A successful CREATE leaves an account with nonce 1 or code there.
-        let created = self.state.basic_account(&address)?.is_some_and(|account| {
-            account.nonce > 0
-                || account
-                    .bytecode_hash
-                    .is_some_and(|hash| hash != KECCAK_EMPTY)
-        });
-        Ok(created.then_some(address))
-    }
-}
-
-/// A transaction from the sender of a lane CREATE, in block order.
-#[derive(Debug, Clone, Copy)]
-enum SenderTransaction {
-    /// A protocol nonce transaction with its nonce. It uses exactly that account nonce.
-    Protocol(u64),
-    /// A successful 2D or expiring nonce CREATE that is not the target. It uses one account nonce.
-    LaneCreate,
-    /// The 2D or expiring nonce CREATE whose address is requested.
-    Target,
-}
-
-/// Returns the account nonce the target CREATE used, given the sender's account nonce `before` and
-/// `after` the block and the sender's transactions that use an account nonce, in block order.
-///
-/// Each of these transactions bumps the account nonce exactly once: a CREATE may only be the first
-/// call of a Tempo transaction, and other lane transactions don't touch the account nonce. Other
-/// bumps, such as an EIP-7702 authorization by the sender or a CREATE from its delegated code, are
-/// not visible here. A protocol nonce transaction pins the nonce exactly, so an unexplained bump
-/// before the last protocol nonce transaction ahead of the target is harmless. Any other one
-/// returns `None`: after the target it shows up as a mismatched protocol nonce, and anywhere else
-/// it makes the final nonce differ from `after`.
-fn lane_create_nonce(
-    before: u64,
-    after: u64,
-    transactions: impl IntoIterator<Item = SenderTransaction>,
-) -> Option<u64> {
-    let mut next = before;
-    let mut target = None;
-    for transaction in transactions {
-        match transaction {
-            SenderTransaction::Protocol(nonce) => {
-                if target.is_some() && nonce != next {
-                    return None;
-                }
-                next = nonce;
             }
-            SenderTransaction::LaneCreate => {}
-            SenderTransaction::Target => target = Some(next),
+            if position as u64 == index {
+                target = Some(bumps);
+            }
+            bumps += 1;
         }
-        next = next.checked_add(1)?;
+
+        // Any other bump, such as an EIP-7702 authorization by the sender or a CREATE from its
+        // delegated code, would make the count differ.
+        if after.checked_sub(before) != Some(bumps) {
+            return Ok(None);
+        }
+        Ok(target.map(|offset| sender.create(before + offset)))
     }
-    (next == after).then_some(target).flatten()
 }
 
 #[derive(Debug)]
@@ -894,24 +848,6 @@ fn next_lane_nonce(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use SenderTransaction::{LaneCreate, Protocol, Target};
-
-    #[test_case::test_case(5, 6, &[Target] => Some(5); "only bump in the block")]
-    #[test_case::test_case(5, 9, &[Protocol(5), LaneCreate, Target, Protocol(8)] => Some(7); "protocol and lane creates around the target")]
-    #[test_case::test_case(5, 10, &[Protocol(7), Target, LaneCreate] => Some(8); "unexplained bump pinned by an earlier protocol nonce")]
-    #[test_case::test_case(5, 7, &[Target] => None; "unexplained bump")]
-    #[test_case::test_case(5, 8, &[Protocol(5), Target] => None; "unexplained bump after the target")]
-    #[test_case::test_case(5, 9, &[Target, Protocol(8)] => None; "room for a bump before a later protocol nonce")]
-    #[test_case::test_case(5, 5, &[Target] => None; "fewer bumps than transactions")]
-    #[test_case::test_case(5, 6, &[Protocol(5)] => None; "no target")]
-    fn lane_create_nonce_attributes_bumps(
-        before: u64,
-        after: u64,
-        transactions: &[SenderTransaction],
-    ) -> Option<u64> {
-        lane_create_nonce(before, after, transactions.iter().copied())
-    }
-
     #[test]
     fn next_lane_nonce_handles_stale_entries_and_overflow() {
         assert_eq!(next_lane_nonce(5, Some(3)).unwrap(), 5);
