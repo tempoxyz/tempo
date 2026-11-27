@@ -402,11 +402,16 @@ where
     }
 
     /// Returns whether an invalidation reported `tx`'s fee payer below its fee.
+    ///
+    /// Always false for fallback-fee-token transactions, which the builder may still execute with
+    /// another fallback token.
     fn fee_payer_is_insufficient(&self, tx: &BestTransaction) -> bool {
-        tx.transaction
-            .fee_balance_slot()
-            .and_then(|slot| self.insufficient_fee_balances.get(&slot))
-            .is_some_and(|&balance| balance < tx.transaction.fee_token_cost())
+        !tx.transaction.is_fallback_fee_token()
+            && tx
+                .transaction
+                .fee_balance_slot()
+                .and_then(|slot| self.insufficient_fee_balances.get(&slot))
+                .is_some_and(|&balance| balance < tx.transaction.fee_token_cost())
     }
 }
 
@@ -603,7 +608,7 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempo_chainspec::TempoChainSpec;
-    use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+    use tempo_evm::{ResolvedFeeToken, TempoEvmConfig, TempoNextBlockEnvAttributes};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         storage::{StorageCtx, StorageKey, actions::StorageAction},
@@ -974,6 +979,12 @@ mod tests {
         assert!(!ctx.fee_payer_is_insufficient(&tx(payer, 10_000_000_000)));
         assert!(!ctx.fee_payer_is_insufficient(&tx(other, 20_000_000_000)));
         assert!(!ctx.fee_payer_is_insufficient(&tx(Address::random(), 20_000_000_000)));
+        // The builder may pay a fallback-token transaction with another fallback token.
+        let fallback = tx(payer, 20_000_000_000);
+        fallback
+            .transaction
+            .set_resolved_fee_token(ResolvedFeeToken::Fallback(PATH_USD_ADDRESS));
+        assert!(!ctx.fee_payer_is_insufficient(&fallback));
     }
 
     #[test]
