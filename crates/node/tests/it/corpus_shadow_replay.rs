@@ -7,7 +7,7 @@ use reth_provider::{
     BlockNumReader as _, BlockReader as _, StateProvider as _, StateProviderFactory as _,
     TransactionVariant,
 };
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_corpus::{
     exec::{
@@ -17,6 +17,7 @@ use tempo_corpus::{
     types::{Delta, Phases},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_primitives::is_tip20_prefix;
 
 type Outcomes = Vec<Result<Option<ReplayOutcome>, String>>;
 
@@ -99,11 +100,35 @@ async fn candidate_reads_of_uncaptured_state_are_inconclusive() -> eyre::Result<
     let outcomes = replay_captured_blocks(TempoHardfork::T13, TempoHardfork::T14, &[|_| {}])
         .await?
         .remove(0);
+    // Without the token slots they only read, the candidate's transfers miss state that no
+    // canonical step needs.
+    let mut transactions = replay_captured_blocks(
+        TempoHardfork::T11,
+        TempoHardfork::T12,
+        &[|captured| {
+            let input = &captured.input;
+            let phases = input.phases.as_ref().expect("capture records phases");
+            let deltas = [&phases.pre, &phases.post]
+                .into_iter()
+                .chain(captured.executed.transactions.iter().map(|tx| &tx.delta));
+            let written: HashSet<_> = deltas
+                .flat_map(|delta| delta.0.iter().flatten())
+                .flat_map(|(address, change)| change.storage.keys().map(|key| (*address, *key)))
+                .collect();
+            Arc::get_mut(&mut captured.input)
+                .expect("capture shares no input")
+                .storage
+                .retain(|key, _| !is_tip20_prefix(Address::from(key.0)) || written.contains(key));
+        }],
+    )
+    .await?
+    .remove(0);
+    transactions.extend(outcomes);
     assert!(
-        outcomes
+        transactions
             .iter()
             .all(|outcome| *outcome == Ok(Some(ReplayOutcome::Inconclusive))),
-        "{outcomes:?}"
+        "{transactions:?}"
     );
     Ok(())
 }

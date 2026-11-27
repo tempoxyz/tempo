@@ -6,7 +6,10 @@ use super::{
     fees::fee_wrote,
     uncaptured,
 };
-use crate::{exec::db::View, types::Delta};
+use crate::{
+    exec::db::View,
+    types::{Change, Delta},
+};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
 use evm2::evm::AccountInfo;
@@ -279,8 +282,23 @@ pub(super) struct AccountChange {
 impl StepChanges {
     /// What `delta` changes when applied to `before`.
     pub(super) fn new(before: &View<'_>, delta: &Delta) -> eyre::Result<Self> {
+        // Only code hashes are compared, so keep candidate bytecode out of the process-wide cache.
+        let hashes_only = delta.0.iter().map(|commit| {
+            commit
+                .iter()
+                .map(|(address, change)| {
+                    let change = Change {
+                        info: change.info.clone(),
+                        created: change.created,
+                        storage: change.storage.clone(),
+                        code: None,
+                    };
+                    (*address, change)
+                })
+                .collect()
+        });
         let mut after = before.child();
-        after.apply(delta)?;
+        after.apply(&Delta(hashes_only.collect()))?;
         let mut changes = BTreeMap::<Address, AccountChange>::new();
         for (address, change) in delta.0.iter().flatten() {
             let account = changes.entry(Address::from(*address)).or_default();
@@ -351,9 +369,11 @@ impl<'a> AccountDelta<'a> {
 mod tests {
     use super::*;
     use crate::{
+        code,
         exec::db::tests::{change, commit, input},
-        types::{Change, CodeChange, InfoChange},
+        types::{CodeChange, InfoChange},
     };
+    use alloy_primitives::{KECCAK256_EMPTY, keccak256};
     use reth_primitives_traits::Account;
 
     #[test]
@@ -383,15 +403,18 @@ mod tests {
             code: CodeChange::Keep,
         };
         let mut delta = commit(changed, change(balance, &[(slot, U256::from(9))]));
+        let runtime = b"step changes leave this runtime uncached";
+        let code_hash = keccak256(runtime);
         let mut creation = change(
             InfoChange {
                 nonce: Some(1),
                 balance: None,
-                code: CodeChange::Keep,
+                code: CodeChange::Hash(Some(code_hash.0)),
             },
             &[(slot, U256::from(3))],
         );
         creation.created = true;
+        creation.code = Some(runtime.to_vec());
         let destruction = Change {
             info: None,
             created: false,
@@ -416,6 +439,11 @@ mod tests {
         assert_eq!(account.existence(), Some((false, true)));
         assert_eq!(account.storage(slot), Some((U256::ZERO, U256::from(3))));
         assert!(changes.0[&created].storage_reset);
+        assert_eq!(
+            account.info(|info| info.code_hash),
+            Some((KECCAK256_EMPTY, code_hash))
+        );
+        assert!(!code::has_code(&code_hash.0));
         assert_eq!(changes.account(destroyed).existence(), Some((true, false)));
         assert!(changes.0[&destroyed].storage_reset);
         assert!(changes.account(Address::ZERO).0.is_none());

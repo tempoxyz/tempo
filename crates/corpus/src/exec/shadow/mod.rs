@@ -30,8 +30,10 @@ use alloy_primitives::{B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::{Report, StepChanges};
+use evm2::{DatabaseError, registry::HandlerError};
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
+use reth_evm::BlockExecutionError;
 use reth_primitives_traits::RecoveredBlock;
 use std::sync::Arc;
 use tempo_chainspec::{
@@ -107,6 +109,14 @@ impl ShadowReplayer {
         }
 
         let failure = evidence.failure.as_ref();
+        let uncaptured_tx = evidence
+            .txs
+            .iter()
+            .enumerate()
+            .find_map(|(index, tx)| match tx {
+                TxEvidence::Failed(error) if uncaptured(error) => Some((index, error)),
+                _ => None,
+            });
         warn!(
             target: "shadow_replay",
             block_number = block.number(),
@@ -114,6 +124,7 @@ impl ShadowReplayer {
             findings = ?report,
             shadow_failure_boundary = ?failure.map(|f| f.boundary),
             shadow_failure = ?failure.map(|f| &f.error),
+            first_uncaptured_tx = ?uncaptured_tx,
             ?outcome,
             shadow_processed_txs = evidence.txs.len(),
             "Shadow replay needs review; differences are not confirmed regressions"
@@ -279,12 +290,16 @@ enum TxEvidence {
 /// Whether execution failed because it read state the corpus did not capture, so the boundary
 /// cannot be compared.
 fn uncaptured(error: &eyre::Report) -> bool {
-    // The database's `Missing` reaches the executor's error wrapped in evm2's `AnyError`.
-    error.chain().any(|error| {
-        error
-            .downcast_ref::<evm2::AnyError>()
-            .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
-    })
+    // Transactions report database failures as `HandlerError::Database`, pre- and post-block
+    // system calls as the `DatabaseError` itself.
+    error
+        .downcast_ref::<BlockExecutionError>()
+        .and_then(BlockExecutionError::as_internal)
+        .and_then(|error| match error.downcast_evm::<HandlerError>() {
+            Some(HandlerError::Database(error)) => Some(error),
+            _ => error.downcast_other::<DatabaseError>(),
+        })
+        .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
 }
 
 /// A logical execution boundary whose committed effects can be compared independently.
@@ -369,25 +384,36 @@ fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChai
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Address;
-    use reth_evm::BlockExecutionError;
+    use alloy_primitives::{Address, B256};
+    use reth_evm::InternalBlockExecutionError;
     use tempo_precompiles::storage::FeeHook;
 
-    /// An execution error caused by a database error.
-    fn database(error: impl std::error::Error + Send + Sync + 'static) -> eyre::Report {
-        let error = evm2::DatabaseError::new(error, true);
-        BlockExecutionError::other(evm2::AnyError::new(error)).into()
+    /// A system call's error from reading an account the corpus did not capture.
+    pub(super) fn missing_account() -> eyre::Report {
+        BlockExecutionError::other(DatabaseError::new(missing(), true)).into()
     }
 
-    /// An execution error from reading an account the corpus did not capture.
-    pub(super) fn missing_account() -> eyre::Report {
-        database(Missing("uncaptured account 0x00".into()))
+    fn missing() -> Missing {
+        Missing("uncaptured account 0x00".into())
+    }
+
+    /// A transaction's error from `database_error`.
+    fn transaction(database_error: impl std::error::Error + Send + Sync + 'static) -> eyre::Report {
+        let error = HandlerError::Database(DatabaseError::new(database_error, true));
+        BlockExecutionError::from(InternalBlockExecutionError::EVM {
+            hash: B256::ZERO,
+            error: evm2::AnyError::new(error),
+        })
+        .into()
     }
 
     #[test]
     fn only_values_the_corpus_lacks_are_uncaptured() {
         assert!(uncaptured(&missing_account()));
-        assert!(!uncaptured(&database(std::fmt::Error)));
+        assert!(uncaptured(&transaction(missing())));
+        assert!(!uncaptured(&transaction(std::fmt::Error)));
+        let other = BlockExecutionError::other(DatabaseError::new(std::fmt::Error, true));
+        assert!(!uncaptured(&other.into()));
         assert!(!uncaptured(&eyre::eyre!("uncaptured account 0x00")));
     }
 
