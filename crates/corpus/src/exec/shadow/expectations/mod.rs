@@ -206,7 +206,7 @@ fn parse(
     candidate: TempoHardfork,
     json: &'static str,
 ) -> eyre::Result<Vec<(TempoHardfork, Expectation)>> {
-    let mut ids = HashSet::new();
+    let mut ids = HashSet::from([FEE_STATE.id]);
     let mut previous = TempoHardfork::Genesis;
     serde_json::from_str::<Vec<Rule<'static>>>(json)?
         .into_iter()
@@ -458,6 +458,7 @@ mod tests {
     const PORTAL: &str = "ZONE_PORTAL_IMPL_ADDRESS";
 
     #[test_case(&[("a", "T14", &[PORTAL]), ("a", "T14", &[PORTAL])], None => "duplicate expectation a")]
+    #[test_case(&[("fee.post-tx-state", "T14", &[PORTAL])], None => "duplicate expectation fee.post-tx-state")]
     #[test_case(&[("a", "T14", &[PORTAL]), ("b", "T13", &[PORTAL])], None => "expectation b for T13 is out of fork order or after T14")]
     #[test_case(&[("a", "T15", &[PORTAL])], None => "expectation a for T15 is out of fork order or after T14")]
     #[test_case(&[("a", "T14", &["ZONE_PORTAL"])], None => "unknown constant ZONE_PORTAL at line 1 column 142")]
