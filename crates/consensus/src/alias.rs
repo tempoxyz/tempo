@@ -24,6 +24,7 @@ pub(crate) mod marshal {
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_provider::{BlockReader as _, providers::BlockchainProvider};
+    use tempo_chainspec::NetworkIdentity;
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tempo_primitives::TempoHeader;
@@ -79,6 +80,14 @@ pub(crate) mod marshal {
         /// verify finalizations. The same instance is shared with the rest of
         /// the engine, so the caller passes it in.
         pub scheme_provider: SchemeProvider,
+
+        /// Identity that authenticates the startup floor when the boundary
+        /// block of its epoch is not stored locally.
+        ///
+        /// Only a follower sets this: it archives the finalization of a tip
+        /// before it has backfilled down to that boundary block. Without it,
+        /// a missing boundary block fails startup.
+        pub network_identity: Option<NetworkIdentity>,
     }
 
     /// Marshal actor + mailbox + the height marshal will resume from,
@@ -182,6 +191,7 @@ pub(crate) mod marshal {
                 &mut context,
                 &config.epoch_strategy,
                 &config.scheme_provider,
+                config.network_identity.as_ref(),
                 &finalized_blocks,
                 finalization,
             )
@@ -381,6 +391,7 @@ pub(crate) mod marshal {
         context: &mut TContext,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
+        network_identity: Option<&NetworkIdentity>,
         finalized_blocks: &Hybrid<
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
@@ -392,13 +403,35 @@ pub(crate) mod marshal {
     {
         let epoch = finalization.epoch();
         let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
-        let header = finalized_blocks
+        let Some(header) = finalized_blocks
             .get_header(Identifier::Index(boundary.get()))
             .await
             .wrap_err_with(|| format!("failed reading boundary header at height `{boundary}`"))?
-            .ok_or_else(|| {
-                eyre!("missing boundary header at height `{boundary}` in hybrid store")
-            })?;
+        else {
+            let Some(network_identity) = network_identity else {
+                bail!("missing boundary header at height `{boundary}` in hybrid store");
+            };
+            // A follower archives the finalization of a tip it verified against
+            // the network identity before it has backfilled down to the boundary
+            // block of that tip's epoch. Authenticate such a floor the same way.
+            ensure!(
+                epoch.get() >= network_identity.from_epoch,
+                "missing boundary header at height `{boundary}` in hybrid store, and the \
+                 finalized floor's epoch `{epoch}` predates the network identity from epoch `{}`",
+                network_identity.from_epoch,
+            );
+            let scheme = Scheme::<PublicKey, MinSig>::certificate_verifier(
+                crate::config::NAMESPACE,
+                network_identity.identity,
+            );
+            ensure!(
+                finalization.verify(context, &scheme, &Sequential),
+                "finalized floor failed verification against the network identity, and its \
+                 boundary header at height `{boundary}` is not in the hybrid store"
+            );
+            scheme_provider.register(epoch, scheme);
+            return Ok(());
+        };
 
         let onchain_outcome =
             OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
