@@ -1154,9 +1154,9 @@ impl SealedBlock {
         } else {
             inner.cumulative_gas_used
         };
-        // Moving `block_state` and `receipts` out leaves `inner.evm` and its private
-        // `state_update_hook` to drop when this function returns, overlapping state-root
-        // finalization with `into_bundle()` in `into_output()`.
+        // Moving `block_state` and `receipts` out leaves `inner.evm` and the executor's private
+        // `state_update_hook` (a sibling field of `evm`) to drop when this function returns,
+        // overlapping state-root finalization with `into_bundle()` in `into_output()`.
         Self {
             block_state: inner.block_state,
             result: reth_execution_types::BlockExecutionResult {
