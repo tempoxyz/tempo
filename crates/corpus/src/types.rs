@@ -26,6 +26,24 @@ pub struct Input {
     pub phases: Option<Phases>,
 }
 
+/// Pre-block values of keys a block's own execution does not read but inputs derived from it do,
+/// stored apart from the corpus and merged into the block's pre-state when it is read as a fuzz
+/// input. It holds only keys the block's [`Input`] does not.
+#[derive(Debug, Default, SchemaRead, SchemaWrite)]
+pub struct ExtraPreState {
+    /// The block's hash.
+    pub hash: [u8; 32],
+    /// As [`Input::accounts`].
+    pub accounts: BTreeMap<[u8; 20], Option<Info>>,
+    /// As [`Input::storage`].
+    pub storage: BTreeMap<([u8; 20], [u8; 32]), [u8; 32]>,
+    /// As [`Input::code`], with the bytecode stored under the same keys in the extra pre-state's
+    /// own store.
+    pub code: BTreeSet<[u8; 32]>,
+    /// As [`Input::hashes`].
+    pub hashes: BTreeMap<u64, [u8; 32]>,
+}
+
 /// Canonical block and historical pre-change expectations, not replay-derived outputs.
 #[derive(Debug, SchemaRead, SchemaWrite)]
 pub struct Block {

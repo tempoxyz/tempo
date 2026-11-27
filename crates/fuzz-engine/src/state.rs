@@ -106,9 +106,18 @@ impl Db {
     }
 }
 
+thread_local! {
+    /// The misses of exact pre-states while [`crate::execute::run_collecting`] runs, `None` otherwise.
+    pub(crate) static COLLECTED: RefCell<Option<Vec<MissingPreState>>> =
+        const { RefCell::new(None) };
+    /// What exact pre-states seed to while [`crate::run_collecting_on`] runs, `None` otherwise.
+    pub(crate) static SEEDED: RefCell<Option<Cache>> = const { RefCell::new(None) };
+}
+
 /// What execution reads when the seeded state does not hold a key. For a genesis pre-state that is
 /// empty state. For an exact pre-state it is an error, also recorded so the input is known to be
-/// incomplete even when the error was swallowed on its way up.
+/// incomplete even when the error was swallowed on its way up, unless [`COLLECTED`] collects it
+/// and reads it as empty state.
 #[derive(Debug)]
 pub(crate) struct PreStateDb {
     exact: bool,
@@ -130,8 +139,16 @@ impl PreStateDb {
         if !self.exact {
             return Ok(());
         }
-        self.missed.set(true);
-        Err(missing)
+        COLLECTED.with_borrow_mut(|collected| match collected {
+            Some(collected) => {
+                collected.push(missing);
+                Ok(())
+            }
+            None => {
+                self.missed.set(true);
+                Err(missing)
+            }
+        })
     }
 
     fn account(&self, address: &Address) -> Result<Option<AccountInfo>, MissingPreState> {
@@ -158,10 +175,14 @@ impl PreStateDb {
 
 /// A read of a key an exact pre-state does not hold.
 #[derive(Debug)]
-pub(crate) enum MissingPreState {
+pub enum MissingPreState {
+    /// An account.
     Account(Address),
+    /// A slot of an account.
     Storage(Address, U256),
+    /// Code, by its hash.
     Code(B256),
+    /// The hash of a block, by its number.
     BlockHash(u64),
 }
 
@@ -286,6 +307,11 @@ pub fn genesis_cache(genesis: &alloy_genesis::Genesis) -> Cache {
 /// does not, or if an account's code starts with the EIP-7702 prefix `0xef01` but is not a valid
 /// delegation.
 pub(crate) fn seed(pre_state: &PreState, genesis: &Cache) -> Result<Db, ErrorClass> {
+    if matches!(pre_state, PreState::Exact { .. })
+        && let Some(cache) = SEEDED.with_borrow(Clone::clone)
+    {
+        return Ok(Db::new(cache, true));
+    }
     let (state, mut cache, exact) = match pre_state {
         PreState::Genesis(state) => {
             let keeps_code = |(address, account): (&Address, &AccountInput)| {

@@ -21,9 +21,9 @@ mod trace;
 
 pub use chain::chain_spec_on;
 pub use engine::{BlockConsensus, Chain, Engine, EvmConfig, Tempo};
-pub use execute::run;
+pub use execute::{Seeded, run, run_collecting_on, seed};
 pub use rejection::Rejection;
-pub use state::genesis_cache;
+pub use state::{MissingPreState, genesis_cache};
 
 #[cfg(test)]
 mod tests;
