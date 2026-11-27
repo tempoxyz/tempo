@@ -747,14 +747,14 @@ where
                 let after = account_nonce(&state)?;
                 let mut nonce = account_nonce(&parent_state)?;
                 let mut created = Vec::new();
-                for (index, (signer, tx)) in (0u64..).zip(block.transactions_with_sender()) {
+                for (index, ((signer, tx), success)) in
+                    (0u64..).zip(block.transactions_with_sender().zip(&success))
+                {
                     if *signer != sender {
                         continue;
                     }
                     if !is_protocol_nonce(tx.nonce_key()) {
-                        if !tx.kind().is_create()
-                            || !success.get(index as usize).copied().unwrap_or(false)
-                        {
+                        if !tx.kind().is_create() || !success {
                             continue;
                         }
                         created.push((index, sender.create(nonce)));
