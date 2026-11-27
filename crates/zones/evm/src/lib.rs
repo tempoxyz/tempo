@@ -17,7 +17,7 @@ mod zone_evm;
 
 pub use builder::build_advance_tempo_tx_from_parts;
 pub use database::{L1OverlayDB, ZoneDbError};
-pub use executor::{ZoneBlockExecutor, ZoneTxResult};
+pub use executor::{ZoneBlockExecutor, ZoneExecutorState, ZoneTxResult};
 pub use zone_evm::validate_transaction;
 
 use crate::{

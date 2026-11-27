@@ -3,6 +3,7 @@
 
 use std::{
     borrow::Cow,
+    collections::BTreeSet,
     sync::{Arc, LazyLock},
 };
 
@@ -46,7 +47,7 @@ use zone_primitives::constants::{TEMPO_STATE_ADDRESS, ZONE_OUTBOX_ADDRESS, decod
 use crate::{
     accounts::{self, AccountChecks},
     consensus::ZoneConsensus,
-    types::L1StateInput,
+    types::{L1RecordedInput, L1StateInput},
 };
 
 /// The zone genesis the node ships, which every zone input's chain starts from.
@@ -77,7 +78,7 @@ impl Zone {
     /// A zone that reads `l1`, its account checks watching `watched`.
     pub fn new(l1: L1, watched: impl IntoIterator<Item = Address>) -> Self {
         let genesis = match &l1 {
-            L1::State(_) => Cow::Borrowed(&*GENESIS_STATE),
+            L1::State(_) | L1::Recorded(_) => Cow::Borrowed(&*GENESIS_STATE),
             // The zone starts anchored to the Tempo genesis.
             L1::Chain(chain) => {
                 let mut genesis = GENESIS_STATE.clone();
@@ -212,7 +213,7 @@ impl Engine for Zone {
         .checked_add(1)
         .ok_or_else(|| BlockValidationError::msg("the next Tempo block number overflows"))?;
         let tempo = match &self.l1 {
-            L1::State(_) => TempoHeader {
+            L1::State(_) | L1::Recorded(_) => TempoHeader {
                 inner: Header {
                     number,
                     parent_hash,
@@ -281,6 +282,8 @@ pub enum L1 {
     State(Arc<L1StateInput>),
     /// A Tempo chain the harness executed, read at each block.
     Chain(Arc<L1Chain>),
+    /// The state recorded at each block, zero where none was.
+    Recorded(Arc<L1RecordedInput>),
 }
 
 /// A Tempo chain the harness executed, which a zone reads.
@@ -303,6 +306,11 @@ impl L1 {
         Self::State(Arc::new(input))
     }
 
+    /// The state `input` recorded at each block.
+    pub fn recorded(input: L1RecordedInput) -> Self {
+        Self::Recorded(Arc::new(input))
+    }
+
     /// A Tempo chain's `anchors`, from its genesis.
     pub fn chain(anchors: Vec<Anchor>) -> Self {
         assert!(!anchors.is_empty(), "a Tempo chain has a genesis");
@@ -317,6 +325,15 @@ impl L1 {
                 .iter()
                 .filter(|(_, commitment)| !commitment.is_zero())
                 .map(|(address, _)| *address)
+                .collect(),
+            Self::Recorded(recorded) => recorded
+                .blocks
+                .values()
+                .flat_map(|state| &state.commitments)
+                .filter(|(_, commitment)| !commitment.is_zero())
+                .map(|(address, _)| *address)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect(),
             Self::Chain(chain) => chain
                 .anchors
@@ -340,13 +357,11 @@ impl L1StorageReader for L1 {
         block_number: u64,
     ) -> Result<B256, L1StateError> {
         match self {
-            Self::State(state) => {
-                let value = state
-                    .storage
-                    .get(&account)
-                    .and_then(|slots| slots.get(&U256::from_be_bytes(slot.0)));
-                Ok(value.copied().map(B256::from).unwrap_or_default())
-            }
+            Self::State(state) => Ok(state.storage(&account, slot)),
+            Self::Recorded(recorded) => Ok(recorded
+                .at(block_number)
+                .map(|state| state.storage(&account, slot))
+                .unwrap_or_default()),
             Self::Chain(chain) => match chain.anchor(block_number) {
                 Some(anchor) => Ok(anchor.storage(&account, slot)),
                 None => Err(L1StateError::StorageUnavailable {
@@ -365,7 +380,11 @@ impl L1StorageReader for L1 {
         block_number: u64,
     ) -> Result<B256, L1StateError> {
         match self {
-            Self::State(state) => Ok(state.commitments.get(&account).copied().unwrap_or_default()),
+            Self::State(state) => Ok(state.commitment(&account)),
+            Self::Recorded(recorded) => Ok(recorded
+                .at(block_number)
+                .map(|state| state.commitment(&account))
+                .unwrap_or_default()),
             Self::Chain(chain) => {
                 let unavailable = |reason| L1StateError::AccountUnavailable {
                     account,

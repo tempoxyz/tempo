@@ -2,7 +2,10 @@
 
 use crate::{
     code,
-    exec::db::{View, change_from_update},
+    exec::{
+        chain::Evm,
+        db::{View, change_from_update},
+    },
     types::{Block as BlockInput, Case, Delta, Outcome, Phases, Transaction},
 };
 use alloy_consensus::{
@@ -16,10 +19,7 @@ use evm2::evm::Database;
 use eyre::{OptionExt, WrapErr};
 use parking_lot::Mutex;
 use reth_consensus::FullConsensus;
-use reth_evm::{
-    ConfigureEvm,
-    execute::{BlockExecutor, BlockExecutorFactory},
-};
+use reth_evm::{BlockTransactionResult, execute::BlockExecutor};
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_trie_common::bundle_state::{AccountInfoRevert, BundleState, RevertToSlot};
@@ -27,7 +27,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
 use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
 /// A block's execution records and resulting state.
@@ -41,7 +40,7 @@ pub struct Executed {
 
 type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
-fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
+fn hooked(executor: &mut impl BlockExecutor) -> eyre::Result<Updates> {
     let updates = Updates::default();
     let sink = updates.clone();
     eyre::ensure!(
@@ -91,21 +90,10 @@ fn contracts(bundle: &BundleState) -> HashMap<B256, Bytes> {
         .collect()
 }
 
-fn executor<'a, DB: Database + 'a>(
-    config: &'a TempoEvmConfig,
-    db: DB,
-    block: &'a RecoveredBlock<Block>,
-) -> eyre::Result<TempoBlockExecutor<'a>> {
-    let env = config.evm_env(block.header())?;
-    let evm = ConfigureEvm::evm_with_env(config, db, env);
-    let ctx = config.context_for_block(block.sealed_block())?;
-    Ok(config.block_executor_factory().create_executor(evm, ctx))
-}
-
 /// Executes and commits `tx`, recording it with `before` and an empty delta: the caller fills
 /// the delta from the state updates once created code is known.
-fn transact(
-    executor: &mut TempoBlockExecutor<'_>,
+fn transact<E: Evm>(
+    executor: &mut E::Executor<'_>,
     tx: Recovered<&TempoTxEnvelope>,
     ordinal: u64,
     index: usize,
@@ -113,7 +101,7 @@ fn transact(
 ) -> eyre::Result<Transaction> {
     let hash = tx.tx_hash().0;
     let output = executor.execute_transaction_without_commit(tx)?;
-    let r = output.result();
+    let r = &output.result().result;
     let outcome = Outcome {
         status: u8::from(!r.status),
         reason: format!("{:?}", r.stop),
@@ -134,7 +122,7 @@ fn transact(
         index: index as u64,
         hash,
         before,
-        after: boundary().serialize(&executor.executor_state())?,
+        after: boundary().serialize(&E::boundary(executor))?,
         outcome,
         receipt: alloy_rlp::encode(receipt),
         delta: Delta::default(),
@@ -144,8 +132,8 @@ fn transact(
 /// Executes a block once, recording each transaction's boundary, outcome, receipt and
 /// committed changes. With `expected`, every record is checked against its stored digests.
 /// Consensus post-execution rules (gas, receipts root, bloom, BAL hash) are always checked.
-pub fn execute_block<C, DB>(
-    config: &TempoEvmConfig,
+pub fn execute_block<E, C, DB>(
+    evm: &E,
     consensus: &C,
     db: DB,
     block: &RecoveredBlock<Block>,
@@ -153,10 +141,11 @@ pub fn execute_block<C, DB>(
     expected: Option<(&[Case], &Phases)>,
 ) -> eyre::Result<Executed>
 where
+    E: Evm,
     C: FullConsensus<TempoPrimitives> + ?Sized,
     DB: Database,
 {
-    let mut executor = executor(config, db, block)?;
+    let mut executor = evm.executor(db, block)?;
     if block.header().block_access_list_hash().is_some() {
         executor.enable_block_access_list_builder();
     }
@@ -165,8 +154,8 @@ where
     let pre = drain(&updates);
     let mut records = Vec::new();
     for (index, tx) in block.transactions_recovered().enumerate() {
-        let before = boundary().serialize(&executor.executor_state())?;
-        let record = transact(&mut executor, tx, first_tx + index as u64, index, before)?;
+        let before = boundary().serialize(&E::boundary(&executor))?;
+        let record = transact::<E>(&mut executor, tx, first_tx + index as u64, index, before)?;
         records.push((record, drain(&updates)));
     }
     let (output, bal) = executor.finish_with_block_access_list()?;
@@ -214,25 +203,25 @@ where
 /// Executes one transaction alone: a fresh executor over `view` (the state before it),
 /// restored from its `before` boundary, without pre-execution changes. Returns its record;
 /// the caller applies its delta to carry the state forward.
-pub fn run_standalone(
-    config: &TempoEvmConfig,
+pub fn run_standalone<E: Evm>(
+    evm: &E,
     block: &RecoveredBlock<Block>,
     view: &View,
     ordinal: u64,
     index: usize,
     before: &[u8],
 ) -> eyre::Result<Transaction> {
-    let mut executor = executor(config, view.clone(), block)?;
-    let state: ExecutorState = boundary()
+    let mut executor = evm.executor(view.clone(), block)?;
+    let state = boundary()
         .deserialize(before)
         .wrap_err("invalid transaction boundary")?;
-    executor.with_executor_state(state);
+    E::restore(&mut executor, state);
     let updates = hooked(&mut executor)?;
     let tx = block
         .transactions_recovered()
         .nth(index)
         .ok_or_eyre("transaction index out of range")?;
-    let mut record = transact(&mut executor, tx, ordinal, index, before.to_vec())?;
+    let mut record = transact::<E>(&mut executor, tx, ordinal, index, before.to_vec())?;
     let state = executor.into_state();
     record.delta = delta(drain(&updates), &contracts(&state))?;
     Ok(record)
@@ -242,8 +231,8 @@ pub fn run_standalone(
 /// before each one is restored from the pre phase and the earlier stored deltas, without
 /// executing the block. `select` picks which transactions run; each one that runs is checked
 /// against its record.
-pub fn standalone_cases(
-    config: &TempoEvmConfig,
+pub fn standalone_cases<E: Evm>(
+    evm: &E,
     block: &RecoveredBlock<Block>,
     mut view: View,
     phases: &Phases,
@@ -253,7 +242,7 @@ pub fn standalone_cases(
     view.apply(&phases.pre)?;
     for (index, case) in cases.iter().enumerate() {
         if select(case) {
-            let actual = run_standalone(config, block, &view, case.ordinal, index, &case.before)?;
+            let actual = run_standalone(evm, block, &view, case.ordinal, index, &case.before)?;
             case.check(&actual)?;
         }
         view.apply(&case.delta)?;
@@ -373,8 +362,11 @@ pub fn verify_changesets(
     Ok(())
 }
 
-/// Codec of a stored transaction boundary, an [`ExecutorState`]: the section id byte followed
-/// by six big-endian counters, 49 bytes. Trailing bytes are rejected.
+/// Codec of a stored transaction boundary, an [`Evm::Boundary`]. A Tempo L1 boundary, an
+/// [`ExecutorState`], is the section id byte followed by six big-endian counters, 49 bytes.
+/// Trailing bytes are rejected.
+///
+/// [`ExecutorState`]: tempo_evm::ExecutorState
 fn boundary() -> impl bincode::Options {
     bincode::DefaultOptions::new()
         .with_big_endian()
@@ -387,6 +379,7 @@ mod tests {
     use super::*;
     use crate::types::ChangeSet;
     use reth_trie_common::bundle_state::{AccountRevert, Reverts};
+    use tempo_evm::ExecutorState;
 
     fn bundle(reverts: Vec<(Address, AccountRevert)>) -> BundleState {
         BundleState {

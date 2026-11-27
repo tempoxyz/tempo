@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use evm2::interpreter::InstrStop;
 pub use invariants_core::{Counts, Violation};
+
+pub mod zone;
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
 
