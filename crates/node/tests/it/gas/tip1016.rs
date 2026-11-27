@@ -1182,10 +1182,9 @@ async fn test_tip1016_batch_set_in_call1_clear_in_call2_nets_zero() -> eyre::Res
     Ok(())
 }
 
-/// Cross-call refunds: two calls each clear a pre-existing slot; the refunds
-/// from both calls accumulate and apply once at end of tx.
+/// Cross-call clears mint storage credits instead of refunding the sender.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1016_batch_refunds_accumulate_across_successful_calls() -> eyre::Result<()> {
+async fn test_tip1016_batch_clears_mint_credits_without_refund() -> eyre::Result<()> {
     let mut node = Tip1016Node::new().await?;
     let slotval = node
         .deploy_runtime(RT_SSTORE_SLOT_AND_VALUE_FROM_CALLDATA)
@@ -1200,7 +1199,10 @@ async fn test_tip1016_batch_refunds_accumulate_across_successful_calls() -> eyre
             call(slotval, words(&[12, 0])),
         ],
     )?;
-    // 39,160 regular gas spent, with no clearing refund: T15 keeps TIP-1060's
+    // 36,660 = 21,000 base + 536 calldata + 100 warm second target + 24
+    // bytecode + 10,000 slot clears + 5,000 storage-credit bookkeeping.
+    // T14 charges 100, not 2,600, for the repeated batch target.
+    // There is no clearing refund: T15 keeps TIP-1060's
     // removal of the legacy EIP-3529 clearing refund (SSTORE_CLEARS_SCHEDULE
     // = 0). Clearing a slot that was NOT created in this tx mints a 245k
     // storage credit for the contract instead of refunding the sender.
@@ -1209,7 +1211,7 @@ async fn test_tip1016_batch_refunds_accumulate_across_successful_calls() -> eyre
     // does (`execution_gas_used`), so header == receipts.
     let gas = node.run_block(vec![tx]).await?;
     gas.assert_success()
-        .assert_receipt_gas(39_160)
+        .assert_receipt_gas(36_660)
         .assert_state_gas(0);
 
     assert_eq!(node.storage(slotval, 11).await?, U256::ZERO);
@@ -1480,10 +1482,9 @@ async fn test_tip1016_batch_scope_prevalidation_charges_regular_gas_only() -> ey
 /// Keychain scope prevalidation failure: a scoped access key calling a target
 /// outside its scope. The scope check halts the batch before any user call
 /// runs; only the gas actually used (intrinsic + metered scope walk) is
-/// charged -- NOT the full budget as the proposal assumed -- and no state gas
-/// is involved.
+/// charged, and no state gas is involved.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1016_batch_scope_violation_halts_with_full_budget_limit() -> eyre::Result<()> {
+async fn test_tip1016_batch_scope_violation_charges_used_gas() -> eyre::Result<()> {
     let mut node = Tip1016Node::new().await?;
     let sender = node.address();
     node.mint(sender, 1_000_000).await?;
@@ -1507,9 +1508,9 @@ async fn test_tip1016_batch_scope_violation_halts_with_full_budget_limit() -> ey
     })?;
     node.run_block(vec![tx]).await?.assert_success();
 
-    // Keychain-signed call to a target OUTSIDE the key's scope. Observed
-    // charge: 28,200 = 21,000 intrinsic + calldata + the metered scope-walk
-    // gas -- the halt does not consume the remaining budget.
+    // 30,800 = 21,000 base + 3,000 keychain validation + 2,600 cold access-key
+    // account check (T14 root-key retirement) + 4,200 metered scope walk.
+    // The out-of-scope revert does not consume the remaining budget.
     let tx = node.build_batch(TX_GAS_LIMIT, vec![call(other, Bytes::new())], |_| {});
     let signature = sign_aa_tx_with_secp256k1_access_key(&tx, &access_key, sender)?;
     node.consume_nonce();
@@ -1517,7 +1518,7 @@ async fn test_tip1016_batch_scope_violation_halts_with_full_budget_limit() -> ey
     node.run_block(vec![raw])
         .await?
         .assert_reverted()
-        .assert_receipt_gas(28_200)
+        .assert_receipt_gas(30_800)
         .assert_state_gas(0);
     Ok(())
 }
