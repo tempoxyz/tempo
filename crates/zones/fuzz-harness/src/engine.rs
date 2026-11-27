@@ -1,10 +1,7 @@
 //! The zone [`Engine`]: a zone's chain spec, EVM and consensus, its genesis, and the system
 //! transactions its sequencer opens and closes every block with.
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, LazyLock},
-};
+use std::sync::{Arc, LazyLock};
 
 use alloy_consensus::{Header, SignableTransaction as _, TxLegacy, transaction::Recovered};
 use alloy_genesis::Genesis;
@@ -21,6 +18,7 @@ use tempo_contracts::{
 use tempo_evm::TempoEvm;
 use tempo_fuzz_engine::{Chain, Engine, Rejection, StepState, chain_spec_on, genesis_cache};
 use tempo_fuzz_types::{ChainSpecInput, ErrorClass, HarnessInputKind, InvariantInfo};
+use tempo_invariants::zone_account::Mirror;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STORAGE_CREDITS_ADDRESS,
     tip20::is_tip20_prefix,
@@ -70,7 +68,7 @@ impl Zone {
     /// A zone that reads `l1` at every anchor, its account checks watching `watched`.
     pub fn new(l1: L1StateInput, watched: impl IntoIterator<Item = Address>) -> Self {
         let l1 = L1(Arc::new(l1));
-        let accounts = AccountChecks::new(&l1, watched);
+        let accounts = AccountChecks::new(l1.committed(), watched);
         Self { l1, accounts }
     }
 }
@@ -79,6 +77,9 @@ impl Engine for Zone {
     type ChainSpec = ZoneChainSpec;
     type EvmConfig = ZoneEvmConfig<L1>;
     type Consensus = ZoneConsensus;
+    /// What the zone showed after the run's last step, which the account checks judge the next
+    /// against.
+    type Checks = Option<Mirror>;
 
     const IMPLEMENTATION: &'static str = "tempo-zone";
     const HARDFORKS: &'static [TempoHardfork] = TempoHardfork::VARIANTS
@@ -112,8 +113,13 @@ impl Engine for Zone {
         &GENESIS_STATE
     }
 
-    fn check_step(&self, state: &StepState<'_, Self::EvmConfig>, report: &mut Report) {
-        self.accounts.check(&self.l1, state, report);
+    fn check_step(
+        &self,
+        last: &mut Option<Mirror>,
+        state: &StepState<'_, Self::EvmConfig>,
+        report: &mut Report,
+    ) {
+        self.accounts.check(last, state, report);
     }
 
     fn own_invariants() -> Vec<InvariantInfo> {
@@ -222,7 +228,7 @@ impl Engine for Zone {
 
 /// Tempo L1 as an input describes it: the same storage at every block.
 #[derive(Debug, Clone)]
-pub struct L1(pub(crate) Arc<L1StateInput>);
+pub struct L1(Arc<L1StateInput>);
 
 impl L1 {
     /// The accounts L1 holds a nonzero commitment for.
@@ -232,17 +238,6 @@ impl L1 {
             .iter()
             .filter(|(_, commitment)| !commitment.is_zero())
             .map(|(address, _)| *address)
-    }
-
-    /// The commitment of each of `accounts`, zero for one L1 holds none for.
-    pub(crate) fn commitments(&self, accounts: &[Address]) -> BTreeMap<Address, B256> {
-        accounts
-            .iter()
-            .map(|account| {
-                let commitment = self.0.commitments.get(account).copied();
-                (*account, commitment.unwrap_or_default())
-            })
-            .collect()
     }
 }
 

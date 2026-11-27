@@ -33,7 +33,8 @@ pub fn run(input: ZoneHarnessInput) -> (TempoHarnessOutcome, Option<Rejection>) 
 /// The accounts `input` names, which the account checks watch: its pre-state's, then its senders.
 fn watched(input: &TempoHarnessInput) -> Vec<Address> {
     match input {
-        TempoHarnessInput::Transaction(input) => input.sender.into_iter().collect(),
+        // The zone engine rejects transaction inputs before running any check.
+        TempoHarnessInput::Transaction(_) => Vec::new(),
         TempoHarnessInput::State(input) => input
             .pre_state
             .accounts

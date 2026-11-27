@@ -173,6 +173,7 @@ fn execute<E: Engine>(
     let mut outcome = TempoExecutionOutcome::default();
     let (applied, failed_logs, rejection) = execute_blocks(
         engine,
+        &mut E::Checks::default(),
         &chain.evm_config,
         &chain.consensus,
         &db,
@@ -291,7 +292,7 @@ fn broken_start<E: Engine>(
         engine,
         &start,
         evm_config,
-        env.clone(),
+        &env,
         &InvariantScope::Execution,
         |address| listed.accounts.contains_key(address),
         &holders,
@@ -315,8 +316,10 @@ fn broken_start<E: Engine>(
             ran: Ran::PreBlock,
         }),
     };
+    // Checked on its own, the start carries nothing from the run's steps.
     step::check(
         engine,
+        &mut E::Checks::default(),
         &state,
         &InvariantScope::Execution,
         &mut failures,
@@ -379,6 +382,7 @@ pub(crate) fn recover_block(
 /// of the failed block's transactions before it failed, and why it failed.
 pub(crate) fn execute_blocks<E: Engine>(
     engine: &E,
+    checks: &mut E::Checks,
     evm_config: &E::EvmConfig,
     consensus: &E::Consensus,
     db: &Db,
@@ -388,7 +392,15 @@ pub(crate) fn execute_blocks<E: Engine>(
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
-        let mut executed = execute_block(engine, evm_config, consensus, db, block, index as u64);
+        let mut executed = execute_block(
+            engine,
+            checks,
+            evm_config,
+            consensus,
+            db,
+            block,
+            index as u64,
+        );
         // A read the pre-state could not answer makes the result meaningless,
         // even when the error was swallowed on its way up.
         if db.pre.missed() {
@@ -469,6 +481,7 @@ impl BlockFailure {
 /// Executes `block` on `db`, returning its state updates and outputs, or why it failed.
 fn execute_block<E: Engine>(
     engine: &E,
+    checks: &mut E::Checks,
     evm_config: &E::EvmConfig,
     consensus: &E::Consensus,
     db: &Db,
@@ -499,6 +512,7 @@ fn execute_block<E: Engine>(
 
     let mut run = BlockRun {
         engine,
+        checks,
         evm_config,
         db,
         hooked_updates: hooked,
@@ -537,7 +551,7 @@ fn execute_block<E: Engine>(
         engine,
         db,
         evm_config,
-        env.clone(),
+        &env,
         &scope,
         |_| true,
         &[],
@@ -557,6 +571,7 @@ fn execute_block<E: Engine>(
     };
     step::check(
         engine,
+        run.checks,
         &state,
         &scope,
         &mut run.outputs.invariant_failures,
@@ -569,6 +584,8 @@ fn execute_block<E: Engine>(
 /// One block's execution: what its steps share, and what they produced so far.
 struct BlockRun<'a, E: Engine> {
     engine: &'a E,
+    /// What the chain's own checks carry between the run's steps.
+    checks: &'a mut E::Checks,
     evm_config: &'a E::EvmConfig,
     db: &'a Db,
     block_index: u64,
@@ -715,7 +732,7 @@ impl<E: Engine> BlockRun<'_, E> {
             self.engine,
             self.db,
             self.evm_config,
-            env.clone(),
+            &env,
             &scope,
             |_| true,
             &[],
@@ -734,6 +751,7 @@ impl<E: Engine> BlockRun<'_, E> {
         };
         step::check(
             self.engine,
+            self.checks,
             &state,
             &scope,
             &mut self.outputs.invariant_failures,

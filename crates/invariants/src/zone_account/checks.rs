@@ -5,11 +5,11 @@ use std::fmt;
 use alloy_primitives::{Address, KECCAK256_EMPTY};
 use invariants_core::{check, ensure};
 use tempo_contracts::{precompiles::ITIP20::permitCall, zones::TempoState::TempoBlockFinalized};
-use tempo_primitives::is_tip20_prefix;
+use tempo_primitives::{is_tip20_prefix, transaction::envelope::TEMPO_SYSTEM_TX_SENDER};
 
 use super::{Mirror, ZoneLeaves, ZoneStep};
 use crate::{
-    Check, Checked, Ran, StepChecked, TempoHardfork, Verdict,
+    Check, Checked, Ran, StepChecked, TempoHardfork, Tx, Verdict,
     configurable_account::{
         Quorum,
         spec::{self, MARKER_CODE_HASH},
@@ -18,6 +18,9 @@ use crate::{
 
 /// The zone's and Tempo's views answer. Counted by runners, not judged here.
 pub const VIEW: &str = "TEMPO-ZONE-ACCOUNT-VIEW";
+
+/// What [`VIEW`] counts, for a runner's catalog.
+pub const VIEW_DOC: &str = "The zone's and Tempo's views of configurable accounts answer.";
 
 /// A zone state against Tempo at its anchor.
 pub const CHECKS: &[Check<Mirror>] = &[
@@ -79,7 +82,8 @@ pub const CHECKS: &[Check<Mirror>] = &[
 
 /// A zone transaction or block against its events and signatures.
 pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
-    // Only a system transaction moves the anchor, forward, to the last Tempo block it finalized.
+    // Only the sequencer's system transactions move the anchor, forward, to the last Tempo block
+    // they finalized.
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L58>
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L163>
     check! {
@@ -99,7 +103,7 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
                     .windows(2)
                     .all(|pair| pair[0].blockNumber < pair[1].blockNumber);
             ensure!(
-                s.ran.tx().is_none()
+                user_tx(s).is_none()
                     && ascending
                     && last.blockNumber == post.number
                     && last.blockHash == post.hash,
@@ -107,7 +111,7 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
                 finalized.len(),
                 last.blockNumber,
                 last.blockHash,
-                if s.ran.tx().is_some() { ", in a user transaction" } else { "" }
+                if user_tx(s).is_some() { ", in a user transaction" } else { "" }
             )
         },
     },
@@ -180,10 +184,10 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
         doc: "No zone transaction carries an authorization list.",
         tip: "TIP-1154",
         since: TempoHardfork::T14,
-        over: |step: &ZoneStep| step.ran.tx().into_iter().map(|tx| tx.sender),
+        over: |step: &ZoneStep| user_tx(step).into_iter().map(|tx| tx.sender),
         judge: |s, _| {
             ensure!(
-                !s.ran.tx()?.authority.authorization_list,
+                !user_tx(s)?.authority.authorization_list,
                 "sent a zone transaction with an authorization list"
             )
         },
@@ -233,12 +237,7 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
         doc: "An ordinary signature never authorizes for an account with a Tempo commitment at the anchor.",
         tip: "TIP-1154",
         since: TempoHardfork::T14,
-        over: |step: &ZoneStep| {
-            step.ran
-                .tx()
-                .into_iter()
-                .flat_map(|tx| tx.authority.keys.iter())
-        },
+        over: |step: &ZoneStep| user_tx(step).into_iter().flat_map(|tx| tx.authority.keys.iter()),
         judge: |s, key| {
             let at = at_tx(s)?;
             if at.ineligible(key.account).is_some() {
@@ -290,7 +289,7 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
         judge: |l, account| {
             let leaf = l.of.get(*account)?;
             let (served, stored) = (leaf.served?, leaf.stored.code_hash);
-            let overlaid = l.active && !leaf.reserved && stored == KECCAK256_EMPTY;
+            let overlaid = !leaf.reserved && stored == KECCAK256_EMPTY;
             let want = match overlaid {
                 true if leaf.tempo?.is_zero() => KECCAK256_EMPTY,
                 true => MARKER_CODE_HASH,
@@ -347,10 +346,17 @@ fn permits(step: &ZoneStep) -> impl Iterator<Item = Permit> + '_ {
         })
 }
 
-/// The quorums of the step's transaction.
-fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
+/// The user transaction the step ran: none for a block's own changes or the sequencer's system
+/// transactions, which act for no account.
+fn user_tx(step: &ZoneStep) -> Option<&Tx> {
     step.ran
         .tx()
+        .filter(|tx| tx.sender != TEMPO_SYSTEM_TX_SENDER)
+}
+
+/// The quorums of the step's user transaction.
+fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
+    user_tx(step)
         .into_iter()
         .flat_map(|tx| tx.authority.quorums.iter())
 }
@@ -367,7 +373,11 @@ mod tests {
 
     use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, address};
     use invariants_core::{Effects, Outcome, Report};
-    use tempo_contracts::precompiles::IConfigurableAccount::ConfigurableAccountOwner;
+    use tempo_contracts::{
+        precompiles::IConfigurableAccount::ConfigurableAccountOwner,
+        zones::TempoState::TempoBlockFinalized,
+    };
+    use tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SENDER as SYSTEM;
 
     use super::*;
     use crate::{
@@ -407,17 +417,16 @@ mod tests {
     }
 
     fn mirror(zone: Zone, tempo: &[(Address, B256)]) -> Mirror {
-        let block = zone.anchor.number;
-        Mirror::new(
-            zone,
-            Some(Tempo::new(block, tempo.iter().copied().collect())),
-        )
-        .unwrap()
+        Mirror::new(zone, Some(Tempo::new(tempo.iter().copied().collect())))
     }
 
     fn tx(authority: Authority) -> Ran {
+        sent(SENDER, authority)
+    }
+
+    fn sent(sender: Address, authority: Authority) -> Ran {
         Ran::Tx(Tx {
-            sender: SENDER,
+            sender,
             success: true,
             authority,
         })
@@ -540,6 +549,41 @@ mod tests {
                 &format!(
                     "moved from {} without a TempoBlockFinalized event",
                     anchor(7)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn only_a_system_transaction_finalizing_tempo_moves_the_anchor() {
+        let finalized = TempoBlockFinalized {
+            blockHash: anchor(8).hash,
+            blockNumber: 8,
+            stateRoot: B256::ZERO,
+        };
+        let moved = |ran: Ran| {
+            let e = effects(ran).event(TEMPO_STATE, &finalized);
+            step(mirror(zone(7, &[]), &[]), mirror(zone(8, &[]), &[]), e)
+        };
+        let key = Key {
+            role: Role::Sender,
+            account: SYSTEM,
+        };
+        let system = Authority {
+            keys: vec![key],
+            ..Default::default()
+        };
+        assert_eq!(broken(STEP_CHECKS, &moved(sent(SYSTEM, system))), vec![]);
+        assert_eq!(
+            broken(STEP_CHECKS, &moved(tx(Authority::default()))),
+            one(
+                "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE",
+                anchor(8),
+                &format!(
+                    "follows {} after 1 TempoBlockFinalized events, the last for block 8 ({}), in \
+                     a user transaction",
+                    anchor(7),
+                    anchor(8).hash
                 ),
             )
         );
@@ -731,7 +775,6 @@ mod tests {
 
     fn leaves(leaf: ZoneLeaf) -> ZoneLeaves {
         ZoneLeaves {
-            active: true,
             of: [(ALICE, leaf)].into(),
         }
     }
