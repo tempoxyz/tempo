@@ -222,8 +222,14 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         migrated_hash
     );
 
-    // This transaction mines the first actual T13 L1 block and installs the new runtimes.
-    l1.fund_user(l1.admin_address(), 1).await?;
+    // This transaction mines the first actual T13 L1 block and installs the new runtimes. The
+    // admin sends it because the submitter gives out the sequencer account's key-0 nonces from
+    // its own lane, which a transaction sent around it would make stale.
+    let receipt = ITIP20::new(PATH_USD_ADDRESS, l1.admin_provider())
+        .transfer(l1.dev_address(), U256::ONE)
+        .mined()
+        .await?;
+    assert!(receipt.status());
     zone.wait_for_balance(
         PATH_USD_ADDRESS,
         account.address(),

@@ -200,15 +200,17 @@ where
     })
 }
 
+/// Default L1 EIP-2935 blockhash lag in blocks. Tempo writes `hash(N)` in block `N + 1`.
+/// Hankie writes it later (`BLOCKHASH_LAG = 2`), so a hankie L1 must set the lag with
+/// [`BatchAnchorConfig::with_blockhash_lag`].
+const DEFAULT_BLOCKHASH_LAG: u64 = 1;
+
 /// EIP-2935 anchor limits used by the batch submitter.
 ///
 /// Production uses the real 8191-block EIP-2935 history window with a safety
 /// margin. This type exists primarily so tests can shrink that otherwise large
 /// window and exercise ancestry behavior without mining thousands of L1 blocks.
 /// Production code should normally use [`Default`].
-/// Default L1 EIP-2935 blockhash lag in blocks (hankie's `BLOCKHASH_LAG = 2`).
-const DEFAULT_BLOCKHASH_LAG: u64 = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchAnchorConfig {
     /// Total L1 block-hash history window to treat as available for EIP-2935

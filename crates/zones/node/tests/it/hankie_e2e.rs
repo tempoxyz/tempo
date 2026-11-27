@@ -276,7 +276,8 @@ async fn live_zone_against_hankie_e2e() -> eyre::Result<()> {
                 withdrawal_batch_limits: zone_sequencer::WithdrawalBatchLimits::default(),
                 outbox_address: zone_primitives::constants::ZONE_OUTBOX_ADDRESS,
                 inbox_address: zone_primitives::constants::ZONE_INBOX_ADDRESS,
-                batch_anchor_config: zone_sequencer::BatchAnchorConfig::default(),
+                batch_anchor_config: zone_sequencer::BatchAnchorConfig::default()
+                    .with_blockhash_lag(2)?,
             },
             dev_signer.clone(),
         )
