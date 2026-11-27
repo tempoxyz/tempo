@@ -622,7 +622,9 @@ where
 
 impl<Provider, ChainSpec> TempoReceiptConverter<Provider, ChainSpec>
 where
-    Provider: BlockReader<Block = tempo_primitives::Block> + StateProviderFactory,
+    Provider: BlockReader<Block = tempo_primitives::Block>
+        + ReceiptProvider<Receipt = TempoReceipt>
+        + StateProviderFactory,
     ChainSpec: EthChainSpec + 'static,
 {
     /// Converts `receipts`, all from one block, which is `block` when the caller has it.
@@ -680,9 +682,8 @@ where
     /// failed lane transaction rolls the bump back. Other lane transactions leave it alone. Walking
     /// the block from the sender's account nonce before it assigns each successful lane CREATE its
     /// nonce, accepted only if the walk ends at the account nonce after the block, so any other
-    /// bump, such as an EIP-7702 authorization, leaves the sender's CREATEs without an address. A
-    /// lane CREATE missing from `receipts` is assumed to have succeeded, which the final count
-    /// also checks.
+    /// bump, such as an EIP-7702 authorization, leaves the sender's CREATEs without an address. The
+    /// outcome of a lane CREATE missing from `receipts` is read from the block's stored receipts.
     ///
     /// Returns no addresses if the block is not stored, such as a pending block, or its state is
     /// pruned, not yet synced or gone after a reorg.
@@ -720,10 +721,29 @@ where
                 .provider
                 .state_by_block_hash(block.header().inner.parent_hash)?;
             let state = self.provider.state_by_block_hash(block_hash)?;
-            let success = receipts
+            let mut success = receipts
                 .iter()
                 .map(|r| (r.meta.index, r.receipt.success))
                 .collect::<HashMap<_, _>>();
+            let missing_status =
+                (0u64..)
+                    .zip(block.transactions_with_sender())
+                    .any(|(index, (signer, tx))| {
+                        senders.contains(signer)
+                            && tx.kind().is_create()
+                            && !is_protocol_nonce(tx.nonce_key())
+                            && !success.contains_key(&index)
+                    });
+            if missing_status {
+                let Some(block_receipts) = self.provider.receipts_by_block(block_hash.into())?
+                else {
+                    return Ok(HashMap::default());
+                };
+                success = (0u64..)
+                    .zip(block_receipts)
+                    .map(|(index, receipt)| (index, receipt.success))
+                    .collect();
+            }
 
             let mut addresses = HashMap::default();
             for sender in senders {
@@ -742,7 +762,8 @@ where
                         continue;
                     }
                     if !is_protocol_nonce(tx.nonce_key()) {
-                        if !tx.kind().is_create() || !success.get(&index).copied().unwrap_or(true) {
+                        if !tx.kind().is_create() || !success.get(&index).copied().unwrap_or(false)
+                        {
                             continue;
                         }
                         created.push((index, sender.create(nonce)));
