@@ -1049,6 +1049,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
+            // All state mutations for this block have completed on T13+ (no post-execution
+            // system calls). Release the state hook before materializing BundleState so
+            // the parallel state-root task can finalize while into_bundle() runs.
+            self.inner.set_state_hook(|_| {});
             let mut inner = self.inner.inner;
             let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
             let result = reth_execution_types::BlockExecutionResult {
