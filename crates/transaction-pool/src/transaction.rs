@@ -28,10 +28,7 @@ use std::{
 use tempo_contracts::precompiles::PaymentSlots;
 use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN,
-    nonce::NonceManager,
-    storage::StorageKey,
-    tip20::{TIP20Token, tip20_slots},
+    DEFAULT_FEE_TOKEN, nonce::NonceManager, storage::StorageKey, tip20::tip20_slots,
     tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{
@@ -484,7 +481,10 @@ impl TempoPooledTransaction {
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
-            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+            let slot = {
+                use tempo_precompiles::storage::StorageKey as _;
+                fee_payer.mapping_slot(tempo_precompiles::tip20::slots::BALANCES)
+            };
             Some((fee_token, slot))
         })
     }

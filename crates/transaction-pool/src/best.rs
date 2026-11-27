@@ -1,7 +1,74 @@
 //! A state-aware iterator over the best transactions in the tempo pool.
 
 use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{Address, U256};
+use std::{
+    collections::HashMap,
+    hash::{BuildHasher, Hash, Hasher, RandomState},
+};
+
+/// `(token_address, storage_slot)` key with fast hashing for Keccak-derived TIP-20 slots.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TokenSlotKey(Address, U256);
+
+impl Hash for TokenSlotKey {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let b = self.0.0.0;
+        let addr_tail =
+            u64::from_ne_bytes([b[12], b[13], b[14], b[15], b[16], b[17], b[18], b[19]]);
+        let limbs = self.1.as_limbs();
+        state.write_u64(limbs[0] ^ limbs[1].rotate_left(17) ^ addr_tail);
+    }
+}
+
+/// Randomly seeded fast hasher for [`TokenSlotKey`].
+#[derive(Clone, Copy)]
+struct SlotKeyBuildHasher(u64);
+
+impl Default for SlotKeyBuildHasher {
+    #[inline]
+    fn default() -> Self {
+        Self(RandomState::new().hash_one(0u64) | 1)
+    }
+}
+
+impl BuildHasher for SlotKeyBuildHasher {
+    type Hasher = SlotKeyHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> Self::Hasher {
+        SlotKeyHasher(self.0)
+    }
+}
+
+struct SlotKeyHasher(u64);
+
+impl Hasher for SlotKeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut acc = self.0;
+        for &b in bytes {
+            acc = (acc ^ u64::from(b)).wrapping_mul(0x9e3779b97f4a7c15);
+        }
+        self.0 = acc;
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        let mut h = (self.0 ^ i).wrapping_mul(0x9e3779b97f4a7c15);
+        h ^= h >> 33;
+        self.0 = h;
+    }
+}
+
+type BalanceMap = HashMap<TokenSlotKey, U256, SlotKeyBuildHasher>;
+pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -14,34 +81,28 @@ use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
-struct DecreasedBalancesSink<'a>(&'a mut HashMap<(Address, U256), U256>);
+struct DecreasedBalancesSink<'a>(&'a mut BalanceMap);
 
 impl StateChangeSink for DecreasedBalancesSink<'_> {
     type Error = core::convert::Infallible;
 
+    #[inline]
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         if !is_tip20_prefix(change.address) {
             return Ok(());
         }
 
         if change.current < change.original {
-            self.0.insert((change.address, change.key), change.current);
-        } else if let Some(balance) = self.0.get_mut(&(change.address, change.key)) {
-            *balance = change.current;
-        }
-        Ok(())
-    }
-
-    fn storage_read(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-    ) -> Result<(), Self::Error> {
-        if is_tip20_prefix(address)
-            && let Some(balance) = self.0.get_mut(&(address, key))
+            self.0
+                .insert(TokenSlotKey(change.address, change.key), change.current);
+        } else if change.current > change.original
+            && !self.0.is_empty()
+            && change.key != tempo_precompiles::tip20::TIP_FEE_MANAGER_BALANCE_SLOT
+            && change.key != tempo_precompiles::tip20::TIP20_CHANNEL_RESERVE_BALANCE_SLOT
+            && (change.key.as_limbs()[1] | change.key.as_limbs()[2] | change.key.as_limbs()[3]) != 0
+            && let Some(balance) = self.0.get_mut(&TokenSlotKey(change.address, change.key))
         {
-            *balance = value;
+            *balance = change.current;
         }
         Ok(())
     }
@@ -55,7 +116,7 @@ pub struct StateAwareBestTransactions<I> {
     /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
+    decreased_balances: BalanceMap,
     /// Ordered fallback fee tokens active for the block being built.
     fallback_fee_tokens: &'static [Address],
 }
@@ -72,7 +133,10 @@ where
     pub fn new(inner: I, fallback_fee_tokens: &'static [Address]) -> Self {
         Self {
             inner,
-            decreased_balances: HashMap::default(),
+            decreased_balances: BalanceMap::with_capacity_and_hasher(
+                1024,
+                SlotKeyBuildHasher::default(),
+            ),
             fallback_fee_tokens,
         }
     }
@@ -80,9 +144,13 @@ where
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
-        result
-            .result()
-            .pending_state
+        self.on_state_changes(&result.result().pending_state);
+    }
+
+    /// Processes a transaction's state changes in place without requiring a detached `PendingState`.
+    #[inline]
+    pub fn on_state_changes(&mut self, state_changes: &impl StateChangeSource) {
+        state_changes
             .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
             .unwrap();
     }
@@ -102,7 +170,7 @@ where
                 candidate != token
                     && self
                         .decreased_balances
-                        .get(&(candidate, slot))
+                        .get(&TokenSlotKey(candidate, slot))
                         .is_none_or(|&balance| balance >= fee)
             })
     }
@@ -126,7 +194,7 @@ where
             };
 
             let fee = best_tx.transaction.fee_token_cost();
-            if let Some(&balance) = self.decreased_balances.get(&key)
+            if let Some(&balance) = self.decreased_balances.get(&TokenSlotKey(key.0, key.1))
                 && balance < fee
                 && !self.may_use_other_fallback_token(best_tx, key, fee)
             {
@@ -199,7 +267,7 @@ mod tests {
             StateAwareBestTransactions::new(pool.best_transactions(), fallback_fee_tokens);
         for &token in drained {
             best.decreased_balances
-                .insert((token, slot), fee - U256::ONE);
+                .insert(TokenSlotKey(token, slot), fee - U256::ONE);
         }
         best.next().is_some()
     }
