@@ -86,6 +86,7 @@ interface IPortal {
         uint128 amount,
         uint256 keyIndex,
         DepositPayload calldata encrypted,
+        bytes32 ephemeralPubkeyY,
         address tempoRefundRecipient
     ) external returns (bytes32);
     function processWithdrawals(Withdrawal[] calldata withdrawals, bytes32 remainingQueue) external;

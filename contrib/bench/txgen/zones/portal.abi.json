@@ -49,6 +49,11 @@
         "type": "tuple"
       },
       {
+        "internalType": "bytes32",
+        "name": "ephemeralPubkeyY",
+        "type": "bytes32"
+      },
+      {
         "internalType": "address",
         "name": "tempoRefundRecipient",
         "type": "address"

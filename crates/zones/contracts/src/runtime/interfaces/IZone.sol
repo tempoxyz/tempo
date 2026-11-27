@@ -1015,6 +1015,34 @@ interface IZonePortal {
         external
         returns (bytes32 newCurrentDepositQueueHash);
 
+    /// @notice deposit with the ephemeral public key's full y coordinate.
+    /// @dev Validates the point with a few mulmods instead of a MODEXP. ephemeralPubkeyY must
+    ///      match encrypted.ephemeralPubkeyYParity; the stored deposit and its event are
+    ///      unchanged, so the zone still sees only the compressed key.
+    function deposit(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        bytes32 ephemeralPubkeyY,
+        address tempoRefundRecipient
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
+    /// @notice deposit with the ephemeral public key's full y coordinate and maxFee.
+    function deposit(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        bytes32 ephemeralPubkeyY,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
     /// @notice Alias for the `depositEncrypted` overload with `maxFee`.
     function deposit(
         address token,

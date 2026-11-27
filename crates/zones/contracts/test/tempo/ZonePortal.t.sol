@@ -5655,6 +5655,78 @@ contract ZonePortalTest is BaseTest {
         assertEq(keccak256(abi.encode(aliasLogs)), keccak256(abi.encode(encryptedLogs)));
     }
 
+    bytes32 internal constant VALID_SECP256K1_Y =
+        0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8;
+
+    /// @notice Supplying y stores and emits exactly what the compressed-key deposit does.
+    function test_depositWithY_matchesDeposit() public {
+        _setEncKeyWithPoP(ENC_KEY_1);
+
+        uint128 depositAmount = 1000e6;
+        DepositPayload memory encrypted = _makeDepositPayload();
+
+        vm.prank(alice);
+        pathUSD.approve(address(portal), depositAmount);
+        uint256 snapshotId = vm.snapshotState();
+
+        vm.recordLogs();
+        vm.prank(alice);
+        uint256 gasBefore = gasleft();
+        bytes32 compressedHash =
+            portal.deposit(address(pathUSD), depositAmount, 0, encrypted, alice);
+        uint256 compressedGas = gasBefore - gasleft();
+        Vm.Log[] memory compressedLogs = vm.getRecordedLogs();
+
+        assertTrue(vm.revertToState(snapshotId));
+
+        vm.recordLogs();
+        vm.prank(alice);
+        gasBefore = gasleft();
+        bytes32 withYHash = portal.deposit(
+            address(pathUSD), depositAmount, 0, encrypted, VALID_SECP256K1_Y, alice
+        );
+        uint256 withYGas = gasBefore - gasleft();
+        Vm.Log[] memory withYLogs = vm.getRecordedLogs();
+
+        assertEq(withYHash, compressedHash);
+        assertEq(portal.currentDepositQueueHash(), compressedHash);
+        assertEq(keccak256(abi.encode(withYLogs)), keccak256(abi.encode(compressedLogs)));
+        emit log_named_uint("deposit gas (compressed key)", compressedGas);
+        emit log_named_uint("deposit gas (with y)", withYGas);
+        assertLt(withYGas, compressedGas);
+    }
+
+    function test_depositWithY_revertsOnWrongY() public {
+        _setEncKeyWithPoP(ENC_KEY_1);
+        DepositPayload memory encrypted = _makeDepositPayload();
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+
+        vm.expectRevert(IZonePortal.InvalidEphemeralPubkey.selector);
+        portal.deposit(
+            address(pathUSD), 1000e6, 0, encrypted, bytes32(uint256(VALID_SECP256K1_Y) + 2), alice
+        );
+
+        // The other root has the wrong parity for the 0x02 prefix.
+        vm.expectRevert(IZonePortal.InvalidEphemeralPubkey.selector);
+        portal.deposit(
+            address(pathUSD),
+            1000e6,
+            0,
+            encrypted,
+            bytes32(SECP256K1_P_FOR_TEST - uint256(VALID_SECP256K1_Y)),
+            alice
+        );
+
+        encrypted.ephemeralPubkeyYParity = 0x04;
+        vm.expectRevert(IZonePortal.InvalidEphemeralPubkey.selector);
+        portal.deposit(address(pathUSD), 1000e6, 0, encrypted, VALID_SECP256K1_Y, alice);
+        vm.stopPrank();
+    }
+
+    uint256 internal constant SECP256K1_P_FOR_TEST =
+        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F;
+
     function test_deposit_legacyPlaintextSelectorIsAbsent() public {
         bytes memory callData = abi.encodeWithSignature(
             "deposit(address,address,uint128,bytes32,address)",
