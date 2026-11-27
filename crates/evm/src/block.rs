@@ -1223,7 +1223,10 @@ mod tests {
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
     use std::{
         collections::HashMap,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
     use tempo_contracts::{
@@ -3595,8 +3598,6 @@ mod tests {
 
     #[test]
     fn test_sealed_block_drops_state_hook_before_into_output() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         struct DropFlag(Arc<AtomicBool>);
         impl Drop for DropFlag {
             fn drop(&mut self) {
