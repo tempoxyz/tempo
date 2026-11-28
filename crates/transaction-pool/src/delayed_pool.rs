@@ -345,6 +345,7 @@ mod tests {
     use alloy_primitives::U256;
     use alloy_signer_local::PrivateKeySigner;
     use reth_transaction_pool::TransactionOrigin;
+    use tempo_primitives::transaction::tempo_transaction::Call;
 
     fn valid(tx: TempoPooledTransaction) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
@@ -368,6 +369,138 @@ mod tests {
 
     fn hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
         txs.iter().map(|tx| *tx.hash()).collect()
+    }
+
+    #[derive(Clone, Debug, ephyra::Arbitrary)]
+    enum Operation {
+        Insert(#[ephyra(gen = ephyra::gens::int(0usize..8))] usize),
+        Remove(#[ephyra(gen = ephyra::gens::int(0usize..8))] usize),
+        Release(#[ephyra(gen = ephyra::gens::int(100u64..=105))] u64),
+    }
+
+    #[ephyra::test(tests = 256, gen = ephyra::gens::vec(ephyra::any::<Operation>()).len(1..=64))]
+    fn ephyra_delayed_pool(operations: Vec<Operation>) {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
+            max_txs_per_authority: 2,
+            ..Default::default()
+        });
+        // Two senders share four release timestamps. Fixed call data keeps hashes replayable.
+        let mut transactions = Vec::new();
+        for id in 0..8u8 {
+            let sender = Address::with_last_byte(1 + id % 2);
+            let timestamp = 101 + u64::from(id / 2);
+            let tx = expiring(sender)
+                .valid_after(timestamp)
+                .calls(vec![Call::new(sender, vec![id; usize::from(id)])])
+                .build();
+            transactions.push((valid(tx), timestamp));
+        }
+        let mut pending = Vec::<usize>::new();
+        for operation in operations {
+            match operation {
+                Operation::Insert(id) => {
+                    let (tx, _) = &transactions[id];
+                    let result = pool.insert(Arc::clone(tx));
+                    if pending.contains(&id) {
+                        ephyra::label("duplicate insert");
+                        assert!(matches!(
+                            result.unwrap_err().kind,
+                            PoolErrorKind::AlreadyImported
+                        ));
+                    } else if pending
+                        .iter()
+                        .filter(|&&i| transactions[i].0.sender() == tx.sender())
+                        .count()
+                        == pool.config.max_txs_per_authority
+                    {
+                        ephyra::label("authority at capacity");
+                        assert!(
+                            matches!(result.unwrap_err().kind, PoolErrorKind::SpammerExceededCapacity(a) if a == tx.sender())
+                        );
+                    } else {
+                        assert!(result.unwrap().is_empty());
+                        pending.push(id);
+                    }
+                }
+                Operation::Remove(id) => {
+                    let hash = transactions[id].0.hash();
+                    let removed = pool.remove(hash);
+                    assert_eq!(
+                        removed.as_ref().map(|tx| tx.hash()),
+                        pending.contains(&id).then_some(hash)
+                    );
+                    pending.retain(|&i| i != id);
+                }
+                Operation::Release(tip) => {
+                    let mut expected: Vec<_> = pending
+                        .extract_if(.., |id| transactions[*id].1 <= tip)
+                        .map(|id| *transactions[id].0.hash())
+                        .collect();
+                    let due = pool.take_due(tip);
+                    ephyra::classify(expected.len() > 1, "batch release");
+                    assert!(due.is_sorted_by_key(|tx| valid_after(tx)));
+                    let mut actual = hashes(&due);
+                    actual.sort_unstable();
+                    expected.sort_unstable();
+                    assert_eq!(actual, expected);
+                }
+            }
+            assert_eq!(pool.len(), pending.len());
+            assert_eq!(
+                pool.size(),
+                pending
+                    .iter()
+                    .map(|&id| transactions[id].0.transaction.size())
+                    .sum::<usize>()
+            );
+            for (id, (tx, _)) in transactions.iter().enumerate() {
+                assert_eq!(pool.contains(tx.hash()), pending.contains(&id));
+            }
+        }
+    }
+
+    #[ephyra::test(tests = 256)]
+    fn ephyra_repriced_evictions(bids: [(u8, u8); 4], old_base_fee: u8, new_base_fee: u8) {
+        let config = DelayedPoolConfig {
+            max_count: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        };
+        let mut repriced = DelayedPool::new(config);
+        let mut fresh = DelayedPool::new(config);
+        repriced.set_base_fee(old_base_fee.into());
+        fresh.set_base_fee(new_base_fee.into());
+
+        for (id, (max_fee, tip)) in bids.into_iter().enumerate() {
+            if id == config.max_count.get() {
+                repriced.set_base_fee(new_base_fee.into());
+            }
+            let sender = Address::with_last_byte(u8::try_from(id + 1).unwrap());
+            let tx = valid(
+                expiring(sender)
+                    .calls(vec![Call::new(sender, [])])
+                    .max_fee(max_fee.into())
+                    .max_priority_fee(tip.min(max_fee).into())
+                    .build(),
+            );
+            // Both pools have room for the initial bids. Subsequent admissions must agree
+            // on the victim (including tip ties) or on rejecting the newcomer.
+            match (repriced.insert(Arc::clone(&tx)), fresh.insert(tx)) {
+                (Ok(actual), Ok(expected)) => {
+                    assert_eq!(actual.len(), usize::from(id >= config.max_count.get()));
+                    assert_eq!(hashes(&actual), hashes(&expected));
+                }
+                (Err(actual), Err(expected)) => {
+                    assert!(id >= config.max_count.get());
+                    assert!(matches!(actual.kind, PoolErrorKind::DiscardedOnInsert));
+                    assert!(matches!(expected.kind, PoolErrorKind::DiscardedOnInsert));
+                }
+                (actual, expected) => panic!("repriced {actual:?}, fresh {expected:?}"),
+            }
+        }
+        assert_eq!(
+            hashes(&repriced.take_due(u64::MAX)),
+            hashes(&fresh.take_due(u64::MAX))
+        );
     }
 
     #[test]

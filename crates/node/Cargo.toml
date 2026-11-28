@@ -86,6 +86,7 @@ tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+ephyra.workspace = true
 tempo-contracts.workspace = true
 tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["test-utils"] }

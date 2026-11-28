@@ -139,7 +139,7 @@ pub const DEFAULT_MAX_CONCURRENT_LOOKUPS: NonZeroUsize = NonZeroUsize::new(64).u
 /// lookups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Subscriptions across all connections and transports.
+    /// Subscriptions across all connections and transports, capped at [`Semaphore::MAX_PERMITS`].
     pub max_subscriptions: NonZeroUsize,
     /// Subscriptions on one HTTP or WS connection.
     pub max_subscriptions_per_connection: NonZeroUsize,
@@ -243,17 +243,14 @@ impl Drop for SubscriptionGuard {
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
     /// Create a new consensus RPC handler enforcing `limits`.
     pub fn new(consensus_feed: I, limits: Limits) -> Self {
+        // Tokio panics when asked to create a semaphore above its capacity.
+        let semaphore =
+            |limit: NonZeroUsize| Arc::new(Semaphore::new(limit.get().min(Semaphore::MAX_PERMITS)));
         Self {
             consensus_feed,
-            // A semaphore panics when created with more permits than it can hold.
-            lookups: Arc::new(Semaphore::new(
-                limits
-                    .max_concurrent_lookups
-                    .get()
-                    .min(Semaphore::MAX_PERMITS),
-            )),
+            lookups: semaphore(limits.max_concurrent_lookups),
             metrics: ConsensusRpcMetrics::default(),
-            subscriptions: Arc::new(Semaphore::new(limits.max_subscriptions.get())),
+            subscriptions: semaphore(limits.max_subscriptions),
             per_connection: Some(ConnectionCap {
                 counts: Default::default(),
                 max: limits.max_subscriptions_per_connection.get(),
