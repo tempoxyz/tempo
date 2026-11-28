@@ -35,6 +35,7 @@ use reth_node_ethereum as _;
 pub mod engine;
 pub mod executed_state;
 pub mod gossip;
+pub mod network;
 pub mod node;
 pub mod rpc;
 pub mod telemetry;

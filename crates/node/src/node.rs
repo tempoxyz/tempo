@@ -3,6 +3,7 @@ use crate::{
     engine::TempoEngineValidator,
     executed_state::{ExecutedState, TempoEngineTreeValidatorBuilder},
     gossip::GossipProtocol,
+    network::ETH_VERSIONS,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
@@ -13,7 +14,7 @@ use crate::{
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, ChainSpecProvider, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::{
-    network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives},
+    network::{NetworkHandle, NetworkManager, PeersInfo as _, primitives::BasicNetworkPrimitives},
     tasks::Runtime,
 };
 use reth_node_api::{
@@ -210,8 +211,10 @@ impl TempoNodeArgs {
 /// not learn about protocols added later. On a small network, this could leave
 /// a follower with no gossip peer.
 ///
-/// All other behavior comes from the standard Ethereum network builder. The
-/// provider used by the `eth` request handler does not change.
+/// It also pins the advertised `eth` versions to [`ETH_VERSIONS`] instead of
+/// reth's defaults. All other behavior comes from the standard Ethereum
+/// network builder. The provider used by the `eth` request handler does not
+/// change.
 #[derive(Debug, Default, Clone)]
 pub struct TempoNetworkBuilder {
     gossip: Option<GossipProtocol>,
@@ -241,7 +244,9 @@ where
         ctx: &BuilderContext<Node>,
         pool: Pool,
     ) -> eyre::Result<Self::Network> {
-        let mut network = ctx.network_builder().await?;
+        let mut config = ctx.network_config()?;
+        config.hello_message.set_eth_versions(ETH_VERSIONS);
+        let mut network = NetworkManager::builder(config).await?;
         if let Some(gossip) = self.gossip {
             let gossip = gossip.install();
             network.network_mut().add_rlpx_sub_protocol(gossip);
