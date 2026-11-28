@@ -77,6 +77,11 @@ const FEE_STATE: Expectation = Expectation {
         {
             return None;
         }
+        // With the same charge and refund, a gas-derived hook leaves the same fee state, so any
+        // remaining difference comes from the hook itself.
+        if real_fee.charged == shadow_fee.charged {
+            return None;
+        }
         // A different fee route cannot be inferred from a changed fee amount alone.
         let route = |actions: &[StorageAction], mut amount: U256| -> Option<Vec<U256>> {
             let mut keys = Vec::new();
@@ -484,6 +489,44 @@ mod tests {
         assert_eq!(field.address, Some(Address::ZERO));
         assert_eq!(field.slot, Some(U256::ZERO));
         assert!(field.fee_associated);
+    }
+
+    /// Charges `tx` its gas from a 5_000 maximum while its post-fee hook writes `value` to slot
+    /// zero.
+    fn fee_hook(tx: &mut ObservedTx, value: u64) {
+        let max = U256::from(5_000);
+        write_slot(tx, value);
+        tx.actions[0] = StorageAction::Marker(FeeHook::PreTx {
+            payer: Address::ZERO,
+            token: Address::ZERO,
+            amount: max,
+        });
+        tx.actions[2] = StorageAction::Marker(FeeHook::PostTx {
+            refund: max - U256::from(tx.charged_gas),
+            log: 0,
+        });
+        tx.fee_normalized = Some(B256::repeat_byte(1));
+    }
+
+    #[test]
+    fn fee_state_rejects_hook_change_with_equal_charge() {
+        let block = block(1);
+        let analyze = |gas, values: [u64; 2]| {
+            let mut evidence = evidence(1);
+            let arms = differs(&mut evidence, 0, gas);
+            fee_hook(&mut arms.real, values[0]);
+            fee_hook(&mut arms.shadow, values[1]);
+            let report = Report::analyze(&evidence, &[&FEE_STATE], &block);
+            (report.unexplained, report.outcome(&evidence))
+        };
+        assert_eq!(
+            analyze([1_000, 1_200], [2_000, 2_200]),
+            (0, ReplayOutcome::Expected)
+        );
+        assert_eq!(
+            analyze([1_000, 1_000], [2_000, 3_000]),
+            (1, ReplayOutcome::Findings)
+        );
     }
 
     fn post_fee(charged: U256, log: usize) -> Vec<StorageAction> {
