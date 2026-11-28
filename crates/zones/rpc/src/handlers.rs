@@ -68,7 +68,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getBalance(address, block)` — returns the balance of an account.
     ///
-    /// Returns `0x0` when querying an address that does not match `auth.caller`.
+    /// Returns `0x0` when `auth.caller` may not read the account.
     fn get_balance(
         &self,
         address: Address,
@@ -78,7 +78,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getTransactionCount(address, block)` — returns the nonce.
     ///
-    /// Returns `0x0` when querying an address that does not match `auth.caller`.
+    /// Returns `0x0` when `auth.caller` may not read the account.
     fn get_transaction_count(
         &self,
         address: Address,
@@ -98,9 +98,13 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     fn block_by_hash(&self, hash: B256, full: bool, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getTransactionByHash(hash)` — returns a transaction by hash.
+    ///
+    /// Returns `null` when `auth.caller` may not read the sender.
     fn transaction_by_hash(&self, hash: B256, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getTransactionReceipt(hash)` — returns a transaction receipt.
+    ///
+    /// Returns `null` when `auth.caller` may not read the sender.
     fn transaction_receipt(&self, hash: B256, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_call(request, block, state_override)` — executes a call without
@@ -148,10 +152,11 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// Same `from`-enforcement as [`call`](Self::call).
     fn fill_transaction(&self, request: TempoTransactionRequest, auth: AuthContext) -> BoxFut<'_>;
 
-    /// `eth_getLogs(filter)` — returns logs matching the filter, scoped to the caller.
+    /// `eth_getLogs(filter)` — returns matching logs of one account or org the caller may read.
     fn get_logs(&self, filter: Filter, auth: AuthContext) -> BoxFut<'_>;
 
-    /// `eth_newFilter(filter)` — creates a new log filter, scoped to the caller.
+    /// `eth_newFilter(filter)` — creates a new log filter, scoped like
+    /// [`get_logs`](Self::get_logs).
     fn new_filter(&self, filter: Filter, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getFilterLogs(id)` — returns all logs for a filter.
@@ -186,6 +191,16 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `zone_getEncryptionKey()` — returns the active encryption key at the
     /// current Tempo L1 head.
     fn zone_get_encryption_key(&self, auth: AuthContext) -> BoxFut<'_>;
+
+    /// `zone_deriveDepositAddresses(request)` — derives TIP-1094 deposit addresses for a master
+    /// ID registered to the authenticated caller, from the last settled zone block.
+    fn zone_derive_deposit_addresses(
+        &self,
+        _request: crate::types::DeriveDepositAddressesRequest,
+        _auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async { Err(JsonRpcError::method_disabled()) })
+    }
 }
 
 /// Deserialize JSON-RPC params, returning an error response on failure.
@@ -328,6 +343,22 @@ pub async fn dispatch(
         }
         Method::ZoneGetEncryptionKey => {
             api_result(id, method, api.zone_get_encryption_key(auth.clone()).await)
+        }
+        Method::ZoneDeriveDepositAddresses => {
+            let (request,) = match parse_params::<(crate::types::DeriveDepositAddressesRequest,)>(
+                raw,
+                &id,
+                "expected [{masterId, userTags, version?}]",
+            ) {
+                Ok(v) => v,
+                Err(resp) => return resp,
+            };
+            api_result(
+                id,
+                method,
+                api.zone_derive_deposit_addresses(request, auth.clone())
+                    .await,
+            )
         }
     }
 }

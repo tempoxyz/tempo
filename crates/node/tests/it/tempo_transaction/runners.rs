@@ -2744,6 +2744,81 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
     Ok(())
 }
 
+/// A 2D nonce CREATE receipt reports the address the contract was deployed at, which follows the
+/// account nonce, not the lane nonce. Runs only against a local node built from this tree.
+pub(super) async fn run_lane_create_contract_address_scenario<E: TestEnv>(
+    env: &mut E,
+) -> eyre::Result<()> {
+    println!("\n=== Lane create contract address scenario ===\n");
+
+    let chain_id = env.chain_id();
+    let signer = PrivateKeySigner::random();
+    let signer_addr = signer.address();
+    let _ = env.fund_account(signer_addr).await?;
+
+    // Advance the account nonce past the lane nonce with a protocol nonce CREATE.
+    let init_code =
+        Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+    let nonce = env.provider().get_transaction_count(signer_addr).await?;
+    let protocol_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call::new(TxKind::Create, init_code.clone())],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: None,
+        ..Default::default()
+    };
+    let sig = sign_aa_tx_secp256k1(&protocol_tx, &signer)?;
+    let envelope: TempoTxEnvelope = protocol_tx.into_signed(sig).into();
+    let tx_hash = *envelope.tx_hash();
+    let receipt = env.submit_tx(envelope.encoded_2718(), tx_hash).await?;
+    assert_eq!(receipt["status"].as_str(), Some("0x1"));
+    let expected_code: [u8; 32] = B256::with_last_byte(0x2a).into();
+
+    let lane_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call::new(
+            TxKind::Create,
+            Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]),
+        )],
+        nonce_key: U256::from(7),
+        nonce: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: None,
+        ..Default::default()
+    };
+    let sig = sign_aa_tx_secp256k1(&lane_tx, &signer)?;
+    let envelope: TempoTxEnvelope = lane_tx.into_signed(sig).into();
+    let tx_hash = *envelope.tx_hash();
+    let receipt = env.submit_tx(envelope.encoded_2718(), tx_hash).await?;
+    assert_eq!(receipt["status"].as_str(), Some("0x1"));
+    let lane_contract_address: Address = receipt["contractAddress"]
+        .as_str()
+        .expect("2D nonce CREATE receipt should have contractAddress")
+        .parse()?;
+    assert_eq!(
+        lane_contract_address,
+        signer_addr.create(nonce + 1),
+        "2D nonce CREATE address should be computed from the account nonce"
+    );
+    let deployed_code = settled(
+        || async { Ok(env.provider().get_code_at(lane_contract_address).await?) },
+        |code| !code.is_empty(),
+    )
+    .await?;
+    assert_eq!(deployed_code.as_ref(), &expected_code);
+
+    println!("✓ Lane create contract address scenario passed");
+    Ok(())
+}
+
 /// Regression test: `eth_fillTransaction` must decode revert errors during gas estimation
 /// instead of returning raw hex revert data.
 ///

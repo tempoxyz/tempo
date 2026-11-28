@@ -105,6 +105,29 @@ pub(crate) mod marshal {
         pub finalized_tip_certificate: Option<Certificate>,
     }
 
+    /// The marshal ack depth for an executor that acknowledges finalized
+    /// blocks only once the execution layer durably persisted them.
+    ///
+    /// Reth persists in batches. It holds up to
+    /// `persistence_backpressure_threshold + memory_block_buffer_target`
+    /// unpersisted canonical blocks in memory before it stops processing
+    /// engine requests, so marshal may dispatch as many unacknowledged
+    /// blocks. Acknowledgements cannot stall with the queue full: reth's
+    /// config validation requires this depth to exceed
+    /// `persistence_threshold`, which must be crossed for reth to persist
+    /// at all, and that in turn to exceed
+    /// `memory_block_buffer_target + num_state_masking_blocks`, by which
+    /// the durable frontier trails the head after a persistence run.
+    pub(crate) fn max_pending_acks(execution_node: &TempoFullNode) -> eyre::Result<NonZeroUsize> {
+        let engine_args = &execution_node.config.engine;
+        engine_args
+            .persistence_backpressure_threshold()
+            .checked_add(engine_args.memory_block_buffer_target())
+            .and_then(|acks| usize::try_from(acks).ok())
+            .and_then(NonZeroUsize::new)
+            .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")
+    }
+
     /// Initialize the marshal actor and its backing finalized-blocks store
     /// (the finalizations-by-height archive plus the [`Hybrid`] finalized
     /// blocks store), select the startup finalized floor, and advance

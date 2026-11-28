@@ -217,8 +217,9 @@ impl Read for Block {
         // a hundredfold. The walk follows `Decodable2718::network_decode`, so it counts exactly the
         // transactions `decode_sealed` would decode: a legacy transaction is an RLP list and a typed
         // one a type byte and an RLP list, either bare or after an RLP string header. The decoder
-        // does not check that string's length, so it continues right after the envelope's list,
-        // reading any further envelopes packed into the string as more transactions.
+        // requires a string header to wrap exactly one envelope, so a block packing several
+        // envelopes into one string is rejected by `decode_sealed`; this walk counts each of them,
+        // which can only reject such a block earlier.
         let rlp_error = |rlp_err: alloy_rlp::Error| {
             commonware_codec::Error::Wrapped("reading RLP transaction list", rlp_err.into())
         };
@@ -636,7 +637,8 @@ mod tests {
         assert_eq!(decoded.body().transactions, vec![eip1559_transaction()]);
     }
 
-    /// Packs `count` copies of a typed envelope into one RLP string, as `network_decode` accepts.
+    /// Packs `count` copies of a typed envelope into one RLP string, which `network_decode` rejects
+    /// for more than one.
     fn typed_envelopes_packed_into_one_string(count: usize) -> Vec<u8> {
         let envelope = eip1559_envelope();
         let mut packed = Vec::new();
@@ -652,17 +654,23 @@ mod tests {
     }
 
     #[test]
-    fn reads_typed_envelopes_packed_into_one_string() {
+    fn read_rejects_typed_envelopes_packed_into_one_string() {
         let transactions = vec![eip1559_transaction(), eip1559_transaction()];
         let encoded = encoded_block_with_raw_transaction_list(
             &typed_envelopes_packed_into_one_string(2),
             &transactions,
         );
 
-        let decoded =
-            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap();
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
 
-        assert_eq!(decoded.body().transactions, transactions);
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Wrapped("reading RLP encoded block", _)
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

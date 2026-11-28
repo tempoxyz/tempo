@@ -86,7 +86,9 @@ async fn run_scenarios(env: &mut impl TestEnv) -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
     run_schedule_cases(schedule, |schedule| async move {
-        run_all_matrices(&mut local::Localnet::with_schedule(schedule).await?).await?;
+        let mut localnet = local::Localnet::with_schedule(schedule).await?;
+        run_all_matrices(&mut localnet).await?;
+        localnet.run_lane_create_contract_address_scenario().await?;
 
         Ok(())
     })

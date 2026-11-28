@@ -9,7 +9,7 @@
 #     -t tempo-zones-antithesis-workload:latest \
 #     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
 
-FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS builder
+FROM rust:1.100-bookworm@sha256:75d26c23c24cc6ea1cdabf0714a6bff8fd7bf3248716043fd7ae86dac7f41b94 AS builder
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \

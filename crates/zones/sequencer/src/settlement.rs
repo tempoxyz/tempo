@@ -1813,11 +1813,25 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
 ) -> Result<FinalizedBatch> {
     let (block, receipts) = block_with_receipts(zone_provider, target.block_number)?;
     let mut requests = Vec::new();
+    let mut sender_orgs = std::collections::HashMap::new();
     for (tx, receipt) in block.body.transactions.iter().zip(&receipts) {
         for log in receipt.logs() {
-            if log.address != outbox_address
-                || log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
-            {
+            if log.address != outbox_address {
+                continue;
+            }
+            if log.topics().first() == Some(&IZoneOutbox::WithdrawalSenderOrg::SIGNATURE_HASH) {
+                let event = IZoneOutbox::WithdrawalSenderOrg::decode_log(log)
+                    .map_err(|err| {
+                        eyre::eyre!(
+                            "invalid WithdrawalSenderOrg log in zone block {}: {err}",
+                            target.block_number
+                        )
+                    })?
+                    .data;
+                sender_orgs.insert(event.withdrawalIndex, event.senderOrg);
+                continue;
+            }
+            if log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH) {
                 continue;
             }
             let event = IZoneOutbox::WithdrawalRequested::decode_log(log)
@@ -1867,9 +1881,19 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
         .into_iter()
         .zip(encrypted_senders)
         .map(|((tx_hash, event), encrypted_sender)| {
-            abi::Withdrawal::from_requested_event(&event, tx_hash, encrypted_sender)
+            let sender_org = sender_orgs
+                .remove(&event.withdrawalIndex)
+                .unwrap_or_default();
+            abi::Withdrawal::from_requested_event(&event, tx_hash, encrypted_sender, sender_org)
         })
         .collect::<Vec<_>>();
+
+    if !sender_orgs.is_empty() {
+        return Err(eyre::eyre!(
+            "WithdrawalSenderOrg without a matching WithdrawalRequested in zone block {}",
+            target.block_number
+        ));
+    }
 
     let recomputed_hash = abi::Withdrawal::queue_hash(&withdrawals);
     if recomputed_hash != target.withdrawal_queue_hash {
@@ -2458,6 +2482,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         }
     }
 

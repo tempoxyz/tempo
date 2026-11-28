@@ -35,16 +35,17 @@ pub(crate) struct Args {
     #[command(flatten)]
     inner: DownloadCommand<TempoChainSpecParser>,
 
-    /// Skip encoding consensus state. This will pass-through directly to Reth.
+    // TODO: remove after snapshot callers stop passing `--skip-consensus`.
+    /// DEPRECATED. Consensus state is always downloaded. Accepted so existing callers keep
+    /// parsing; this argument is a no-op.
     #[arg(
         long,
-        default_value_t = false,
         default_missing_value = "true",
         hide = true,
         num_args = 0..=1,
         require_equals = true
     )]
-    skip_consensus: bool,
+    skip_consensus: Option<bool>,
 
     /// Consensus storage directory. If not set, this will be derived from Reth's resolved data dir.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
@@ -56,6 +57,14 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
 
+    // TODO: remove after snapshot callers stop passing `--skip-consensus`.
+    // Stderr, so `--print-plan-json` keeps stdout to the plan JSON alone.
+    if args.skip_consensus.is_some() {
+        eprintln!(
+            "warning: deprecated flag `--skip-consensus` ignored; consensus state is always downloaded"
+        );
+    }
+
     runner.block_on(async move {
         if args.inner.prints_plan_json() {
             let (mut plan, prepared) = args
@@ -64,10 +73,8 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
                 .await
                 .wrap_err("failed to plan execution layer download")?;
 
-            if !args.skip_consensus {
-                let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
-                plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
-            }
+            let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
+            plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
 
             plan.write_json(io::stdout().lock())?;
             return Ok(());
@@ -86,10 +93,6 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             "execution layer download finished in {}",
             display_duration(start.elapsed())
         );
-
-        if args.skip_consensus {
-            return Ok(());
-        }
 
         let prepared = prepared.ok_or_eyre(
             "consensus snapshots require a modular execution layer snapshot manifest",
@@ -552,7 +555,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(!args.skip_consensus);
+        assert_eq!(args.skip_consensus, None);
     }
 
     #[test]
@@ -580,7 +583,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(args.skip_consensus);
+        assert_eq!(args.skip_consensus, Some(true));
         assert_eq!(args.consensus_datadir.as_deref(), Some(Path::new("/c")));
     }
 
@@ -596,7 +599,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(!args.skip_consensus);
+        assert_eq!(args.skip_consensus, Some(false));
     }
 
     #[test]
@@ -614,7 +617,7 @@ mod tests {
         .unwrap();
 
         assert!(args.inner.prints_plan_json());
-        assert!(!args.skip_consensus);
+        assert_eq!(args.skip_consensus, Some(false));
     }
 
     #[test]

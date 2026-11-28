@@ -378,9 +378,23 @@ async fn configure_sequencing(
         !args.deposit_allowlist || should_sequence_blocks,
         "--deposits.allowlist requires a sequencer"
     );
+    eyre::ensure!(
+        args.virtual_address_key_files.is_empty() || should_sequence_blocks,
+        "--sequencer.virtual-address-key-file requires a node that produces blocks"
+    );
     let enforced_allowlist_admin = enforced_allowlist_admin(args, zone_chain_id)?;
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
+        let mut virtual_address_keys = Vec::new();
+        for (version, path) in &args.virtual_address_key_files {
+            if let Some(key) = load_virtual_address_key(Some(path))
+                .await
+                .map_err(|err| eyre::eyre!("virtual address key version {version}: {err}"))?
+            {
+                virtual_address_keys.push((*version, key));
+            }
+        }
+        node = node.with_virtual_address_keys(virtual_address_keys);
         let deposit_allowlist = enforced_allowlist_admin
             .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
             .transpose()?;
@@ -455,6 +469,49 @@ async fn load_sequencer_signer(
         .map_err(|_| eyre::eyre!("invalid sequencer key from {source}"))
 }
 
+/// Parses a `--sequencer.virtual-address-key-file` entry, `VERSION=PATH` with VERSION in 1..=255.
+fn parse_virtual_address_key_file(value: &str) -> Result<(u8, PathBuf), String> {
+    let (version, path) = value
+        .split_once('=')
+        .ok_or_else(|| format!("expected VERSION=PATH, got {value:?}"))?;
+    let version: u8 = version
+        .parse()
+        .map_err(|_| format!("invalid key version {version:?}"))?;
+    if version == 0 || path.is_empty() {
+        return Err(format!(
+            "expected VERSION=PATH with VERSION in 1..=255, got {value:?}"
+        ));
+    }
+    Ok((version, PathBuf::from(path)))
+}
+
+async fn load_virtual_address_key(
+    key_file: Option<&std::path::Path>,
+) -> eyre::Result<Option<zone_payload::VirtualAddressKey>> {
+    let Some(path) = key_file else {
+        return Ok(None);
+    };
+    let path = path.to_path_buf();
+    let display_path = path.display().to_string();
+    let key = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+        .await
+        .map_err(|err| {
+            eyre::eyre!("virtual address key reader task failed for {display_path}: {err}")
+        })?
+        .map_err(|err| {
+            eyre::eyre!("failed to read virtual address key from {display_path}: {err}")
+        })?;
+    let key = Zeroizing::new(key);
+    let key = key
+        .trim()
+        .parse::<alloy_primitives::B256>()
+        .map_err(|_| eyre::eyre!("invalid virtual address key in {display_path}"))?;
+    if key.is_zero() {
+        eyre::bail!("virtual address key in {display_path} is zero");
+    }
+    Ok(Some(zone_payload::VirtualAddressKey::new(key)))
+}
+
 async fn load_decryption_keys(
     key_file: Option<&std::path::Path>,
 ) -> eyre::Result<Vec<k256::SecretKey>> {
@@ -527,6 +584,20 @@ pub struct ZoneArgs {
         value_name = "PATH"
     )]
     pub deposit_decryption_keys_file: Option<PathBuf>,
+
+    /// TIP-1094 FF1 key files (32-byte hex) to initialize, as `VERSION=PATH`. Repeat the flag, or
+    /// comma-separate entries in the env var. Once T15 is active, each built block initializes the
+    /// lowest listed version not yet in state. Initialized keys are read from state, so only keys
+    /// not yet rotated in need to be listed. Keep them secret: each decrypts every address of its
+    /// version.
+    #[arg(
+        long = "sequencer.virtual-address-key-file",
+        env = "ZONE_VIRTUAL_ADDRESS_KEY_FILE",
+        value_name = "VERSION=PATH",
+        value_delimiter = ',',
+        value_parser = parse_virtual_address_key_file
+    )]
+    pub virtual_address_key_files: Vec<(u8, PathBuf)>,
 
     /// Path to the static multi-sequencer manifest. Its presence activates
     /// multi-sequencer mode and makes the manifest authoritative for role selection.
@@ -1122,6 +1193,69 @@ mod tests {
             signer.address(),
             alloy_primitives::address!("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf")
         );
+    }
+
+    #[test]
+    fn virtual_address_key_files_name_their_version() {
+        let parsed = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.virtual-address-key-file",
+            "3=/run/secrets/v3",
+            "--sequencer.virtual-address-key-file",
+            "4=/run/secrets/v4",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.zone.virtual_address_key_files,
+            vec![
+                (3, PathBuf::from("/run/secrets/v3")),
+                (4, PathBuf::from("/run/secrets/v4"))
+            ]
+        );
+        for bad in ["/run/secrets/v1", "0=/k", "256=/k", "1="] {
+            assert!(parse_virtual_address_key_file(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loads_virtual_address_key_from_file_and_redacts_it() {
+        let path = std::env::temp_dir().join(format!(
+            "tempo-zone-virtual-address-key-{}",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\n",
+        )
+        .unwrap();
+
+        let key = load_virtual_address_key(Some(&path))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(key.expose(), alloy_primitives::B256::repeat_byte(0x5a));
+        assert!(!format!("{key:?}").contains("5a5a"));
+        assert!(load_virtual_address_key(None).await.unwrap().is_none());
+
+        let zero = path.with_extension("zero");
+        std::fs::write(&zero, format!("{}\n", alloy_primitives::B256::ZERO)).unwrap();
+        let result = load_virtual_address_key(Some(&zero)).await;
+        std::fs::remove_file(&zero).unwrap();
+        assert!(result.unwrap_err().to_string().contains("is zero"));
+
+        let error = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.virtual-address-key",
+            "0x01",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[tokio::test(flavor = "current_thread")]

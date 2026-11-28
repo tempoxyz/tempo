@@ -182,7 +182,7 @@ pub async fn run_consensus_stack(
 pub async fn run_follow_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
-    upstream_url: String,
+    upstream_url: follow::upstream::UpstreamUrl,
     upstream_request_timeout: std::time::Duration,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,

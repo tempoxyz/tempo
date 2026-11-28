@@ -10,7 +10,7 @@ use std::{
 
 use alloy_provider::{Provider as _, RootProvider};
 use alloy_pubsub::{ConnectionHandle, PubSubConnect};
-use alloy_rpc_client::{RpcClient, WsConnect};
+use alloy_rpc_client::{RpcClient, WebSocketConfig, WsConnect};
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use alloy_transport::{TransportErrorKind, TransportResult};
 use commonware_consensus::{Reporter, types::Height};
@@ -18,6 +18,7 @@ use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use rand_08::Rng as _;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use tempo_alloy::TempoNetwork;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
@@ -36,7 +37,7 @@ use crate::{
     utils::OptionFuture,
 };
 
-use super::{Connector, EventStream, UpstreamClient};
+use super::{Connector, EventStream, UpstreamClient, UpstreamUrl};
 
 const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
@@ -55,6 +56,11 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the upstream node may take to answer `consensus_subscribe`.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Largest websocket message, and frame, accepted from the upstream node.
+///
+/// Blocks arrive as JSON, which is several times larger than their RLP encoding, and the
+/// upstream sends each reply as a single unfragmented frame.
+const MAX_UPSTREAM_MESSAGE_SIZE: usize = 8 * MAX_RLP_BLOCK_SIZE;
 
 /// Manages the connection to the upstream node.
 ///
@@ -286,8 +292,14 @@ where
 
     /// Drains the waiters by fetching the data they are waiting for.
     ///
-    /// Only executes if a client is present and connected.
+    /// Always drops waiters whose requester went away. Only fetches if a
+    /// client is present and connected.
     fn drain_waiters(&mut self) {
+        self.waiters.retain(|request| match request {
+            super::ingress::Message::GetFinalization { response, .. } => !response.is_closed(),
+            super::ingress::Message::GetBlock { response, .. } => !response.is_closed(),
+        });
+
         if self.pending_connect.is_some()
             || self.pending_stream.is_some()
             || self.event_stream.is_none()
@@ -342,12 +354,14 @@ pub(super) fn random_jitter() -> Duration {
 
 #[derive(Clone)]
 pub(crate) struct WebSocketConnector {
-    url: Arc<Url>,
+    url: Arc<UpstreamUrl>,
 }
 
 impl WebSocketConnector {
     pub(super) fn new(url: Url) -> Self {
-        Self { url: Arc::new(url) }
+        Self {
+            url: Arc::new(UpstreamUrl::new(url)),
+        }
     }
 }
 
@@ -358,7 +372,12 @@ impl Connector for WebSocketConnector {
         let url = self.url.clone();
         async move {
             let connect = NoReconnect(
-                WsConnect::new(url.as_str())
+                WsConnect::new(url.expose())
+                    .with_config(
+                        WebSocketConfig::default()
+                            .max_message_size(Some(MAX_UPSTREAM_MESSAGE_SIZE))
+                            .max_frame_size(Some(MAX_UPSTREAM_MESSAGE_SIZE)),
+                    )
                     .with_keepalive_interval(PING_INTERVAL)
                     // alloy already stops at the first non-retryable reconnect error; this keeps
                     // it from waiting between attempts if that ever changes.
@@ -377,7 +396,7 @@ impl Connector for WebSocketConnector {
         .boxed()
     }
 
-    fn endpoint(&self) -> &Url {
+    fn endpoint(&self) -> &UpstreamUrl {
         &self.url
     }
 }
@@ -565,7 +584,9 @@ async fn get_block(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::ingress::Message, *};
+    use alloy_primitives::B256;
+    use commonware_runtime::{Runner as _, deterministic};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct DropGuard(Arc<AtomicBool>);
@@ -749,6 +770,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_client_accepts_replies_larger_than_a_block() {
+        // A full block's JSON is more than twice its RLP size, past tungstenite's 16 MiB default
+        // frame limit.
+        let len = 3 * MAX_RLP_BLOCK_SIZE;
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_method("large_reply", move |_, _| "a".repeat(len))
+            .unwrap();
+        let config = jsonrpsee::server::ServerConfig::builder()
+            .max_response_body_size(MAX_UPSTREAM_MESSAGE_SIZE as u32)
+            .build();
+        let server = jsonrpsee::server::Server::builder()
+            .set_config(config)
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let _handle = server.start(module);
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let reply = client
+            .unwrap()
+            .provider
+            .raw_request::<_, String>("large_reply".into(), ())
+            .await
+            .unwrap();
+        assert_eq!(reply.len(), len);
+    }
+
+    #[tokio::test]
     async fn websocket_connector_never_reconnects() {
         let err = NoReconnect(WsConnect::new("ws://127.0.0.1:1"))
             .try_reconnect()
@@ -778,6 +830,41 @@ mod tests {
             .expect("connect must give up on its own");
         let err = client.expect_err("a stalled handshake must fail");
         assert_eq!(err.to_string(), "timed out connecting to upstream node");
+    }
+
+    #[test]
+    fn drain_waiters_drops_cancelled_requests_while_disconnected() {
+        deterministic::Runner::default().start(|context| async move {
+            let connector =
+                WebSocketConnector::new(Url::parse("ws://upstream.test").expect("valid test URL"));
+            let (mut actor, _mailbox) = init(context, connector, random_jitter);
+
+            let (response, cancelled) = oneshot::channel();
+            drop(cancelled);
+            actor.waiters.push(Message::GetFinalization {
+                height: Height::new(1),
+                response,
+            });
+            let (response, cancelled) = oneshot::channel();
+            drop(cancelled);
+            actor.waiters.push(Message::GetBlock {
+                digest: Digest(B256::with_last_byte(1)),
+                response,
+            });
+            let (response, _waiting) = oneshot::channel();
+            actor.waiters.push(Message::GetFinalization {
+                height: Height::new(2),
+                response,
+            });
+
+            actor.drain_waiters();
+
+            assert!(matches!(
+                actor.waiters.as_slice(),
+                [Message::GetFinalization { height, .. }]
+                    if *height == Height::new(2)
+            ));
+        });
     }
 
     #[test]

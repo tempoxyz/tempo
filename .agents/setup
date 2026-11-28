@@ -3,15 +3,13 @@
 # in .amp/services.yaml. Idempotent; safe to rerun on a warm snapshot.
 #
 # Also prepares a Pyramid Hand, and a Pyramid golden-disk warmer, which runs this and then
-# .agents/warm on reviewed main so new Hands start from a built target/. There every build stays
-# on the Hand's own disk: no shared Archil cache, no fail-closed target and no zone services.
+# .agents/warm on reviewed main so new Hands start from a built target/. A Hand gets no zone
+# services.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 NEXTEST_VERSION="0.9.127" # matches .github/workflows/test.yml
-SCCACHE_VERSION="0.14.0"  # matches Dockerfile.chef
-ARCHIL_MOUNT="$HOME/archil" # mounted by .agents/resume
 
 # Pyramid's Hand image, which its warmers share, ships this directory.
 pyramid_hand() { [[ -d /usr/local/lib/pyramid-hand ]]; }
@@ -83,46 +81,13 @@ install_just() {
   just --version
 }
 
-install_sccache() {
-  if [[ "$(sccache --version 2>/dev/null)" != "sccache $SCCACHE_VERSION" ]]; then
-    local name="sccache-v$SCCACHE_VERSION-x86_64-unknown-linux-musl"
-    curl -fsSL "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_VERSION/$name.tar.gz" |
-      tar xzf - -C "$HOME/.cargo/bin" --strip-components=1 "$name/sccache"
-  fi
-  sccache --version
-}
-
-configure_build_cache() {
-  # Every orb shares one sccache directory on the Archil disk that .agents/resume mounts. The
-  # wrapper refuses to compile without that mount. It is named `sccache` so the cc crate also
-  # routes C/C++ builds (rocksdb, jemalloc) through it.
-  # Any orb can write cache entries that every other orb links, so all orbs of this project are
-  # one trust domain: do not build untrusted code (e.g. external PRs) in them.
-  local wrapper_dir="$HOME/.cargo/archil-sccache"
-  mkdir -p "$wrapper_dir"
-  cat >"$wrapper_dir/sccache" <<EOF
-#!/bin/sh
-if ! mountpoint -q "$ARCHIL_MOUNT"; then
-  echo "Archil is not mounted; run .agents/resume before building" >&2
-  exit 1
-fi
-exec "$HOME/.cargo/bin/sccache" "\$@"
-EOF
-  chmod +x "$wrapper_dir/sccache"
-  mkdir -p "$HOME/.config/sccache"
-  cat >"$HOME/.config/sccache/config" <<EOF
-[cache.disk]
-dir = "$ARCHIL_MOUNT/sccache"
-size = $((20 * 1024 * 1024 * 1024))
-EOF
-  # Pin vergen's build timestamp like CI does, so reth-node-core and its dependents hit the cache.
-  cat >"$HOME/.cargo/config.toml" <<EOF
-[build]
-rustc-wrapper = "$wrapper_dir/sccache"
-
-[env]
-SOURCE_DATE_EPOCH = "1700000000"
-EOF
+drop_archil_build_cache() {
+  # Snapshots made when Cargo built on the shared Archil disk route rustc through a wrapper that
+  # refuses to run without the mount, and point target/ at that disk. Remove both so Cargo builds
+  # in ./target on the orb's own disk. .agents/resume does the same for orbs that already exist.
+  rm -rf "$HOME/.cargo/archil-sccache" "$HOME/.config/sccache" .amp/archil-output-id
+  if grep -qs archil-sccache "$HOME/.cargo/config.toml"; then sed -i /archil-sccache/d "$HOME/.cargo/config.toml"; fi
+  if grep -qs target-dir .cargo/orb.toml; then rm -f .cargo/orb.toml; fi
 }
 
 install_foundry() {
@@ -143,14 +108,6 @@ install_foundry() {
   fi
 }
 
-install_archil() {
-  # FUSE client for the shared Archil disk that .agents/resume mounts.
-  if ! command -v archil >/dev/null; then
-    curl -fsSL https://archil.com/install | ARCHIL_SKIP_IAM_CHECK=1 sh
-  fi
-  archil --version
-}
-
 configure_pyramid_hand() {
   # On a golden disk the repository root is a volume of its own, which the warmer fills and new
   # Hands clone copy-on-write. Keep cargo's downloaded crates and git checkouts there too, so a Hand
@@ -168,7 +125,7 @@ configure_pyramid_hand() {
       ln -s "$PWD/$shared" "$home_dir"
     done
   fi
-  # Pin vergen's build timestamp like CI and orbs do, so reth-node-core and its dependents keep the
+  # Pin vergen's build timestamp like CI does, so reth-node-core and its dependents keep the
   # warm build's fingerprints. orb.toml is ignored, so it stays on the volume for every clone.
   printf '[env]
 SOURCE_DATE_EPOCH = "1700000000"
@@ -177,13 +134,11 @@ SOURCE_DATE_EPOCH = "1700000000"
 }
 
 step "apt packages" install_apt_packages
-pyramid_hand || step "archil" install_archil
 step "rust toolchains" install_rust
 if pyramid_hand; then
   step "pyramid hand" configure_pyramid_hand
 else
-  step "sccache" install_sccache
-  step "build cache" configure_build_cache
+  step "drop archil build cache" drop_archil_build_cache
 fi
 step "cargo-nextest" install_nextest
 step "just" install_just
@@ -192,15 +147,4 @@ step "submodules" git submodule update --init --recursive --depth 1
 # Pulls service images and the pinned explorer checkout; Amp starts the services.
 pyramid_hand || step "zone services" bash .amp/setup
 step "zone contracts" forge build --root crates/zones/contracts --skip test --no-lint
-# Fetch only queries rustc; it must work before Archil is mounted, without starting sccache.
-step "cargo fetch" env RUSTC_WRAPPER= cargo fetch --locked
-# A Pyramid Hand keeps its target/, which a golden disk brings already built.
-pyramid_hand && exit 0
-# Drop disposable outputs from old snapshots, without following an existing remote target link.
-rm -rf target
-mkdir -p .amp
-rm -f .amp/archil-output-id
-# A reusable snapshot must contain neither an orb identity nor local build outputs. Resume
-# enables output only after mounting Archil and choosing a private directory.
-printf '[build]\ntarget-dir = "/dev/null/tempo-target"\nbuild-dir = "/dev/null/tempo-target"\n' > .cargo/orb.toml.tmp
-mv .cargo/orb.toml.tmp .cargo/orb.toml
+step "cargo fetch" cargo fetch --locked

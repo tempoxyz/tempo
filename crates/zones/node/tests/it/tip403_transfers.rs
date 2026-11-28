@@ -143,7 +143,7 @@ async fn test_deposit_then_request_withdrawal() -> eyre::Result<()> {
     );
 
     let withdrawal_pending = outbox
-        .requestWithdrawal(
+        .requestWithdrawal_0(
             PATH_USD_ADDRESS,
             dev_address,
             withdrawal_amount,

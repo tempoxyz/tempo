@@ -39,7 +39,7 @@ contract PortalRuntimeTestCase is PortalRuntimeTest {
             address(portal).code,
             hex"363d3d373d3d3d363d735ad10000000000000000000000000000000000005af43d82803e903d91602b57fd5bf3"
         );
-        assertEq(portal.MAX_UNPROCESSED_DEPOSITS(), 230);
+        assertEq(portal.DEPOSITS_PER_BUCKET(), 230);
     }
 
     function test_oversizedRuntimeExecutesAndUpgradePreservesProxyState() public {
@@ -51,16 +51,16 @@ contract PortalRuntimeTestCase is PortalRuntimeTest {
         bytes memory oversized = bytes.concat(ZONE_PORTAL_IMPL_ADDRESS.code, new bytes(24_577));
         vm.etch(ZONE_PORTAL_IMPL_ADDRESS, oversized);
         assertGt(ZONE_PORTAL_IMPL_ADDRESS.code.length, 24_576);
-        assertEq(first.MAX_UNPROCESSED_DEPOSITS(), 230);
+        assertEq(first.DEPOSITS_PER_BUCKET(), 230);
         ZonePortal second = _newPortalProxy(2);
         assertEq(ZONE_PORTAL_IMPL_ADDRESS.code, oversized);
-        assertEq(second.MAX_UNPROCESSED_DEPOSITS(), 230);
+        assertEq(second.DEPOSITS_PER_BUCKET(), 230);
         assertEq(vm.load(address(first), slot), bytes32(uint256(123)));
         assertEq(vm.load(address(second), slot), bytes32(0));
         assertEq(address(first).balance, 1 ether);
         _installPortalRuntime();
         _installPortalRuntime();
-        assertEq(first.MAX_UNPROCESSED_DEPOSITS(), 230);
+        assertEq(first.DEPOSITS_PER_BUCKET(), 230);
         assertEq(vm.load(address(first), slot), bytes32(uint256(123)));
     }
 

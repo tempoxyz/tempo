@@ -1,20 +1,25 @@
 use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
-    consensus::Transaction,
+    consensus::{SignableTransaction, Transaction, TxLegacy},
     primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::SignerSync,
 };
+use alloy_eips::eip2718::Encodable2718;
 use alloy_network::TransactionResponse;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use reth_primitives_traits::SignerRecoverable;
-use reth_rpc_eth_api::helpers::LoadState;
+use reth_rpc_eth_api::helpers::{LoadState, LoadTransaction};
+use reth_rpc_eth_types::EthApiError;
 use reth_transaction_pool::{TransactionOrigin, TransactionPool};
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
-use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
+use tempo_primitives::{
+    TempoTransaction, TempoTxEnvelope,
+    transaction::{envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call},
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
@@ -137,5 +142,43 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
         1
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_raw_pooled_transaction_recovery_rejects_system_transactions() -> eyre::Result<()> {
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let eth_api = setup.node.rpc.inner.eth_api();
+    let tx = TxLegacy::default();
+    let system_tx = TempoTxEnvelope::Legacy(tx.clone().into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
+    let raw = system_tx.encoded_2718();
+
+    assert!(matches!(
+        eth_api.recover_raw_pooled_transaction(&raw),
+        Err(EthApiError::InvalidTransactionSignature)
+    ));
+    assert!(matches!(
+        eth_api.recover_raw_pooled_transactions([&raw]),
+        Err(EthApiError::InvalidTransactionSignature)
+    ));
+    // Historical system transactions must remain recoverable.
+    assert!(
+        eth_api
+            .recover_mined_transaction(system_tx)?
+            .signer()
+            .is_zero()
+    );
+
+    let wallet = test_signer(0);
+    let signature = wallet.sign_hash_sync(&tx.signature_hash())?;
+    let signed = TempoTxEnvelope::Legacy(tx.into_signed(signature));
+    let recovered = eth_api.recover_raw_pooled_transaction(&signed.encoded_2718())?;
+    assert_eq!(recovered.signer(), wallet.address());
+    assert_eq!(recovered.inner(), &signed);
+
+    assert!(matches!(
+        eth_api.recover_raw_pooled_transaction(&[]),
+        Err(EthApiError::EmptyRawTransactionData)
+    ));
     Ok(())
 }

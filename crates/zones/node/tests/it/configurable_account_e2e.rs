@@ -493,7 +493,7 @@ async fn test_tempo_change_reaches_the_zone(change: Change) -> eyre::Result<()> 
     let withdraw = Call {
         to: ZONE_OUTBOX_ADDRESS.into(),
         value: U256::ZERO,
-        input: IZoneOutbox::requestWithdrawalCall {
+        input: IZoneOutbox::requestWithdrawal_0Call {
             token: ZONE_TOKEN_ADDRESS,
             to: account,
             amount,

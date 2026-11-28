@@ -9,7 +9,7 @@ use antithesis_trie_shapes::{
 };
 use eyre::{ensure, eyre, Result};
 use rand_09::Rng;
-use reth_trie_common::{AccountProof, DecodedMultiProofV2, TrieNodeV2};
+use reth_trie_common::{AccountProof, DecodedMultiProofV2, TrieNode};
 
 /// Generates one request's targets from a sample of the tip state: existing, deleted and absent
 /// keys, absent neighbours of existing keys, repeated addresses, and every slot of a storage
@@ -69,7 +69,7 @@ pub(crate) fn from_witness(
     // A leaf shorter than a hash is embedded in its parent, never a witness entry of its own.
     assert_sometimes!(
         decoded.storage_proofs.values().flatten().any(|node| {
-            matches!(&node.node, TrieNodeV2::Leaf(leaf) if !node.path.is_empty() &&
+            matches!(&node.node, TrieNode::Leaf(leaf) if !node.path.is_empty() &&
                 alloy_rlp::encode(leaf).len() < B256::len_bytes())
         }),
         "Witness decodes an inline storage leaf"

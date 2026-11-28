@@ -32,6 +32,10 @@ pub enum WitnessDatabaseError {
     /// The EVM requested bytecode not supplied by the Zone witness.
     #[error("missing bytecode in witness: {code_hash:?}")]
     MissingCode { code_hash: B256 },
+    /// A Zone witness bytecode starts with the EIP-7702 magic but is not a valid delegation
+    /// designator. Zones enforce EIP-3541 from genesis, so no account can hold such code.
+    #[error("invalid bytecode in Zone state witness: {code_hash:?}")]
+    InvalidBytecode { code_hash: B256 },
     /// The Zone witness supplied the same bytecode preimage more than once.
     #[error("duplicate bytecode hash in Zone state witness: {code_hash:?}")]
     DuplicateBytecodeHash { code_hash: B256 },
@@ -74,7 +78,11 @@ impl WitnessDatabase {
         let state = StatelessSparseTrie::new(state_root, &index_witness_nodes(&node_pool)?)?;
         let mut code_by_hash = B256Map::default();
         for code in bytecodes {
-            let bytecode = Bytecode::new_raw(code);
+            let bytecode = Bytecode::new_raw_checked(code.clone()).map_err(|_| {
+                WitnessDatabaseError::InvalidBytecode {
+                    code_hash: keccak256(&code),
+                }
+            })?;
             let code_hash = bytecode.hash_slow();
             if code_by_hash.insert(code_hash, bytecode).is_some() {
                 return Err(WitnessDatabaseError::DuplicateBytecodeHash { code_hash }.into());
@@ -366,6 +374,7 @@ fn storage_unavailable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Bytes;
 
     #[test]
     fn checkpoint_requires_exact_header_rlp() {
@@ -389,6 +398,28 @@ mod tests {
                 WitnessDatabaseError::InvalidTempoHeader.into()
             );
         }
+    }
+
+    #[test]
+    fn zone_witness_rejects_malformed_eip7702_bytecode() {
+        let witness = |code: Bytes| ZoneStateWitness {
+            node_pool: Vec::new(),
+            bytecodes: vec![code],
+        };
+        let designator = Bytecode::new_eip7702(Address::repeat_byte(0x11)).original_bytes();
+        assert!(
+            WitnessDatabase::from_zone_state_witness(witness(designator), EMPTY_ROOT_HASH).is_ok()
+        );
+
+        let malformed = Bytes::from_static(&[0xef, 0x01]);
+        assert_eq!(
+            WitnessDatabase::from_zone_state_witness(witness(malformed.clone()), EMPTY_ROOT_HASH)
+                .unwrap_err(),
+            WitnessDatabaseError::InvalidBytecode {
+                code_hash: keccak256(&malformed)
+            }
+            .into()
+        );
     }
 
     #[test]

@@ -152,24 +152,7 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
-        // The executor acknowledges finalized blocks only once the execution
-        // layer durably persisted them, which reth does in batches. Reth holds
-        // up to `persistence_backpressure_threshold + memory_block_buffer_target`
-        // unpersisted canonical blocks in memory before it stops processing
-        // engine requests, so marshal may dispatch as many unacknowledged
-        // blocks. Acknowledgements cannot stall with the queue full: reth's
-        // config validation requires this depth to exceed
-        // `persistence_threshold`, which must be crossed for reth to persist
-        // at all, and that in turn to exceed
-        // `memory_block_buffer_target + num_state_masking_blocks`, by which
-        // the durable frontier trails the head after a persistence run.
-        let engine_args = &execution_node.config.engine;
-        let max_pending_acks = engine_args
-            .persistence_backpressure_threshold()
-            .checked_add(engine_args.memory_block_buffer_target())
-            .and_then(|acks| usize::try_from(acks).ok())
-            .and_then(NonZeroUsize::new)
-            .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
+        let max_pending_acks = alias::marshal::max_pending_acks(&execution_node)?;
 
         // Boxed because marshal's init future is deeply nested: inlining it into
         // callers such as tempo-e2e's `TestingNode::start_inner` makes computing
@@ -200,6 +183,16 @@ where
         .await
         .wrap_err("failed to initialize marshal")?;
 
+        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
+            context.child("peer_manager"),
+            peer_manager::Config {
+                execution_node: execution_node.clone(),
+                oracle: self.peer_manager.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                max_peers: self.max_peers,
+            },
+        );
+
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
             crate::executor::Config {
@@ -209,21 +202,10 @@ where
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
+                finalized_reporter: peer_manager_mailbox.clone(),
             },
         )
         .wrap_err("failed initialization executor actor")?;
-
-        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
-            context.child("peer_manager"),
-            peer_manager::Config {
-                execution_node: execution_node.clone(),
-                oracle: self.peer_manager.clone(),
-                epoch_strategy: epoch_strategy.clone(),
-                finalized_tip: (finalized_tip.1, finalized_tip.2),
-                max_peers: self.max_peers,
-            },
-        )
-        .wrap_err("failed initializing peer manager")?;
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.child("broadcast"),
@@ -234,6 +216,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                blocker: self.blocker.clone(),
                 strategy: Sequential,
             },
         );
@@ -358,7 +341,6 @@ where
             epoch_manager_config,
 
             peer_manager,
-            peer_manager_mailbox,
 
             feed,
             feed_mailbox,
@@ -378,8 +360,8 @@ where
     context: ContextCell<TContext>,
 
     /// broadcasts messages to and caches messages from untrusted peers.
-    // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
+    broadcast:
+        buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, TBlocker, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
@@ -388,7 +370,12 @@ where
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
-    executor: crate::executor::Actor<TContext, Arc<TempoFullNode>, crate::alias::marshal::Mailbox>,
+    executor: crate::executor::Actor<
+        TContext,
+        Arc<TempoFullNode>,
+        crate::alias::marshal::Mailbox,
+        peer_manager::Mailbox,
+    >,
     executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
@@ -401,7 +388,6 @@ where
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
-    peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
     feed_mailbox: crate::feed::Mailbox,
@@ -505,12 +491,9 @@ where
             self.executor_mailbox,
             Reporters::from((
                 self.dkg_manager_mailbox,
-                Reporters::from((
-                    self.peer_manager_mailbox,
-                    Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                        self.feed_mailbox,
-                        self.gossip_mailbox,
-                    )),
+                Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                    self.feed_mailbox,
+                    self.gossip_mailbox,
                 )),
             )),
         ));
