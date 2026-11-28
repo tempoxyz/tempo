@@ -2,7 +2,7 @@
 <br>
 
 <p align="center">
-  <a href="https://tempo.xyz/blog/introducing-tempo-zones">
+  <a href="https://tempo.com/blog/introducing-tempo-zones/">
     <img src="assets/header.png" alt="Tempo Zones" width="100%">
   </a>
 </p>
@@ -15,7 +15,7 @@
 
 Zones are private blockchains anchored to [Tempo](https://github.com/tempoxyz/tempo) *(currently available in testnet only),* with native support for confidential balances and transactions. Zones inherit compliance via TIP403 policies from Tempo and support interoperability with Tempo for moving assets in and out of Zones.
 
-You can get started today by [deploying a Zone](#getting-started) on Tempo testnet, reading the [Zones documentation](https://docs.tempo.xyz/guide/private-zones), or exploring the [Zone spec](specs/spec.md).
+You can get started today by [deploying a Zone](#getting-started) on Tempo testnet, reading the [Zones documentation](https://tempo.com/developers/docs/guide/private-zones), or exploring the [Zone spec](specs/spec.md).
 
 <br>
 
@@ -27,7 +27,7 @@ You can get started today by [deploying a Zone](#getting-started) on Tempo testn
 
 - **Zone to Zone transfers.** Zones interoperate with Tempo via withdrawals with optional calldata. Withdrawal calldata can execute on Tempo and deposit into another Zone, enabling flows like Zone to Zone transfers or executing a swap between sending amounts to another Zone.
 
-- **Compliance inherited from Tempo.** [TIP-403](https://docs.tempo.xyz/protocol/tip403/overview) policies (whitelist, blacklist) are mirrored from Tempo and enforced on Zones. Issuers set the policy once on Tempo and the Zone picks it up automatically. If an issuer freezes an address or updates a blacklist on Tempo, the Zone inherits the change in the next block in the Zone.
+- **Compliance inherited from Tempo.** [TIP-403](https://tempo.com/developers/docs/protocol/tip403/overview) policies (whitelist, blacklist) are mirrored from Tempo and enforced on Zones. Issuers set the policy once on Tempo and the Zone picks it up automatically. If an issuer freezes an address or updates a blacklist on Tempo, the Zone inherits the change in the next block in the Zone.
 
 - **Fast withdrawals.** The Zone processes transactions every 250ms and submits batches of withdrawals to Tempo, where blocks are produced every ~500ms. Once batches are accepted and the attached proof is validated, withdrawals are processed and funds are released from escrow.
 

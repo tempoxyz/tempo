@@ -105,13 +105,14 @@ where
         .then(|| Store::inspect_identity(&config.database_path))
         .transpose()?;
     let l1 = connect(&config.l1_rpc_url).await?;
+    // Borrow only the provider: `ExExContext` is not `Sync`, so the retried future must not
+    // capture it.
+    let provider = ctx.provider();
     let bootstrap = retry_transient(
         || async {
             match persisted_identity {
-                Some(identity) => {
-                    bootstrap::authenticate(ctx.provider(), &l1, &config, identity).await
-                }
-                None => bootstrap::discover(ctx.provider(), &l1, &config).await,
+                Some(identity) => bootstrap::authenticate(provider, &l1, &config, identity).await,
+                None => bootstrap::discover(provider, &l1, &config).await,
             }
         },
         "checker bootstrap",

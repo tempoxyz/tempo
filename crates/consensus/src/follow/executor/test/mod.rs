@@ -2,7 +2,7 @@
 
 mod utils;
 
-use std::{num::NonZeroU64, time::Duration};
+use std::{num::NonZeroU64, pin::pin, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceUpdateError, PayloadStatusEnum};
@@ -17,6 +17,7 @@ use commonware_utils::{
     Acknowledgement as _,
     acknowledgement::{Exact, ExactWaiter},
 };
+use futures::poll;
 
 use super::*;
 use crate::consensus::{Digest, block::Block};
@@ -98,7 +99,6 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
         let block_height = finalized_height + 1;
         let provider = StubExecutionProvider::default();
         provider.set_finalized(finalized_height, B256::with_last_byte(20), Round::zero());
-        provider.set_durable(expected_floor, B256::with_last_byte(9));
 
         let marshal = StubMarshal::default();
 
@@ -154,7 +154,6 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.set_finalized(18, B256::with_last_byte(18), Round::zero());
-        provider.set_durable(9, B256::with_last_byte(9));
 
         let marshal = StubMarshal::default();
         let (actor, mut mailbox) = init(
@@ -210,7 +209,6 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
         wait_until(&context, || marshal.floor() == Height::new(9)).await;
 
         provider.set_finalized(39, B256::with_last_byte(39), Round::zero());
-        provider.set_durable(29, B256::with_last_byte(29));
         assert!(
             mailbox
                 .report(Update::Tip(
@@ -256,6 +254,62 @@ fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
 }
 
 #[test_traced]
+fn finalized_blocks_are_acknowledged_once_durable() {
+    deterministic::Runner::default().start(|context| async move {
+        let (provider, mut mailbox, _) =
+            start_snapshot_executor(context.child("follower_executor"));
+        provider.persist_manually();
+        let b1 = make_block_at_round(101, digest(100).0, round(11));
+        let b2 = make_block_at_round(102, b1.digest().0, round(12));
+        let b3 = make_block_at_round(103, b2.digest().0, round(13));
+
+        let mut w1 = pin!(report_block(&mut mailbox, b1));
+        let w2 = pin!(report_block(&mut mailbox, b2));
+        let mut w3 = pin!(report_block(&mut mailbox, b3));
+        wait_until(&context, || provider.payload_count() == 3).await;
+        context.sleep(Duration::from_millis(10)).await;
+        assert!(
+            poll!(&mut w1).is_pending(),
+            "finalized blocks must not be acknowledged before they are durable",
+        );
+
+        provider.persist(102);
+        w1.await.expect("first block is durable");
+        w2.await.expect("second block is durable");
+        context.sleep(Duration::from_millis(10)).await;
+        assert!(
+            poll!(&mut w3).is_pending(),
+            "blocks above the durable frontier must wait for the next persistence run",
+        );
+
+        provider.persist(103);
+        w3.await.expect("third block is durable");
+    });
+}
+
+#[test_traced]
+fn syncing_block_is_acknowledged_once_pipeline_sync_persists_it() {
+    deterministic::Runner::default().start(|context| async move {
+        let (provider, mut mailbox, _) =
+            start_snapshot_executor(context.child("follower_executor"));
+        provider.persist_manually();
+        provider.respond_next_forkchoice(Ok(PayloadStatusEnum::Syncing));
+        let block = make_block_at_round(101, digest(100).0, round(11));
+
+        let mut waiter = pin!(report_block(&mut mailbox, block));
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        context.sleep(Duration::from_millis(10)).await;
+        assert!(
+            poll!(&mut waiter).is_pending(),
+            "SYNCING must not acknowledge a block the execution layer has not persisted",
+        );
+
+        provider.persist(101);
+        waiter.await.expect("block is durable after pipeline sync");
+    });
+}
+
+#[test_traced]
 fn floor_does_not_advance_until_its_execution_block_is_durable() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;
@@ -268,7 +322,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
             context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
-                execution_engine: provider,
+                execution_engine: provider.clone(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
@@ -298,13 +352,18 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
                 .accepted()
         );
 
+        provider.persist_manually();
+        provider.persist(floor_candidate - 1);
         let block = make_block(block_height, B256::with_last_byte(20));
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-        waiter.await.expect("valid payload should be acknowledged");
-        context.sleep(Duration::from_millis(1)).await;
-
+        let waiter = report_block(&mut mailbox, block);
+        wait_until(&context, || provider.payload_count() == 1).await;
+        context.sleep(Duration::from_millis(10)).await;
         assert_eq!(marshal.floor(), Height::zero());
+
+        // A persistence run covering the floor advances it without another execution task.
+        provider.persist(block_height);
+        waiter.await.expect("block is durable");
+        wait_until(&context, || marshal.floor() == Height::new(floor_candidate)).await;
     });
 }
 
@@ -685,7 +744,7 @@ fn heartbeat_waits_for_in_flight_execution() {
 }
 
 #[test_traced]
-fn durable_block_read_failure_does_not_exit_actor() {
+fn durable_block_read_failure_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;
         let provider = StubExecutionProvider::default();
@@ -707,23 +766,13 @@ fn durable_block_read_failure_does_not_exit_actor() {
 
         actor.start();
 
-        for (block_height, block_round) in [
-            (finalized_height + 1, round(1)),
-            (finalized_height + 2, round(2)),
-        ] {
-            let block = make_block_at_round(block_height, B256::with_last_byte(20), block_round);
-            let (ack, waiter) = Exact::handle();
-            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-
-            waiter
-                .await
-                .expect("durability read errors must not stop block execution");
-
-            context.sleep(Duration::from_millis(1)).await;
-        }
-
-        assert_eq!(provider.payload_count(), 2);
-        assert_eq!(provider.forkchoices().len(), 2);
+        let block = make_block_at_round(finalized_height + 1, B256::with_last_byte(20), round(1));
+        let waiter = report_block(&mut mailbox, block);
+        assert!(
+            waiter.await.is_err(),
+            "a block whose durability cannot be read must not be acknowledged",
+        );
+        assert_eq!(provider.payload_count(), 1);
         assert_eq!(marshal.floor(), Height::zero());
     });
 }

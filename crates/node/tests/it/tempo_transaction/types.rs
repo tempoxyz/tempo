@@ -158,6 +158,10 @@ pub(crate) trait TestEnv: Sized {
         super::runners::run_create_contract_address_scenario(self).await
     }
 
+    async fn run_lane_create_contract_address_scenario(&mut self) -> eyre::Result<()> {
+        super::runners::run_lane_create_contract_address_scenario(self).await
+    }
+
     async fn run_gas_fee_boundary_scenario(&mut self) -> eyre::Result<()> {
         super::runners::run_gas_fee_boundary_scenario(self).await
     }

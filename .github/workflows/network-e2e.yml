@@ -75,6 +75,8 @@ jobs:
               - '!crates/zones/node/tests/**'
               # The fuzzer crates are never linked into these images. corpus and
               # fuzz-types are, through the network-e2e image's corpus feature.
+              - '!crates/fuzz-engine/**'
+              - '!crates/zones/fuzz-harness/**'
               - '!crates/fuzz-harness/**'
               - '!crates/invariants/**'
               - '!crates/nitro-attestation/fuzz/**'

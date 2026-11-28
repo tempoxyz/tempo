@@ -13,7 +13,7 @@ target "tempo-zone" {
   args = {
     CHEF_IMAGE = "chef"
     RUST_PROFILE = "profiling"
-    CACHE_FAMILY = "node"
+    CACHE_FAMILY = "node${CACHE_SCOPE}"
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }

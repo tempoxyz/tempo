@@ -3,6 +3,11 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
+      results-artifact-name:
+        description: Name of the uploaded results artifact; set it when a caller runs this workflow more than once.
+        type: string
+        required: false
+        default: "tempo-bench-e2e-multi-region-results"
       cloud:
         type: string
         required: false
@@ -175,6 +180,12 @@ on:
           - institutional
           - cross-border
           - projected-pipeline
+          - state-read-cold
+          - state-read-hot
+          - state-read-dependent
+          - state-read-cold-lowmem
+          - state-read-dependent-lowmem
+          - state-read-cold-disk
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -304,6 +315,13 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
+      # Tempo source builds use fat LTO and x86-64-v3 with AES-NI, PCLMULQDQ and ADX, which
+      # every benchmark instance type supports. BENCH_BUILD_SUFFIX keeps these binaries
+      # apart from cached builds of other flags; change it whenever the flags change.
+      # Keep in sync with tempoxyz/tempo-multi-region-benchmark's copy of this workflow.
+      TEMPO_BUILD_PROFILE: maxperf
+      TEMPO_EXTRA_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C target-feature=+aes,+pclmulqdq,+adx"
+      BENCH_BUILD_SUFFIX: "-maxperf-v4"
       # Stable paths let sccache reuse Rust compilations across fresh Depot runners.
       TEMPO_BUILD_ROOT: /tmp/tempo-benchmark-build
       TF_IN_AUTOMATION: "1"
@@ -328,6 +346,13 @@ jobs:
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
       BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'gcp') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
+      # The *-lowmem state-read presets cap tempo-node at 45 GB, below the 100 GB bloat, so reads hit disk.
+      # Dependent and capped state-read runs include ~1 tx per block; give the pool reset more than txgen's 300s receipt timeout.
+      TEMPO_BENCH_POST_WARMUP_RESET_TIMEOUT_SECONDS: ${{ startsWith(inputs.preset, 'state-read-') && '900' || '' }}
+      # *-disk caps tempo-node at 16 GB so random reads over the 100 GB bloat come from disk.
+      # Runs with a long consensus target block time can't cover every proposer in the auto warmup window; skip warmup.
+      BENCH_INPUT_WARMUP_TIMEOUT: ${{ (contains(inputs.baseline-args, 'target-block-time') || contains(inputs.feature-args, 'target-block-time')) && '0' || '' }}
+      BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || (endsWith(inputs.preset, '-disk') && '16G' || '') }}
       BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
@@ -615,6 +640,8 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -670,6 +697,8 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -718,6 +747,8 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -766,6 +797,8 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -808,7 +841,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tempo-bench-e2e-multi-region-results
+          name: ${{ inputs.results-artifact-name || 'tempo-bench-e2e-multi-region-results' }}
           path: ${{ env.BENCH_RESULTS_DIR }}
           if-no-files-found: warn
 

@@ -1,11 +1,11 @@
 # tempoup
 
-Official installer for [Tempo](https://tempo.xyz) - a blockchain for payments at scale.
+Official installer for [Tempo](https://tempo.com) - a blockchain for payments at scale.
 
 ## Quick Install
 
 ```bash
-curl -L https://tempo.xyz/install | bash
+curl -L https://tempo.com/install | bash
 ```
 
 ## Usage

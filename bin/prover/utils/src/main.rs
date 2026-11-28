@@ -34,8 +34,8 @@ use zone_prover::{
 };
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_spf::{
-    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness, ZoneBlock,
-    ZoneStateWitness, prove_zone_batch,
+    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness,
+    VirtualAddressKeyInit, ZoneBlock, ZoneStateWitness, prove_zone_batch,
 };
 
 mod verifier_request;
@@ -1033,6 +1033,7 @@ fn extract_block(block: RpcBlock) -> Result<ExtractedBlock> {
     let mut tempo_import = None;
     let mut finalize_count = None;
     let mut finalize_encrypted_senders = Vec::new();
+    let mut virtual_address_key = None;
     let mut transactions = Vec::new();
     let mut user_transaction_count = 0;
     let mut checkpoint_number = None;
@@ -1046,6 +1047,30 @@ fn extract_block(block: RpcBlock) -> Result<ExtractedBlock> {
         }
 
         match envelope.to() {
+            Some(to)
+                if to == ZONE_INBOX_ADDRESS
+                    && envelope
+                        .input()
+                        .starts_with(&ZoneInbox::initializeVirtualAddressKeyCall::SELECTOR) =>
+            {
+                if virtual_address_key.is_some() {
+                    bail!(
+                        "Zone block {} contains multiple initializeVirtualAddressKey calls",
+                        header.number()
+                    );
+                }
+                let call = ZoneInbox::initializeVirtualAddressKeyCall::abi_decode(envelope.input())
+                    .wrap_err_with(|| {
+                        format!(
+                            "decode initializeVirtualAddressKey in Zone block {}",
+                            header.number()
+                        )
+                    })?;
+                virtual_address_key = Some(VirtualAddressKeyInit {
+                    version: call.version,
+                    key: call.key,
+                });
+            }
             Some(to) if to == ZONE_INBOX_ADDRESS => {
                 if tempo_import.is_some() {
                     bail!(
@@ -1136,6 +1161,7 @@ fn extract_block(block: RpcBlock) -> Result<ExtractedBlock> {
             finalize_withdrawal_batch_count: finalize_count,
             finalize_withdrawal_batch_encrypted_senders: finalize_encrypted_senders,
             transactions,
+            virtual_address_key,
         },
         block_hash,
         checkpoint_number,

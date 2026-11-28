@@ -813,7 +813,7 @@ impl EarnZoneFixture {
             .await?;
         let balance_before = self.zone.balance_of(token, recipient).await?;
         let receipt = ZonePortal::new(self.portal, provider)
-            .deposit(token, amount, key_index, encrypted, recipient)
+            .deposit_0(token, amount, key_index, encrypted, recipient)
             .mined()
             .await?;
         eyre::ensure!(receipt.status(), "encrypted Zone entry failed");
@@ -1549,7 +1549,7 @@ impl EarnZoneFixture {
             Call {
                 to: TxKind::Call(self.portal),
                 value: U256::ZERO,
-                input: ZonePortal::depositCall {
+                input: ZonePortal::deposit_0Call {
                     token: self.earn_share,
                     amount: earn_shares_u128,
                     keyIndex: key_index,

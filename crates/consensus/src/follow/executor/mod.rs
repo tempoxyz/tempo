@@ -1,12 +1,12 @@
 //! Execution-layer synchronization for follow mode.
 //!
 //! This is intentionally smaller than the validator executor: it receives
-//! already-verified finalized tips, drives forkchoice updates, and advances
-//! marshal's floor after execution-layer progress is durable.
+//! already-verified finalized tips, drives forkchoice updates, acknowledges
+//! finalized blocks once the execution layer durably persisted them, and
+//! advances marshal's floor after execution-layer progress is durable.
 
 use std::future::Future;
 
-use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadStatus};
 use commonware_consensus::{
     simplex::{
@@ -16,19 +16,21 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Pacer, Spawner};
-use eyre::OptionExt as _;
+use eyre::{OptionExt as _, WrapErr as _};
 use futures::channel::mpsc;
 use reth_engine_primitives::{BeaconForkChoiceUpdateError, ConsensusEngineHandle};
-use reth_ethereum::chainspec::EthChainSpec as _;
+use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::{
     BlockHashReader, BlockIdReader, ChainSpecProvider as _, DatabaseProviderFactory as _,
-    HeaderProvider,
+    HeaderProvider, StageCheckpointReader as _,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
+use reth_stages_types::StageId;
 use tempo_node::{TempoExecutionData, TempoPayloadTypes};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoHeader;
+use tokio::sync::watch;
 
 use crate::consensus::Digest;
 
@@ -73,8 +75,13 @@ pub(crate) trait FinalizedBlockProvider: Clone + Send + Sync {
     /// explicit finalized marker exists on a fresh chain.
     fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>>;
 
-    /// Persisted database block hash at `height`, excluding in-memory state.
-    fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>>;
+    /// The block the execution layer durably persisted at
+    /// `min(durable frontier, height)`, as for the validator executor.
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash>;
+
+    /// Subscribes to the execution layer's persistence runs. The carried
+    /// value must be ignored; re-read [`Self::durable_block_at_or_below`].
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>>;
 }
 
 /// Engine commands issued by the follower executor.
@@ -119,11 +126,38 @@ where
             .ok_or_eyre("finalized execution block is missing its header")
     }
 
-    fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
-        self.database_provider_ro()
-            .map_err(eyre::Report::new)?
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash> {
+        // Reth's persisted-block notification carries the database tip, but
+        // the hashed state and trie of its newest `num_state_masking_blocks`
+        // are kept in memory only, and after a crash reth unwinds the
+        // database to the partial state-trie frontier.
+        let database = self
+            .database_provider_ro()
+            .wrap_err("failed opening a read-only database provider")?;
+
+        let frontier = database
+            .get_stage_checkpoint(StageId::Finish)
+            .wrap_err("failed reading the finish stage checkpoint")?
+            .map_or(0, |checkpoint| {
+                checkpoint
+                    .finish_stage_checkpoint()
+                    .and_then(|finish| finish.partial_state_trie())
+                    .unwrap_or(checkpoint.block_number)
+            });
+        let height = frontier.min(height);
+
+        let hash = database
             .block_hash(height)
-            .map_err(eyre::Report::new)
+            .wrap_err_with(|| {
+                format!("failed reading the database block hash at height `{height}`")
+            })?
+            .ok_or_eyre("the database has no block below the partial state-trie frontier")?;
+
+        Ok(BlockNumHash::new(height, hash))
+    }
+
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>> {
+        self.canonical_in_memory_state().subscribe_persisted_block()
     }
 }
 

@@ -2,8 +2,8 @@
 #
 # Reproducible build of the canonical Linux x86_64 `tempo-zone` binary.
 
-ARG RUST_TOOLCHAIN=1.96.0
-FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:64d9b7f60e3abb08d477cad983d0a3743acc53a19369ba4482510184c9c807e5 AS reproducible-builder-base
+ARG RUST_TOOLCHAIN=1.100.0
+FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:75d26c23c24cc6ea1cdabf0714a6bff8fd7bf3248716043fd7ae86dac7f41b94 AS reproducible-builder-base
 
 ARG SOURCE_DATE_EPOCH
 ARG GIT_SHA

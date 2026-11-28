@@ -3,7 +3,7 @@
 use invariants_core::{check, ensure};
 
 use super::Spend;
-use crate::{Check, Checked};
+use crate::{Check, Checked, TempoHardfork};
 
 pub const REVOKED: &str = "TEMPO-KEYCHAIN-REVOKED-KEY-SPENDS";
 pub const EXPIRED: &str = "TEMPO-KEYCHAIN-EXPIRED-KEY-SPENDS";
@@ -12,10 +12,12 @@ pub const SPEND_LIMIT: &str = "TEMPO-KEYCHAIN-SPEND-LIMIT";
 pub const CHECKS: &[Check<Spend>] = &[
     check! {
         id: REVOKED,
+        doc: "A revoked access key never spends.",
         judge: |s: &Spend| ensure!(!s.key.info.isRevoked, "the key was revoked at the parent state"),
     },
     check! {
         id: EXPIRED,
+        doc: "An access key never spends at or past its expiry.",
         judge: |s: &Spend| {
             let info = &s.key.info;
             if info.isRevoked || info.keyId.is_zero() {
@@ -31,6 +33,7 @@ pub const CHECKS: &[Check<Spend>] = &[
     },
     check! {
         id: SPEND_LIMIT,
+        doc: "An access key with enforced limits never spends more than its remaining limit.",
         judge: |s: &Spend| {
             let (info, limit) = (&s.key.info, &s.key.limit);
             let refilled = limit.periodEnd != 0 && s.timestamp >= limit.periodEnd;
@@ -47,6 +50,6 @@ pub const CHECKS: &[Check<Spend>] = &[
     },
 ];
 
-impl Checked for Spend {
+impl Checked<TempoHardfork> for Spend {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }

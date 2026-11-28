@@ -104,7 +104,7 @@ async fn test_l1_deposit_mints_on_zone() -> eyre::Result<()> {
 
     // Execute encrypted deposit on L1
     let deposit_receipt = portal
-        .deposit(
+        .deposit_0(
             l1_token_address,
             deposit_amount,
             key_index,

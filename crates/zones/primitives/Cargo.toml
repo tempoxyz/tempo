@@ -1,7 +1,7 @@
 [package]
 name = "zone-primitives"
 description = "Primitive types used by the zone"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,9 @@ alloy-rlp = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["alloc"] }
 tempo-hardfork = { workspace = true }
 thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+test-case.workspace = true
 
 [features]
 default = ["std", "serde"]

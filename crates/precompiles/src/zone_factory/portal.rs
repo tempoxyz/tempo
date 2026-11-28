@@ -35,6 +35,16 @@ pub struct PortalEncryptionKeyEntry {
     activation_block: u64,
 }
 
+/// Deposit-queue checkpoint stored by ZonePortal every `DEPOSITS_PER_BUCKET` entries.
+#[derive(Debug, Clone, Copy, Storable)]
+pub struct PortalDepositBucket {
+    /// Queue hash through the checkpoint entry.
+    pub hash: B256,
+    /// Reserved for the entry weight appended since bootstrap, through the checkpoint entry. Zero
+    /// while every entry weighs one unit.
+    pub cumulative_weight: u64,
+}
+
 /// Withdrawal queue stored by ZonePortal.
 #[derive(Debug, Clone, Storable)]
 pub struct PortalWithdrawalQueue {
@@ -107,6 +117,26 @@ pub struct ZonePortalStorage {
     token_enablement_cursor_initialized: bool,
     /// Whether zone-internal TIP-20 transfers are enabled, packed into slot 28.
     transfers_enabled: bool,
+    /// ZoneIdentity registrar, packed into slot 28 after the transfer flag.
+    identity_registrar: Address,
+    /// Whether the zone enforces ZoneIdentity org edges, packed into slot 28.
+    identity_enforced: bool,
+    /// Deposit-queue checkpoints, stored in slot 29. Empty before bootstrap.
+    deposit_buckets: Vec<PortalDepositBucket>,
+    /// Reserved for the cumulative entry weight appended since bootstrap, in slot 30. Zero while
+    /// every entry weighs one unit.
+    deposit_weight: u64,
+    /// Reserved for the lower bound on the entry weight settled since bootstrap, in slot 30. Zero
+    /// while every entry weighs one unit.
+    settled_deposit_weight: u64,
+    /// Tempo block whose first append or settlement fixed `deposit_price_tier`, in slot 30.
+    deposit_price_block: u64,
+    /// Congestion tier charged to deposits in `deposit_price_block`, in slot 30.
+    deposit_price_tier: u64,
+    /// `deposit_count` when checkpoints bootstrapped, stored in slot 31.
+    deposit_bucket_base: u64,
+    /// First checkpoint index not yet pruned, packed into slot 31.
+    next_deposit_bucket_to_prune: u64,
 }
 
 impl ZonePortalStorage {
