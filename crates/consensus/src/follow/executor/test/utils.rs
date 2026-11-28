@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{BlockHeader as _, Header};
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
     ForkchoiceState, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
@@ -25,6 +25,7 @@ use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{
     Block as TempoBlock, BlockBody, TempoConsensusContext, TempoHeader, ed25519::PublicKey,
 };
+use tokio::sync::watch;
 
 use super::super::{ExecutionEngine, FinalizedBlockProvider, Marshal};
 use crate::consensus::block::Block;
@@ -61,11 +62,9 @@ pub(super) struct StubExecutionProvider {
     inner: Arc<StubExecutionProviderInner>,
 }
 
-#[derive(Default)]
 struct StubExecutionProviderInner {
     finalized: Mutex<BlockNumHash>,
     finalized_round: Mutex<Option<Round>>,
-    durable: Mutex<HashMap<u64, B256>>,
     fail_durable_reads: AtomicBool,
     payloads: AtomicUsize,
     forkchoices: Mutex<Vec<ForkchoiceState>>,
@@ -73,6 +72,31 @@ struct StubExecutionProviderInner {
     reject_forkchoices: AtomicBool,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
     forkchoice_response: Mutex<Option<Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>>>,
+    // Blocks delivered through new-payload, by height.
+    delivered: Mutex<HashMap<u64, B256>>,
+    // While set, only [`StubExecutionProvider::persist`] moves the durable frontier.
+    // Otherwise every delivered block is durable at once.
+    manual_frontier: Mutex<Option<u64>>,
+    persisted: watch::Sender<Option<BlockNumHash>>,
+}
+
+impl Default for StubExecutionProviderInner {
+    fn default() -> Self {
+        Self {
+            finalized: Default::default(),
+            finalized_round: Default::default(),
+            fail_durable_reads: Default::default(),
+            payloads: Default::default(),
+            forkchoices: Default::default(),
+            reject_payloads: Default::default(),
+            reject_forkchoices: Default::default(),
+            forkchoice_gate: Default::default(),
+            forkchoice_response: Default::default(),
+            delivered: Default::default(),
+            manual_frontier: Default::default(),
+            persisted: watch::Sender::new(None),
+        }
+    }
 }
 
 impl StubExecutionProvider {
@@ -88,8 +112,16 @@ impl StubExecutionProvider {
         *self.inner.finalized_round.lock() = None;
     }
 
-    pub(super) fn set_durable(&self, height: u64, hash: B256) {
-        self.inner.durable.lock().insert(height, hash);
+    /// Stops delivered blocks from becoming durable until [`Self::persist`].
+    pub(super) fn persist_manually(&self) {
+        *self.inner.manual_frontier.lock() = Some(0);
+    }
+
+    /// Moves the durable frontier to `height` and notifies, like a completed
+    /// persistence run.
+    pub(super) fn persist(&self, height: u64) {
+        *self.inner.manual_frontier.lock() = Some(height);
+        self.inner.persisted.send_replace(None);
     }
 
     pub(super) fn fail_durable_reads(&self) {
@@ -152,20 +184,40 @@ impl FinalizedBlockProvider for StubExecutionProvider {
         ))
     }
 
-    fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash> {
         if self.inner.fail_durable_reads.load(Ordering::SeqCst) {
             eyre::bail!("durable block read failed");
         }
-        Ok(self.inner.durable.lock().get(&height).copied())
+        let height = self
+            .inner
+            .manual_frontier
+            .lock()
+            .map_or(height, |frontier| frontier.min(height));
+        let hash = self
+            .inner
+            .delivered
+            .lock()
+            .get(&height)
+            .copied()
+            .unwrap_or_default();
+        Ok(BlockNumHash::new(height, hash))
+    }
+
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>> {
+        self.inner.persisted.subscribe()
     }
 }
 
 impl ExecutionEngine for StubExecutionProvider {
     fn new_payload(
         &self,
-        _payload: TempoExecutionData,
+        payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
         self.inner.payloads.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .delivered
+            .lock()
+            .insert(payload.block.number(), payload.block.hash());
         let rejected = self.inner.reject_payloads.load(Ordering::SeqCst);
         async move {
             let status = if rejected {

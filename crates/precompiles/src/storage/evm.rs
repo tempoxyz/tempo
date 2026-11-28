@@ -44,6 +44,8 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Charge every SLOAD as cold, so gas does not reveal which slots were already warm.
+    cold_pricing: bool,
     /// The precompile call frame that nested calls start from, if the provider serves one.
     frame: Option<Frame>,
     /// Checkpoints taken and not yet committed or reverted, during which nested calls are refused.
@@ -96,6 +98,7 @@ where
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
+            cold_pricing: false,
             frame: None,
             open_checkpoints: 0,
         }
@@ -164,7 +167,10 @@ where
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
-        let mut account = self.evm.state_mut().account(&address)?;
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, skip_cold_load && self.spec.is_t15())?;
         account.warm();
         let storage = account.storage();
         let (slot, is_cold) = if self.version.feature(EvmFeatures::EIP2929) {
@@ -189,7 +195,10 @@ where
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
         self.ensure_not_static()?;
-        let mut account = self.evm.state_mut().account(&address)?;
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, skip_cold_load && self.spec.is_t15())?;
         account.warm();
         let storage = account.storage();
         let (mut slot, is_cold) = if self.version.feature(EvmFeatures::EIP2929) {
@@ -239,7 +248,7 @@ where
         }
 
         // dynamic gas
-        if result.is_cold {
+        if result.is_cold || self.cold_pricing {
             self.deduct_gas(additional_cost)?;
         }
 
@@ -661,6 +670,14 @@ where
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        core::mem::replace(&mut self.cold_pricing, enabled)
+    }
+
+    fn call_frame_address(&self) -> Option<Address> {
+        self.frame.as_ref().map(|frame| frame.address)
     }
 
     fn call(
@@ -2099,6 +2116,15 @@ mod tests {
             AccountInfo::default().with_code(Bytecode::new_raw(code)),
         );
         TestEvm::with_database(TempoHardfork::default(), false, database)
+    }
+
+    #[test]
+    fn test_call_frame_address_reports_the_running_precompile() {
+        let mut evm = evm_with_callee(Bytes::new());
+        let provider = evm.provider_with_gas_limit(1_000_000, 0);
+        assert_eq!(provider.call_frame_address(), None);
+        let provider = provider.with_frame(frame());
+        assert_eq!(provider.call_frame_address(), Some(CALLING_PRECOMPILE));
     }
 
     #[test]

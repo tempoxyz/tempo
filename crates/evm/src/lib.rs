@@ -39,6 +39,7 @@ pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoFeeManager,
+    fee_token_inference_target,
 };
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -132,6 +133,13 @@ impl TempoEvmConfig {
     /// Returns the chain spec
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
         &self.chain_spec
+    }
+
+    /// Starts recording `evm`'s storage actions, including its native precompiles'.
+    pub fn record_storage_actions(&self, evm: &mut TempoEvm<'_>) {
+        evm.ext_mut().actions.enable();
+        // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+        reth_evm_ethereum::EvmFactory::configure_evm(&self.evm_factory, evm);
     }
 
     /// Returns the moderato EVM config.
@@ -737,16 +745,12 @@ mod tests {
             PrecompileCacheMap::default(),
             false,
         );
-        let precompiles = evm
-            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
-            .unwrap();
         assert!(
-            precompiles
-                .downcast_ref::<TempoPrecompiles<
-                    TempoEvmTypes,
-                    CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
-                >>()
-                .is_some()
+            evm.precompiles_as::<TempoPrecompiles<
+                TempoEvmTypes,
+                CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
+            >>()
+            .is_some()
         );
 
         let evm_config =
@@ -759,9 +763,6 @@ mod tests {
             PrecompileCacheMap::default(),
             false,
         );
-        let precompiles = evm
-            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
-            .unwrap();
-        assert!(precompiles.downcast_ref::<NoPrecompiles>().is_some());
+        assert!(evm.precompiles_as::<NoPrecompiles>().is_some());
     }
 }

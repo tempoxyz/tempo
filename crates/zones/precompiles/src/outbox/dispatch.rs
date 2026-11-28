@@ -49,8 +49,13 @@ impl ZoneOutbox {
                 AUTHENTICATED_WITHDRAWAL_CIPHERTEXT_LENGTH(call) => view(call, |_| Ok(U256::from(AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE))),
                 setTempoGasRate(call) => mutate(call, msg_sender, |sender, call| self.set_tempo_gas_rate(l1, sender, call)),
                 setMaxWithdrawalsPerBlock(call) => mutate(call, msg_sender, |sender, call| self.set_max_withdrawals_per_block(l1, sender, call)),
-                requestWithdrawal(call) => mutate(call, msg_sender, |sender, call| {
-                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call)
+                requestWithdrawal_0(call) => mutate(call, msg_sender, |sender, call| {
+                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call, false)
+                }),
+                #[schedule(since = T15)]
+                requestWithdrawal_1(call) => mutate(call, msg_sender, |sender, call| {
+                    let reveal_org = call.revealOrg;
+                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call.into(), reveal_org)
                 }),
                 enqueueDepositBounceBack(call) => mutate(call, msg_sender, |sender, call| self.enqueue_deposit_bounce_back(sender, call)),
                 consumeFallbackRecipient(call) => mutate(call, msg_sender, |sender, call| self.consume_fallback_recipient(sender, call.fallbackNonce)),

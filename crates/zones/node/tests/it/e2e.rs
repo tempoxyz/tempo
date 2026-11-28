@@ -1059,7 +1059,7 @@ async fn submit_withdrawals(
     for (offset, amount) in amounts.iter().copied().enumerate() {
         pending.push(
             outbox
-                .requestWithdrawal(
+                .requestWithdrawal_0(
                     PATH_USD_ADDRESS,
                     dev_address,
                     amount,
@@ -1140,7 +1140,8 @@ async fn test_withdrawal_request_finalizes_same_block() -> eyre::Result<()> {
     let withdrawal_tx_hash = requested_log
         .transaction_hash
         .ok_or_else(|| eyre::eyre!("WithdrawalRequested log missing transaction hash"))?;
-    let withdrawal = Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new());
+    let withdrawal =
+        Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new(), 0);
     let expected_hash = Withdrawal::queue_hash(&[withdrawal]);
 
     let finalized_logs = outbox
@@ -1249,6 +1250,7 @@ async fn test_multiple_withdrawals_finalize_in_one_batch() -> eyre::Result<()> {
             requested,
             tx_hash,
             Bytes::new(),
+            0,
         ));
     }
     let expected_hash = Withdrawal::queue_hash(&withdrawals);
@@ -1386,7 +1388,8 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     let withdrawal_tx_hash = requested_log
         .transaction_hash
         .ok_or_else(|| eyre::eyre!("WithdrawalRequested log missing transaction hash"))?;
-    let withdrawal = Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new());
+    let withdrawal =
+        Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new(), 0);
     assert_eq!(
         finalized_logs[0].0.withdrawalQueueHash,
         Withdrawal::queue_hash(&[withdrawal])
@@ -1436,7 +1439,7 @@ async fn test_withdrawal_request_rejects_over_max_callback_gas() -> eyre::Result
     let max_callback_gas = outbox.MAX_WITHDRAWAL_GAS_LIMIT().call().await?;
 
     let withdrawal_pending = outbox
-        .requestWithdrawal(
+        .requestWithdrawal_0(
             PATH_USD_ADDRESS,
             dev_address,
             250_000,

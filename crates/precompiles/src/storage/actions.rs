@@ -57,6 +57,24 @@ pub enum StorageAction {
     ///
     /// Commitments live in the account extension, not in a storage slot.
     ConfigCommitment(Address, B256, B256),
+    /// Marks where a step of the transaction's fee lifecycle starts or ends. It changes no state.
+    Marker(FeeHook),
+}
+
+/// Brackets a protocol fee hook. The actions between a hook's start marker and the next
+/// [`Self::End`] are the hook's own. A hook that fails records no end marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeHook {
+    /// Pre-tx fee hook starts, charging `amount` of `token` to `payer`. Emits no logs.
+    PreTx {
+        payer: Address,
+        token: Address,
+        amount: U256,
+    },
+    /// Post-tx fee hook starts, refunding `refund` of `amount`. Its fee transfer is log `log`.
+    PostTx { refund: U256, log: usize },
+    /// The fee hook the last marker started returned.
+    End,
 }
 
 impl StorageAction {
@@ -69,7 +87,9 @@ impl StorageAction {
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..)
             | Self::ConfigCommitment(address, ..) => *address,
-            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
+            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) | Self::Marker(_) => {
+                TIP_FEE_MANAGER_ADDRESS
+            }
         }
     }
 }

@@ -76,7 +76,7 @@ CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
-BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global,min-debug-logs}"
 BENCH_BASELINE_FEATURES="${BENCH_BASELINE_FEATURES:-$BENCH_FEATURES}"
 BENCH_FEATURE_FEATURES="${BENCH_FEATURE_FEATURES:-$BENCH_FEATURES}"
 if [ -z "${BENCHMARK_ID:-}" ]; then

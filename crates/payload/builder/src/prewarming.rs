@@ -11,7 +11,6 @@ use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
-use reth_evm_ethereum::EvmFactory as _;
 use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerStatefulPool};
 use reth_transaction_pool::{
@@ -429,10 +428,7 @@ where
 
         // Record storage actions for future replay
         if self.parallel {
-            evm.ext_mut().actions.enable();
-            // Enabling replaces the disabled recorder, so reconnect native precompiles
-            // to the same action buffer used by protocol nonce and fee operations.
-            BlockExecutorFactory::evm_factory(&self.evm_config).configure_evm(&mut evm);
+            self.evm_config.record_storage_actions(&mut evm);
         }
 
         Some(evm)

@@ -11,6 +11,7 @@ use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_transport::TransportResult;
 use reth_chain_state::{CanonStateSubscriptions, PersistedBlockSubscriptions};
+pub use reth_storage_api::DurableBlockReader;
 use reth_storage_api::{BlockReader, StateProviderFactory};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
@@ -72,6 +73,7 @@ pub trait ZoneSequencerProvider:
         Receipt = TempoReceipt,
     > + CanonStateSubscriptions<Primitives = TempoPrimitives>
     + StateProviderFactory
+    + DurableBlockReader
     + Clone
     + 'static
 {
@@ -85,6 +87,7 @@ impl<T> ZoneSequencerProvider for T where
             Receipt = TempoReceipt,
         > + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + StateProviderFactory
+        + DurableBlockReader
         + Clone
         + 'static
 {
@@ -178,6 +181,7 @@ where
         fallback_poll_interval: config.withdrawal_poll_interval,
         sequencer_address,
         batch_limits: config.withdrawal_batch_limits,
+        chain_spec: config.chain_spec.clone(),
     };
 
     let monitor_config = ZoneMonitorConfig {
