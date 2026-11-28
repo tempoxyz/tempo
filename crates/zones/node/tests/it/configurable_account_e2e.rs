@@ -125,10 +125,10 @@ impl Env {
         let token = build_token_with_signature(signature, &fields);
         let (status, body) = self
             .rpc
-            .call_raw(
+            .post(
                 "eth_blockNumber",
                 serde_json::Value::Array(Vec::new()),
-                &token,
+                Some(&token),
             )
             .await?;
         if status == StatusCode::FORBIDDEN {
