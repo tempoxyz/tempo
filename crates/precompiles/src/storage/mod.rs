@@ -4,7 +4,7 @@
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
 pub mod actions;
-pub use actions::{StorageAction, StorageActions};
+pub use actions::{FeeHook, StorageAction, StorageActions};
 
 pub mod evm;
 pub use evm::SstoreTransitionFlags;
@@ -196,6 +196,19 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Sets whether SLOADs are charged as cold even when the slot is already warm, and returns the
+    /// previous setting. Providers without gas metering ignore it.
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        let _ = enabled;
+        false
+    }
+
+    /// The address of the precompile this call frame runs, when known. A nested call's callee
+    /// sees it as `msg.sender`.
+    fn call_frame_address(&self) -> Option<Address> {
+        None
+    }
 
     /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
     /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back

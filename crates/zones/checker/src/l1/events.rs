@@ -124,6 +124,19 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
                 net_amount: e.netAmount,
             }
         }
+        // TIP-1094: a transfer to a zone deposit address escrows new external backing exactly
+        // like an encrypted deposit.
+        ZonePortal::VirtualDepositMade::SIGNATURE_HASH => {
+            let e =
+                decode_event::<ZonePortal::VirtualDepositMade>(log, "VirtualDepositMade", block)?;
+            L1PortalEvent::DepositMade {
+                token: e.token,
+                net_amount: e.netAmount,
+            }
+        }
+        ZonePortal::AddressVersionsRetired::SIGNATURE_HASH => {
+            ignored!(ZonePortal::AddressVersionsRetired, "AddressVersionsRetired")
+        }
         ZonePortal::TokenEnabled::SIGNATURE_HASH => {
             let e = decode_event::<ZonePortal::TokenEnabled>(log, "TokenEnabled", block)?;
             L1PortalEvent::TokenEnabled { token: e.token }
@@ -230,6 +243,11 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
             ZonePortal::TransfersEnabledUpdated,
             "TransfersEnabledUpdated"
         ),
+        // Org edges only constrain moves within and across the Zone's boundary; the config change
+        // itself leaves L1 liabilities unchanged.
+        ZonePortal::IdentityConfigUpdated::SIGNATURE_HASH => {
+            ignored!(ZonePortal::IdentityConfigUpdated, "IdentityConfigUpdated")
+        }
         ZonePortal::LeaderUpdated::SIGNATURE_HASH => {
             ignored!(ZonePortal::LeaderUpdated, "LeaderUpdated")
         }

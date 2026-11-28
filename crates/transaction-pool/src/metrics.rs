@@ -139,3 +139,18 @@ pub(crate) struct ValidationMetrics {
     /// whenever the admission epoch advances, and validating every transaction in the batch.
     pub(crate) batch_duration_seconds: Histogram,
 }
+
+/// Delayed sub-pool metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.delayed")]
+pub struct DelayedPoolMetrics {
+    /// Number of delayed transactions.
+    pub transactions: Gauge,
+
+    /// Total size of delayed transactions in bytes.
+    pub size_bytes: Gauge,
+
+    /// Number of delayed transactions taken out to be revalidated and added to the live
+    /// sub-pools.
+    pub released_transactions: Counter,
+}

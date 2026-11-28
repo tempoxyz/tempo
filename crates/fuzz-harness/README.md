@@ -2,7 +2,9 @@
 
 A stateless Tempo block executor, built as a cdylib for differential fuzzing
 and for replaying blocks taken from a node. The input and outcome types and
-their contracts are in [`tempo-fuzz-types`](../fuzz-types).
+their contracts are in [`tempo-fuzz-types`](../fuzz-types); the executor is
+[`tempo-fuzz-engine`](../fuzz-engine)'s, which
+[`zone-fuzz-harness`](../zones/fuzz-harness) runs on a zone.
 
 ```bash
 cargo build -p tempo-fuzz-harness --release

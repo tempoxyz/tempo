@@ -33,19 +33,19 @@ use tempo_contracts::zones::{
 use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{mpsc, oneshot},
+    sync::{Semaphore, mpsc, oneshot},
 };
 use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::TempoStateExt as _;
 use zone_prover::{
-    DEFAULT_MAX_REQUEST_BYTES, NITRO_VERIFIER_CONFIG_V1, PROTOCOL_VERSION, ProofBundle,
+    DEFAULT_MAX_REQUEST_BYTES, ErrorCode, NITRO_VERIFIER_CONFIG_V1, PROTOCOL_VERSION, ProofBundle,
     ProverConnection, VerifierMode, VerifyRequest, VerifyResponse,
     attested_transport::RemoteProverConfig,
 };
 use zone_spf::{
-    BatchOutput, BatchWitness, PublicInputs, TempoImport, TempoStateWitness, ZoneBlock,
-    ZoneStateWitness,
+    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness,
+    VirtualAddressKeyInit, ZoneBlock, ZoneStateWitness, prove_zone_batch,
 };
 
 use crate::{
@@ -105,10 +105,12 @@ struct ValidationStats {
     tempo_state_nodes: usize,
 }
 
+/// Prover worker state. Admits one local SPF run at a time to diagnose remote rejections.
 struct ProverContext<P> {
     config: SettlementProverConfig,
     zone_provider: P,
     l1_provider: DynProvider<TempoNetwork>,
+    local_spf: Arc<Semaphore>,
 }
 
 struct ZoneInputs {
@@ -177,6 +179,7 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
         config,
         zone_provider,
         l1_provider,
+        local_spf: Arc::new(Semaphore::new(1)),
     };
     let metrics = ProverMetrics::default();
 
@@ -252,6 +255,7 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
                         zone_to = job.to,
                         prev_block_hash = %job.batch.prev_block_hash,
                         next_block_hash = %job.batch.next_block_hash,
+                        anchor_block_number = job.anchor.block_number(job.batch.tempo_block_number),
                         elapsed_ms = started.elapsed().as_millis(),
                         error = ?err,
                         "Prover could not complete batch validation"
@@ -334,7 +338,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         "Selected remote prover"
     );
     let (output, bundle) =
-        verify_remotely(remote, context.config.zone_id, job, witness, metrics).await?;
+        verify_remotely(remote, hardfork, context, job, witness, metrics).await?;
     let proof = SettlementProof { bundle, hardfork };
     metrics
         .spf_execution_duration_seconds
@@ -530,22 +534,24 @@ async fn build_witness<P: ZoneSequencerProvider>(
     Ok((witness, stats))
 }
 
-async fn verify_remotely(
+async fn verify_remotely<P>(
     remote: &RemoteProverConfig,
-    zone_id: u32,
+    hardfork: TempoHardfork,
+    context: &ProverContext<P>,
     job: &ProverJob,
     witness: BatchWitness,
     metrics: &ProverMetrics,
 ) -> Result<(BatchOutput, ProofBundle)> {
     let address = remote.address();
-    let request = VerifyRequest {
+    // Shared with the encoder so a rejected witness can be re-run locally.
+    let request = Arc::new(VerifyRequest {
         version: PROTOCOL_VERSION,
         request_id: format!(
-            "zone-{zone_id}-{}-{}-{}",
-            job.from, job.to, job.batch.next_block_hash
+            "zone-{}-{}-{}-{}",
+            context.config.zone_id, job.from, job.to, job.batch.next_block_hash
         ),
         witness,
-    };
+    });
     let started = Instant::now();
     let stream = remote.connect().await;
     let connect_duration_seconds = if stream.is_ok() {
@@ -565,7 +571,7 @@ async fn verify_remotely(
 
     let started = Instant::now();
     let expected_id = request.request_id.clone();
-    let send_result = connection.send(request).await;
+    let send_result = connection.send(Arc::clone(&request)).await;
     metrics
         .spf_remote_request_send_duration_seconds
         .record(started.elapsed().as_secs_f64());
@@ -616,8 +622,32 @@ async fn verify_remotely(
             message,
         } => {
             validate_response_header(version, request_id.as_deref(), &expected_id)?;
+            // A local run tells prover version or format skew apart from a really invalid witness.
+            if code == ErrorCode::VerificationFailed
+                && let Ok(permit) = Arc::clone(&context.local_spf).try_acquire_owned()
+            {
+                let spf_config = SpfConfig::new(Arc::clone(&context.config.chain_spec));
+                let witness = Arc::unwrap_or_clone(request).witness;
+                let (zone_from, zone_to) = (job.from, job.to);
+                tokio::task::spawn_blocking(move || {
+                    // Moved in so the permit is held until the run ends.
+                    let _permit = permit;
+                    let anchor_block_number = witness.public_inputs.anchor_block_number;
+                    let result = prove_zone_batch(&spf_config, witness);
+                    // PRIVACY: Assumes `zone_spf` errors never include a slot value.
+                    warn!(
+                        target: "zone::sequencer::prover",
+                        zone_from,
+                        zone_to,
+                        anchor_block_number,
+                        local_spf_accepts = result.is_ok(),
+                        error = result.err().map(tracing::field::display),
+                        "Re-ran a witness the prover rejected"
+                    );
+                });
+            }
             Err(eyre::eyre!(
-                "remote prover rejected request ({code:?}): {message}"
+                "remote prover@{hardfork} rejected request ({code:?}): {message}"
             ))
         }
     }
@@ -738,6 +768,7 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
     let mut tempo_import = None;
     let mut finalize_count = None;
     let mut finalize_encrypted_senders = Vec::new();
+    let mut virtual_address_key = None;
     let mut transactions = Vec::new();
 
     for transaction in &block.body().transactions {
@@ -747,6 +778,32 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
         }
 
         match transaction.to() {
+            Some(to)
+                if to == ZONE_INBOX_ADDRESS
+                    && transaction
+                        .input()
+                        .starts_with(&ZoneInbox::initializeVirtualAddressKeyCall::SELECTOR) =>
+            {
+                // The executor already enforces its position: directly after advanceTempo, at
+                // most once per block.
+                ensure!(
+                    virtual_address_key.is_none(),
+                    "Zone block {} contains multiple initializeVirtualAddressKey calls",
+                    header.number()
+                );
+                let call =
+                    ZoneInbox::initializeVirtualAddressKeyCall::abi_decode(transaction.input())
+                        .wrap_err_with(|| {
+                            format!(
+                                "decode initializeVirtualAddressKey in Zone block {}",
+                                header.number()
+                            )
+                        })?;
+                virtual_address_key = Some(VirtualAddressKeyInit {
+                    version: call.version,
+                    key: call.key,
+                });
+            }
             Some(to) if to == ZONE_INBOX_ADDRESS => {
                 ensure!(
                     tempo_import.is_none(),
@@ -833,6 +890,7 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
         finalize_withdrawal_batch_count: finalize_count,
         finalize_withdrawal_batch_encrypted_senders: finalize_encrypted_senders,
         transactions,
+        virtual_address_key,
     })
 }
 
@@ -1284,6 +1342,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         }
     }
 }

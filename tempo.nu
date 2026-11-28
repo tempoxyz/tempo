@@ -441,8 +441,8 @@ def resolve-git-ref-label [sha: string, fallback: string] {
 }
 
 def bench-cache-key [commit_sha: string, features: string, no_default_features: bool, profile: string, rustflags: string] {
-    # Include build settings so older binaries without frame pointers are not reused.
-    let build_key = ([$profile $rustflags] | to json --raw | hash sha256 | str substring 0..15)
+    # Include build settings and the compiler so binaries built differently are not reused.
+    let build_key = ([$profile $rustflags (^rustc -vV)] | to json --raw | hash sha256 | str substring 0..15)
     if (not $no_default_features) and $features == $DEFAULT_FEATURES {
         return $"($commit_sha)-($build_key)"
     }
@@ -871,40 +871,13 @@ def upload-samply-profile [profile_path: string] {
     $url
 }
 
-# Upload a tracy profile (.tracy) to R2 via mc and return the viewer and raw profile URLs.
-# Returns null on failure or if mc is not available.
-# Deletes the large .tracy file after successful upload to save disk.
-def upload-tracy-profile [profile_path: string, label: string, commit_sha: string] {
-    if not ($profile_path | path exists) {
+# Print where a run's tracy profile (.tracy) is. Profiles stay in the results
+# directory; open them with the Tracy profiler.
+def print-tracy-profile [profile_path: string, label: string] {
+    if ($profile_path | path exists) {
+        print $"  ($label) tracy profile: ($profile_path)"
+    } else {
         print $"  Warning: tracy profile not found: ($profile_path)"
-        return null
-    }
-    if not (has-mc) {
-        print "  Warning: mc not available, skipping tracy upload"
-        return null
-    }
-
-    let profile_size = (ls $profile_path | get size | first)
-    print $"  Uploading ($profile_path | path basename) \(($profile_size)\) to R2..."
-
-    let timestamp = (date now | format date "%Y%m%d-%H%M%S")
-    let short_sha = ($commit_sha | str substring 0..7)
-    let remote_name = $"($label)-($short_sha)-($timestamp).tracy"
-    let mc_alias = "r2"
-    let viewer_base = "https://tracy.tempoxyz.dev"
-    let remote_profile_path = $"/profiles/($remote_name)"
-
-    try {
-        mc cp $profile_path $"($mc_alias)/tracy/profiles/($remote_name)"
-        let viewer_url = $"($viewer_base)?profile_url=($remote_profile_path)"
-        let profile_url = $"($viewer_base)($remote_profile_path)"
-        print $"  ($label): ($viewer_url)"
-        # Delete large .tracy file after upload to free disk
-        rm $profile_path
-        { viewer_url: $viewer_url, profile_url: $profile_url }
-    } catch {
-        print "  Warning: failed to upload tracy profile"
-        null
     }
 }
 
@@ -3093,16 +3066,10 @@ def "main bench" [
             }
         }
 
-        # Upload tracy profiles to R2
         if $tracy != "off" {
-            print "\nUploading tracy profiles to R2..."
+            print "\nTracy profiles:"
             for run in $runs {
-                let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
-                let tracy_urls = (upload-tracy-profile $profile $run.label $run.git_ref)
-                if $tracy_urls != null {
-                    $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
-                    $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.label)-profile-url.txt"
-                }
+                print-tracy-profile $"($results_dir)/tracy-profile-($run.label).tracy" $run.label
             }
         }
 

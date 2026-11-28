@@ -28,6 +28,7 @@ use std::{
     sync::Arc,
 };
 use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
+use tempo_precompiles::storage::StorageAction;
 use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
 /// A block's execution records and resulting state.
@@ -95,9 +96,13 @@ fn executor<'a, DB: Database + 'a>(
     config: &'a TempoEvmConfig,
     db: DB,
     block: &'a RecoveredBlock<Block>,
+    record_actions: bool,
 ) -> eyre::Result<TempoBlockExecutor<'a>> {
     let env = config.evm_env(block.header())?;
-    let evm = ConfigureEvm::evm_with_env(config, db, env);
+    let mut evm = ConfigureEvm::evm_with_env(config, db, env);
+    if record_actions {
+        config.record_storage_actions(&mut evm);
+    }
     let ctx = config.context_for_block(block.sealed_block())?;
     Ok(config.block_executor_factory().create_executor(evm, ctx))
 }
@@ -156,7 +161,7 @@ where
     C: FullConsensus<TempoPrimitives> + ?Sized,
     DB: Database,
 {
-    let mut executor = executor(config, db, block)?;
+    let mut executor = executor(config, db, block, false)?;
     if block.header().block_access_list_hash().is_some() {
         executor.enable_block_access_list_builder();
     }
@@ -212,30 +217,67 @@ where
 }
 
 /// Executes one transaction alone: a fresh executor over `view` (the state before it),
-/// restored from its `before` boundary, without pre-execution changes. Returns its record;
-/// the caller applies its delta to carry the state forward.
+/// restored from its `before` boundary, without pre-execution changes. Returns its record and the
+/// storage actions it recorded, none without `record_actions`; the caller applies its delta to
+/// carry the state forward.
 pub fn run_standalone(
     config: &TempoEvmConfig,
     block: &RecoveredBlock<Block>,
-    view: &View,
+    view: &View<'_>,
     ordinal: u64,
     index: usize,
     before: &[u8],
-) -> eyre::Result<Transaction> {
-    let mut executor = executor(config, view.clone(), block)?;
-    let state: ExecutorState = boundary()
-        .deserialize(before)
-        .wrap_err("invalid transaction boundary")?;
-    executor.with_executor_state(state);
+    record_actions: bool,
+) -> eyre::Result<(Transaction, Vec<StorageAction>)> {
+    let mut executor = executor(config, view, block, record_actions)?;
+    executor.with_executor_state(boundary_state(before)?);
     let updates = hooked(&mut executor)?;
     let tx = block
         .transactions_recovered()
         .nth(index)
         .ok_or_eyre("transaction index out of range")?;
     let mut record = transact(&mut executor, tx, ordinal, index, before.to_vec())?;
+    let actions = executor.evm().ext().actions.take().unwrap_or_default();
     let state = executor.into_state();
     record.delta = delta(drain(&updates), &contracts(&state))?;
-    Ok(record)
+    Ok((record, actions))
+}
+
+/// Applies `block`'s pre-execution changes alone over `view`, the state before the block.
+/// Returns them and the executor state they leave.
+pub fn run_pre_block(
+    config: &TempoEvmConfig,
+    block: &RecoveredBlock<Block>,
+    view: &View<'_>,
+) -> eyre::Result<(Delta, ExecutorState)> {
+    let mut executor = executor(config, view, block, false)?;
+    let updates = hooked(&mut executor)?;
+    executor.apply_pre_execution_changes()?;
+    let state = executor.executor_state();
+    let bundle = executor.into_state();
+    Ok((delta(drain(&updates), &contracts(&bundle))?, state))
+}
+
+/// Applies `block`'s post-execution changes alone over `view`, the state after its
+/// transactions, from the executor `state` they left. Returns them.
+pub fn run_post_block(
+    config: &TempoEvmConfig,
+    block: &RecoveredBlock<Block>,
+    view: &View<'_>,
+    state: ExecutorState,
+) -> eyre::Result<Delta> {
+    let mut executor = executor(config, view, block, false)?;
+    executor.with_executor_state(state);
+    let updates = hooked(&mut executor)?;
+    let (output, _) = executor.finish_with_block_access_list()?;
+    delta(drain(&updates), &contracts(&output.state))
+}
+
+/// Decodes a stored transaction boundary.
+pub fn boundary_state(bytes: &[u8]) -> eyre::Result<ExecutorState> {
+    boundary()
+        .deserialize(bytes)
+        .wrap_err("invalid transaction boundary")
 }
 
 /// Runs the block's transactions standalone from their stored records alone: the state
@@ -245,7 +287,7 @@ pub fn run_standalone(
 pub fn standalone_cases(
     config: &TempoEvmConfig,
     block: &RecoveredBlock<Block>,
-    mut view: View,
+    mut view: View<'_>,
     phases: &Phases,
     cases: &[Case],
     mut select: impl FnMut(&Case) -> bool,
@@ -253,7 +295,15 @@ pub fn standalone_cases(
     view.apply(&phases.pre)?;
     for (index, case) in cases.iter().enumerate() {
         if select(case) {
-            let actual = run_standalone(config, block, &view, case.ordinal, index, &case.before)?;
+            let (actual, _) = run_standalone(
+                config,
+                block,
+                &view,
+                case.ordinal,
+                index,
+                &case.before,
+                false,
+            )?;
             case.check(&actual)?;
         }
         view.apply(&case.delta)?;
@@ -423,9 +473,10 @@ mod tests {
 
     #[test]
     fn boundary_encoding_roundtrip() {
-        for section in 0..5u8 {
+        for section in [0u8, 1, 3, 4] {
             let mut bytes = vec![section];
-            for value in [1, u64::MAX, 3, 4, 5, 6] {
+            // The third counter is the removed gas incentive slot, always zero.
+            for value in [1, u64::MAX, 0, 4, 5, 6] {
                 bytes.extend(value.to_be_bytes());
             }
             let state: ExecutorState = boundary().deserialize(&bytes).unwrap();
@@ -439,15 +490,23 @@ mod tests {
             trailing.push(0);
             assert!(boundary().deserialize::<ExecutorState>(&trailing).is_err());
         }
-        let mut unknown = vec![5];
-        unknown.extend([0; 48]);
-        let err = boundary()
-            .deserialize::<ExecutorState>(&unknown)
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("expected a block section id from 0 to 4"),
-            "{err}"
-        );
+        // 2 was the removed gas incentive section.
+        for section in [2u8, 5] {
+            let mut unknown = vec![section];
+            unknown.extend([0; 48]);
+            let err = boundary()
+                .deserialize::<ExecutorState>(&unknown)
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("expected a block section id of 0, 1, 3 or 4"),
+                "{err}"
+            );
+        }
+        let mut incentive = vec![1u8];
+        for value in [1u64, 2, 3, 4, 5, 6] {
+            incentive.extend(value.to_be_bytes());
+        }
+        assert!(boundary().deserialize::<ExecutorState>(&incentive).is_err());
     }
 }

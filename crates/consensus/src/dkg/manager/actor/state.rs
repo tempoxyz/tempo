@@ -549,7 +549,7 @@ impl Builder {
                 .clone()
         });
 
-        let mut events = segmented::variable::Journal::init(
+        let events = segmented::variable::Journal::init(
             context.child("events"),
             segmented::variable::Config {
                 partition: format!("{partition_prefix}_events"),
@@ -557,18 +557,17 @@ impl Builder {
                 codec_config: MAXIMUM_VALIDATORS,
                 page_cache,
                 write_buffer: WRITE_BUFFER,
+                replay_buffer: READ_BUFFER,
             },
+            ReadOptions::default(),
         )
         .await
         .expect("should be able to initialize events journal");
 
         // Replay msgs to populate epoch caches
         let mut cache = BTreeMap::<Epoch, Events>::new();
-        {
-            let mut replay = events
-                .replay(0, 0, READ_BUFFER, ReadOptions::default())
-                .await
-                .wrap_err("unable to start a replay stream to populate events cache")?;
+        let events = {
+            let mut replay = events;
 
             while let Some(result) = replay.next().await {
                 let (section, _, _, event) =
@@ -577,10 +576,10 @@ impl Builder {
                 let events = cache.entry(epoch).or_default();
                 events.insert(event);
             }
-            events = replay
+            replay
                 .finish()
-                .wrap_err("unable to finish replaying events journal")?;
-        }
+                .wrap_err("unable to finish replaying events journal")?
+        };
 
         eyre::ensure!(
             current.is_some() || cache.is_empty(),

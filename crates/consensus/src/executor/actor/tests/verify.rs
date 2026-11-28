@@ -540,6 +540,40 @@ fn equivocating_candidates_for_the_same_round_both_complete() {
 }
 
 #[test_traced]
+fn requests_for_the_same_round_and_candidate_both_receive_the_verdict() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        // Hold the probe so the second request arrives while the first one
+        // is in flight.
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        let mut first = Box::pin(h.verify(round(1), b1.clone()));
+        assert!(futures::poll!(&mut first).is_pending());
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+        let mut second = Box::pin(h.verify(round(1), b1));
+        assert!(futures::poll!(&mut second).is_pending());
+        h.run_for(Duration::from_millis(50)).await;
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+
+        release.send(()).unwrap();
+        assert!(first.await.unwrap().is_some());
+        assert!(second.await.unwrap().is_some());
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![d1],
+            "the candidate is probed once for both requesters",
+        );
+    });
+}
+
+#[test_traced]
 fn a_later_build_waits_for_canceled_verification_delivery() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);

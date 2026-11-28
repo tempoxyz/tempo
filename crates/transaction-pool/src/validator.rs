@@ -38,17 +38,18 @@ use tempo_chainspec::{
 };
 use tempo_evm::{
     FeePaymentError, TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction,
-    TempoStateAccess,
+    TempoStateAccess, fee_token_inference_target,
 };
 use tempo_precompiles::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     nonce::{INonce, NonceManager},
     storage::StorageActions,
+    tip20_factory::TIP20Factory,
 };
 use tempo_primitives::{
-    Block, TempoHeader, TempoPrimitives,
+    Block, MAX_WEBAUTHN_SIGNATURE_LENGTH, TempoAddressExt, TempoHeader, TempoPrimitives,
     subblock::has_sub_block_nonce_key_prefix,
-    transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
+    transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tt_signature::PrimitiveSignature},
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -256,11 +257,15 @@ where
 
         Ok(())
     }
-    /// Validates AA transaction field limits (calls, access list, token limits).
+    /// Validates AA transaction field limits (calls, access list, token limits, WebAuthn
+    /// signature size).
     ///
     /// These limits are enforced at the pool level rather than RLP decoding to:
     /// - Keep the core transaction format flexible
     /// - Allow peer penalization for sending bad transactions
+    ///
+    /// The WebAuthn signature size is also enforced by RLP decoding; checking it here covers
+    /// transactions that never went through decoding.
     fn ensure_aa_field_limits(
         &self,
         transaction: &TempoPooledTransaction,
@@ -352,6 +357,35 @@ where
                             ));
                         }
                     }
+                }
+            }
+        }
+
+        // RLP decoding caps WebAuthn signatures in `PrimitiveSignature::from_bytes`, but
+        // transactions built in memory, e.g. by `eth_sendTransaction`, skip decoding.
+        let signatures = aa_tx
+            .signature()
+            .primitive_signatures()
+            .iter()
+            .chain(
+                tx.tempo_authorization_list
+                    .iter()
+                    .flat_map(|auth| auth.signature().primitive_signatures()),
+            )
+            .chain(
+                tx.key_authorization
+                    .iter()
+                    .flat_map(|auth| auth.signature().primitive_signatures()),
+            );
+        for signature in signatures {
+            if let PrimitiveSignature::WebAuthn(_) = signature {
+                // `from_bytes` bounds the bytes after the type identifier.
+                let size = signature.encoded_length() - 1;
+                if size > MAX_WEBAUTHN_SIGNATURE_LENGTH {
+                    return Err(TempoPoolTransactionError::WebAuthnSignatureTooLarge {
+                        size,
+                        max_allowed: MAX_WEBAUTHN_SIGNATURE_LENGTH,
+                    });
                 }
             }
         }
@@ -565,6 +599,9 @@ where
             .cloned()
             .unwrap_or_else(|| transaction.tx_env_slow());
         let tx = Recovered::new_unchecked(tx_env, *transaction.sender_ref());
+        let inference_target = tx
+            .fee_payer()
+            .map(|fee_payer| fee_token_inference_target(&*tx, fee_payer, spec));
         let result = evm.validate_tx(&tx);
         transaction.cache_tx_env(tx.into_inner());
         let fee_token = evm.ext_mut().resolved_fee_token.take();
@@ -598,6 +635,32 @@ where
                 "successful Tempo handler did not resolve a fee token".into(),
             );
         };
+
+        // Once this TIP-20 is created, execution pays with it instead of the cached fallback.
+        // `validate_tx` already rejected an unrecoverable fee payer.
+        if fee_token.is_fallback()
+            && let Ok(Some(token)) = inference_target
+            && token.is_tip20()
+        {
+            let created = match evm.overlay_db_mut().with_read_only_storage_ctx(
+                spec,
+                StorageActions::disabled(),
+                || TIP20Factory::new().is_tip20(token),
+            ) {
+                Ok(created) => created,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
+            if !created {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::UncreatedTip20 {
+                        token,
+                    }),
+                );
+            }
+        }
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
@@ -976,6 +1039,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::{Signature, SignerSync};
     use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall;
     use evm2::{
         DatabaseError, TxResult,
         bytecode::Bytecode as EvmBytecode,
@@ -997,6 +1061,7 @@ mod tests {
         TempoChainSpec,
         spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
+    use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, STABLECOIN_DEX_ADDRESS};
     use tempo_evm::{TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -1006,8 +1071,9 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
             KeyAuthorization, SignatureType, TempoSignedAuthorization, TempoTransaction,
-            envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
-            tt_signature::PrimitiveSignature,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature, WebAuthnSignature},
         },
     };
     use test_case::test_case;
@@ -2167,6 +2233,65 @@ mod tests {
         );
     }
 
+    const UNCREATED_TIP20: Address = address!("0x20c0000000000000000000000000000000001234");
+
+    fn uncreated_tip20_transfer() -> Call {
+        let call = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::ONE,
+        };
+        Call::new(UNCREATED_TIP20, Bytes::from(call.abi_encode()))
+    }
+
+    #[test_case(None, uncreated_tip20_transfer() => Some(UNCREATED_TIP20))]
+    #[test_case(Some(PATH_USD_ADDRESS), uncreated_tip20_transfer() => None)]
+    #[test_case(None, Call::new(UNCREATED_TIP20, Bytes::from(ITIP20::mintCall { to: Address::random(), amount: U256::ONE }.abi_encode())) => None)]
+    #[test_case(None, Call::new(STABLECOIN_DEX_ADDRESS, Bytes::from(IStablecoinDEX::swapExactAmountInCall { tokenIn: UNCREATED_TIP20, tokenOut: PATH_USD_ADDRESS, amountIn: 1, minAmountOut: 0 }.abi_encode())) => Some(UNCREATED_TIP20))]
+    #[test_case(None, Call::new(STABLECOIN_DEX_ADDRESS, Bytes::from(IStablecoinDEX::swapExactAmountOutCall { tokenIn: UNCREATED_TIP20, tokenOut: PATH_USD_ADDRESS, amountOut: 1, maxAmountIn: u128::MAX }.abi_encode())) => Some(UNCREATED_TIP20))]
+    #[test_case(None, Call::new(STABLECOIN_DEX_ADDRESS, Bytes::from(IStablecoinDEX::swapExactAmountInCall { tokenIn: Address::ZERO, tokenOut: PATH_USD_ADDRESS, amountIn: 1, minAmountOut: 0 }.abi_encode())) => None)]
+    #[tokio::test]
+    async fn rejects_fallback_inferring_from_uncreated_tip20(
+        fee_token: Option<Address>,
+        call: Call,
+    ) -> Option<Address> {
+        let mut builder = TxBuilder::aa(Address::random()).calls(vec![call]);
+        if let Some(fee_token) = fee_token {
+            builder = builder.fee_token(fee_token);
+        }
+        let transaction = builder.build();
+        let validator = setup_validator(&transaction, 1);
+
+        match validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await
+        {
+            TransactionValidationOutcome::Valid { .. } => None,
+            TransactionValidationOutcome::Invalid(_, err) => match err.downcast_other_ref() {
+                Some(TempoPoolTransactionError::UncreatedTip20 { token }) => Some(*token),
+                _ => panic!("unexpected rejection: {err:?}"),
+            },
+            outcome => panic!("unexpected outcome: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn admits_fallback_when_called_tip20_is_created() {
+        let transaction = TxBuilder::aa(Address::random())
+            .calls(vec![uncreated_tip20_transfer()])
+            .build();
+        let validator = setup_validator(&transaction, 1);
+        // Code without a USD currency: created, but never a valid fee token.
+        validator.client().add_account(
+            UNCREATED_TIP20,
+            ExtendedAccount::new(0, U256::ZERO).with_bytecode(Bytes::from_static(&[0xef])),
+        );
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(outcome.is_valid(), "{outcome:?}");
+    }
+
     #[tokio::test]
     async fn test_invalid_fee_token_rejected() {
         let invalid_fee_token = address!("1234567890123456789012345678901234567890");
@@ -3012,6 +3137,60 @@ mod tests {
                 ),
                 "Exactly MAX_CALL_INPUT_SIZE input should not trigger CallInputTooLarge, got: {err:?}"
             );
+        }
+    }
+
+    #[test_case(MAX_WEBAUTHN_SIGNATURE_LENGTH => None; "at limit")]
+    #[test_case(MAX_WEBAUTHN_SIGNATURE_LENGTH + 1 => Some(MAX_WEBAUTHN_SIGNATURE_LENGTH + 1); "over limit")]
+    #[tokio::test]
+    async fn test_aa_webauthn_signature_size(size: usize) -> Option<usize> {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Built in memory, so the size never went through RLP decoding.
+        let signature =
+            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                r: B256::ZERO,
+                s: B256::ZERO,
+                pub_key_x: B256::ZERO,
+                pub_key_y: B256::ZERO,
+                webauthn_data: vec![0u8; size - 4 * B256::len_bytes()].into(),
+            }));
+        let authorization = Authorization {
+            chain_id: U256::ONE,
+            nonce: 0,
+            address: Address::with_last_byte(1),
+        };
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(Address::with_last_byte(2))
+            .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
+            .authorization_list(vec![TempoSignedAuthorization::new_unchecked(
+                authorization,
+                signature,
+            )])
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::Local, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                match err.downcast_other_ref::<TempoPoolTransactionError>() {
+                    Some(TempoPoolTransactionError::WebAuthnSignatureTooLarge {
+                        size,
+                        max_allowed,
+                    }) => {
+                        assert_eq!(*max_allowed, MAX_WEBAUTHN_SIGNATURE_LENGTH);
+                        Some(*size)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 

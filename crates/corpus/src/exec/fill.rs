@@ -34,10 +34,14 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct FillArgs {
     /// First block of a new corpus; genesis is context, not a captured block. An existing
-    /// corpus must start here.
+    /// corpus must start here, unless `overwrite` is set.
     pub from: u64,
     /// Exclusive end, clamped to the available head; `None` fills up to the head.
     pub to: Option<u64>,
+    /// Recapture an existing corpus from `from` on, overwriting the blocks it already published
+    /// from there. `from` must be within the published range, and the fill must reach the
+    /// published tip. No effect on a new corpus.
+    pub overwrite: bool,
     /// Re-read and fully replay published records instead of checking metadata only.
     pub verify_existing: bool,
     /// Capture worker threads.
@@ -106,6 +110,9 @@ where
         first_tx: first_tx(args.from)?,
     };
     let tip = canonical_hash(end - 1)?;
+    // Where an overwriting fill restarts. The catalog keeps its published cursor, which its
+    // checkpoint stores, until the writer is claimed.
+    let mut rewind = None;
     let (mut catalog, prior) = match handle.block_on(store.catalog())? {
         Some((catalog, version)) => {
             // Published blocks were captured under the stored fork schedule, so the current
@@ -115,12 +122,23 @@ where
                 .header_by_number(published)?
                 .ok_or_else(|| eyre::eyre!("missing header at {published}"))?
                 .timestamp();
+            // An overwriting fill starts inside the corpus, not at its start.
+            let requested = if args.overwrite {
+                Context {
+                    forks: catalog.context.forks.clone(),
+                    start: catalog.context.start,
+                    parent: catalog.context.parent.clone(),
+                    first_tx: catalog.context.first_tx,
+                    ..context.clone()
+                }
+            } else {
+                Context {
+                    forks: catalog.context.forks.clone(),
+                    ..context.clone()
+                }
+            };
             eyre::ensure!(
-                catalog.context
-                    == Context {
-                        forks: catalog.context.forks.clone(),
-                        ..context.clone()
-                    }
+                catalog.context == requested
                     && store::forks_agree(
                         &catalog.context.forks,
                         &context.forks,
@@ -132,6 +150,26 @@ where
                 canonical_hash(published)?.0 == catalog.cursor.parent,
                 "published corpus tip is not canonical in the source archive"
             );
+            if args.overwrite {
+                eyre::ensure!(
+                    (catalog.context.start..=catalog.cursor.next).contains(&args.from),
+                    "overwrite start {} is outside the published corpus [{}, {}]",
+                    args.from,
+                    catalog.context.start,
+                    catalog.cursor.next
+                );
+                eyre::ensure!(
+                    end >= catalog.cursor.next,
+                    "an overwriting fill must reach the published tip {}",
+                    catalog.cursor.next
+                );
+                warn!(
+                    from = args.from,
+                    published = catalog.cursor.next,
+                    "Overwriting published corpus blocks"
+                );
+                rewind = Some(store::Cursor::initial(&context)?);
+            }
             (catalog, Some(version))
         }
         None => (
@@ -150,6 +188,8 @@ where
     // Each worker opens its own transaction; holding this one through the capture would
     // keep the archive from reusing pages for the whole fill.
     drop(expected);
+    // Published blocks the fill keeps.
+    let kept = rewind.as_ref().unwrap_or(&catalog.cursor).clone();
     if catalog.checkpoint.is_some() {
         let reader = handle.block_on(store.reader(&catalog))?;
         // Errors must not skip closing the reader below.
@@ -158,12 +198,12 @@ where
                 handle.block_on(store::for_each_published(
                     &reader,
                     from,
-                    &catalog.cursor,
+                    &kept,
                     true,
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
                         let input = store::decode(&bytes, record)?;
-                        replay::verify(config, consensus, &input, &cases, record)
+                        replay::verify(config, consensus, &input, &cases, record).map(drop)
                     },
                 ))
             })
@@ -173,7 +213,7 @@ where
         handle.block_on(reader.close())?;
         verified?;
     }
-    if end <= catalog.cursor.next {
+    if end <= kept.next {
         info!(
             records = catalog.cursor.next - catalog.context.start,
             verified = args.verify_existing,
@@ -193,6 +233,8 @@ where
     // Claim before writer open: SlateDB fences database writes, while this
     // CAS token independently fences external catalog publication.
     let mut version = handle.block_on(store.publish(&catalog, prior))?;
+    // The first sealed page publishes the rewound cursor with a checkpoint that stores it.
+    catalog.cursor = kept;
     let db = handle.block_on(
         Db::builder(store.data(), store.objects.clone())
             .with_settings(Settings {
@@ -249,13 +291,13 @@ where
                 consensus,
                 &expected,
                 |at| {
-                    let provider = read_only()?;
+                    let provider = state.long_read_consistent_provider()?;
                     let hash = provider
                         .block_hash(at)?
                         .ok_or_else(|| eyre::eyre!("missing historical canonical block {at}"))?;
                     Ok(StateProviderDatabase(
-                        state
-                            .state_provider_from_database(provider, hash)
+                        provider
+                            .state_by_hash(hash, false)?
                             .into_evm_state_provider(),
                     ))
                 },
@@ -377,8 +419,14 @@ where
                 let mut pending = BTreeMap::new();
                 let mut metadata_bytes = 0;
                 // A superseded writer can only have written blocks of the page it
-                // never published, so reading keys back is needed for one page only.
-                let recheck_end = begin.saturating_add(PAGE_RECORDS_PER_PUBLISH as u64);
+                // never published, so reading keys back is needed for one page only. An
+                // overwriting fill replaces stored keys without comparing: past its cursor they
+                // may hold the blocks it overwrites, or an interrupted overwrite's leftovers.
+                let recheck_end = if args.overwrite {
+                    begin
+                } else {
+                    begin.saturating_add(PAGE_RECORDS_PER_PUBLISH as u64)
+                };
                 // One write per page (or per 64 MiB) instead of one durable write per
                 // block.
                 let mut batch = WriteBatch::new();
@@ -386,6 +434,8 @@ where
                 // Code is shared across blocks: write each hash once per run, after
                 // checking whether an earlier run already stored it.
                 let mut written_code = HashSet::new();
+                // First block, transactions and gas of the page being published.
+                let (mut page_start, mut page_transactions, mut page_gas) = (begin, 0u64, 0u64);
                 for start in begin..end {
                     let Produced {
                         record,
@@ -404,7 +454,12 @@ where
                         pending.insert(produced.record.number, produced);
                     };
                     let stop = start + 1;
-                    let (transactions, gas) = (record.transactions, record.gas);
+                    page_transactions = page_transactions
+                        .checked_add(record.transactions)
+                        .ok_or_eyre("page transaction count overflow")?;
+                    page_gas = page_gas
+                        .checked_add(record.gas)
+                        .ok_or_eyre("page gas overflow")?;
                     metadata_bytes += metadata.len();
                     for (hash, value) in &code {
                         if !written_code.insert(*hash) {
@@ -440,7 +495,7 @@ where
                         if let Some(stored) = stored {
                             eyre::ensure!(
                                 stored.as_ref() == value,
-                                "unpublished record conflicts with canonical capture"
+                                "unpublished record conflicts with canonical capture; rerun with --overwrite if an overwriting fill was interrupted"
                             );
                         } else {
                             batch_bytes += value.len();
@@ -502,14 +557,19 @@ where
                         handle.block_on(store.retire_checkpoint(&superseded))?;
                     }
                     info!(
-                        start,
+                        start = page_start,
                         end = stop,
+                        transactions = page_transactions,
+                        gas = page_gas,
                         blocks = catalog.cursor.next - catalog.context.start,
-                        transactions,
-                        gas,
+                        progress = %format_args!(
+                            "{:.2}%",
+                            (stop - begin) as f64 * 100.0 / (end - begin) as f64
+                        ),
                         complete = catalog.complete,
                         "Published verified corpus blocks and transactions"
                     );
+                    (page_start, page_transactions, page_gas) = (stop, 0, 0);
                 }
                 Ok(())
             })()

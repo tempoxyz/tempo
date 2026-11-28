@@ -1,20 +1,39 @@
 //! `tempo corpus`: capture an archive range into an object-store corpus and replay it.
 
+use alloy_consensus::BlockHeader as _;
 use clap::{Parser, Subcommand};
+use eyre::WrapErr as _;
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
-use std::{path::PathBuf, sync::Arc};
-use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
+use reth_primitives_traits::RecoveredBlock;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TempoChainSpec, TempoChainSpecParser},
+};
 use tempo_corpus::{
-    exec::{fill, replay},
+    exec::{
+        block::Executed,
+        fill, replay,
+        shadow::{ReplayOutcome, ShadowReplayer},
+    },
     fuzz, gc,
     store::Store,
+    types::Input,
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::node::TempoNode;
+use tempo_primitives::Block;
+use tracing::{info, warn};
 
 /// Historical execution corpus commands.
 #[derive(Debug, Subcommand)]
@@ -58,12 +77,17 @@ pub struct FillCommand {
     #[command(flatten)]
     env: EnvironmentArgs<TempoChainSpecParser>,
     /// First block of a new corpus (genesis is context, not a captured block); an existing
-    /// corpus must start here.
+    /// corpus must start here, unless `--overwrite` is set.
     #[arg(long, default_value = "1")]
     from: u64,
     /// Exclusive end, clamped to the available head; defaults to the head.
     #[arg(long)]
     to: Option<u64>,
+    /// Recapture an existing corpus from `--from` on, overwriting the blocks it already
+    /// published from there. `--from` must be within the published range, and the fill must
+    /// reach the published tip.
+    #[arg(long)]
+    overwrite: bool,
     /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
     #[arg(long)]
     corpus: String,
@@ -88,6 +112,7 @@ impl FillCommand {
         let args = fill::FillArgs {
             from: self.from,
             to: self.to,
+            overwrite: self.overwrite,
             verify_existing: self.verify_existing,
             workers: workers(self.workers),
         };
@@ -139,6 +164,12 @@ pub struct ReplayCommand {
     /// Replay only the blocks a block list file names, such as a fuzz corpus minimizer's.
     #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
     blocks: Option<PathBuf>,
+    /// Also replay each verified block under this candidate hardfork and compare the results.
+    #[arg(long, value_name = "HARDFORK", conflicts_with = "tx_from")]
+    shadow: Option<TempoHardfork>,
+    /// Exit unsuccessfully on unexplained shadow findings or inconclusive comparisons.
+    #[arg(long, requires = "shadow")]
+    fail_on_findings: bool,
 }
 
 impl ReplayCommand {
@@ -170,34 +201,108 @@ impl ReplayCommand {
             );
         }
         let workers = workers(self.workers);
+        let blocks = match &self.blocks {
+            Some(path) => {
+                let blocks = fuzz::read_blocks(path, &catalog)?;
+                eyre::ensure!(
+                    !blocks.is_empty(),
+                    "{} lists no block of the corpus",
+                    path.display()
+                );
+                Some(blocks)
+            }
+            None => None,
+        };
         let (config, consensus) = components(self.chain);
-        if let Some(path) = &self.blocks {
-            let blocks = fuzz::read_blocks(path, &catalog)?;
-            eyre::ensure!(
-                !blocks.is_empty(),
-                "{} lists no block of the corpus",
-                path.display()
-            );
-            return tokio::task::spawn_blocking(move || {
-                replay::run_blocks(store, catalog, &blocks, config, consensus, workers)
-            })
-            .await?;
-        }
+        let shadow = self.shadow.map(|hardfork| Shadow {
+            replayer: ShadowReplayer::new(config.clone(), hardfork),
+            counts: Default::default(),
+        });
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
-            replay::run(
-                store,
-                catalog,
-                from..end,
-                config,
-                consensus,
-                workers,
-                standalone,
-                cancellation,
-            )
+            let on_block =
+                |input: &Arc<Input>, block: &RecoveredBlock<Block>, executed: &Executed| {
+                    shadow
+                        .as_ref()
+                        .map_or(Ok(()), |shadow| shadow.replay(input, block, executed))
+                };
+            match blocks {
+                Some(blocks) => replay::run_blocks(
+                    store, catalog, &blocks, config, consensus, workers, on_block,
+                ),
+                None => replay::run(
+                    store,
+                    catalog,
+                    from..end,
+                    config,
+                    consensus,
+                    workers,
+                    standalone,
+                    cancellation,
+                    on_block,
+                ),
+            }?;
+            shadow.map_or(Ok(()), |shadow| shadow.finish(self.fail_on_findings))
         })
         .await?
+    }
+}
+
+/// Shadow replays verified corpus blocks under a candidate hardfork and counts their outcomes.
+struct Shadow {
+    replayer: ShadowReplayer,
+    /// Blocks matched, expected, inconclusive, with findings and skipped.
+    counts: [AtomicU64; 5],
+}
+
+impl Shadow {
+    fn replay(
+        &self,
+        input: &Arc<Input>,
+        block: &RecoveredBlock<Block>,
+        executed: &Executed,
+    ) -> eyre::Result<()> {
+        let outcome = self
+            .replayer
+            .replay(input, block, executed)
+            .wrap_err_with(|| format!("shadow replay failed at block {}", block.number()))?;
+        let index = match outcome {
+            Some(ReplayOutcome::Match) => 0,
+            Some(ReplayOutcome::Expected) => 1,
+            Some(ReplayOutcome::Inconclusive) => 2,
+            Some(ReplayOutcome::Findings) => 3,
+            None => 4,
+        };
+        self.counts[index].fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn finish(self, fail_on_findings: bool) -> eyre::Result<()> {
+        let [matched, expected, inconclusive, findings, skipped] =
+            self.counts.map(AtomicU64::into_inner);
+        info!(
+            blocks = matched + expected + inconclusive + findings + skipped,
+            hardfork = %self.replayer.shadow_hardfork(),
+            matched,
+            expected,
+            inconclusive,
+            findings,
+            skipped,
+            "Corpus shadow replay completed"
+        );
+        if skipped > 0 {
+            warn!(
+                skipped,
+                "Skipped blocks where the candidate hardfork was already canonical"
+            );
+        }
+        if fail_on_findings && (findings > 0 || inconclusive > 0) {
+            eyre::bail!(
+                "corpus shadow replay needs review: {findings} blocks with unexplained differences, {inconclusive} inconclusive blocks"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -220,5 +325,33 @@ impl GcCommand {
     async fn execute(self) -> eyre::Result<()> {
         let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
         gc::gc(&store, self.force).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn shadow_replay_requires_block_replay() {
+        let parse = |args: &[&str]| {
+            ReplayCommand::try_parse_from([&["replay", "--corpus", "s3://corpus"], args].concat())
+        };
+        let cmd = parse(&["--shadow", "T14", "--fail-on-findings"]).unwrap();
+        assert_eq!(
+            (cmd.shadow, cmd.fail_on_findings),
+            (Some(TempoHardfork::T14), true)
+        );
+        assert_eq!(
+            parse(&["--fail-on-findings"]).unwrap_err().kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse(&["--shadow", "T14", "--tx-from", "0", "--tx-to", "1"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ArgumentConflict
+        );
     }
 }

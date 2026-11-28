@@ -33,6 +33,9 @@ exec = [
   "dep:evm2",
   "dep:tempo-evm",
   "dep:schnellru",
+  "dep:alloy-sol-types",
+  "dep:tempo-contracts",
+  "dep:tempo-precompiles",
 ]
 
 [dependencies]
@@ -43,6 +46,9 @@ evm2 = { workspace = true, optional = true }
 tempo-evm = { workspace = true, features = ["default"], optional = true }
 tempo-primitives = { workspace = true, features = ["default"] }
 reth-evm = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
+tempo-contracts = { workspace = true, optional = true }
+tempo-precompiles = { workspace = true, optional = true }
 reth-provider = { workspace = true, optional = true }
 reth-chainspec.workspace = true
 reth-cli-util = { workspace = true, optional = true }

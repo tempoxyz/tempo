@@ -4,20 +4,52 @@
 //! The accounts need not be every holder, so [`CHECKS`] and [`STEP_CHECKS`]
 //! assert only what holds for any subset of them.
 
-use std::{collections::BTreeMap, fmt};
+use std::{borrow::Cow, collections::BTreeMap, fmt};
 
-use alloy_primitives::{Address, Bytes, Log, LogData, U256};
-use alloy_sol_types::{SolCall, SolEvent};
+use alloy_primitives::{Address, Log, LogData, U256};
+use alloy_sol_types::SolEvent;
 
-use crate::{Observe, ObserveError, Replay, Views, decode, optional, or_text};
+use crate::{
+    Batch, Observe, ObserveError, Replay, Views,
+    model::{Reader, Scope},
+    optional, or_text,
+};
 
 use tempo_contracts::precompiles::ITIP20::{Burn, BurnAt, BurnBlocked, Mint};
 
 pub use tempo_contracts::precompiles::ITIP20::{self, Transfer};
 
 mod checks;
+pub mod roles;
 
 pub use checks::{BALANCE_SUM, CHECKS, STEP_CHECKS, SUPPLY_CAP, TRANSFER_EVENTS, VIEW};
+pub use roles::{ROLE_AUTHZ, Roles};
+
+/// Checks the ledger of each token the scope selects and, when the step's calls were traced, the
+/// roles the committed privileged calls into any token needed, as calls such as a pause and an
+/// unpause can leave its state as it was.
+pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
+    for &token in scope.tokens {
+        if (scope.selected)(&token) {
+            let at = At {
+                token,
+                holders: scope.holders,
+            };
+            reader.check::<Ledger>(at, token, VIEW);
+        }
+        let queries = scope
+            .effects
+            .map(|effects| roles::queries(effects, token))
+            .unwrap_or_default();
+        if !queries.is_empty() {
+            let at = roles::At {
+                token,
+                queries: &queries,
+            };
+            reader.check::<Roles>(at, token, VIEW);
+        }
+    }
+}
 
 /// A token's state, as its views report it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,18 +63,21 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// The sum of the observed balances, or `None` if it overflows.
     /// `self` and `other` over only the accounts both read.
-    fn common(&self, other: &Self) -> (Self, Self) {
+    fn common<'a>(&'a self, other: &'a Self) -> (Cow<'a, Self>, Cow<'a, Self>) {
+        if self.balances.keys().eq(other.balances.keys()) {
+            return (Cow::Borrowed(self), Cow::Borrowed(other));
+        }
         let mut this = self.clone();
         let mut that = other.clone();
         this.balances
             .retain(|account, _| other.balances.contains_key(account));
         that.balances
             .retain(|account, _| self.balances.contains_key(account));
-        (this, that)
+        (Cow::Owned(this), Cow::Owned(that))
     }
 
+    /// The sum of the observed balances, or `None` if it overflows.
     pub fn balance_sum(&self) -> Option<U256> {
         self.balances
             .values()
@@ -132,28 +167,19 @@ impl Observe for Ledger {
             token,
             holders: accounts,
         } = at;
-        let calls: Vec<(Address, Bytes)> = [
-            ITIP20::totalSupplyCall {}.abi_encode(),
-            ITIP20::supplyCapCall {}.abi_encode(),
-        ]
-        .into_iter()
-        .chain(
-            accounts
-                .iter()
-                .map(|&account| ITIP20::balanceOfCall { account }.abi_encode()),
-        )
-        .map(|input| (token, input.into()))
-        .collect();
-        let mut outputs = views.call(&calls).map_err(ObserveError::Views)?.into_iter();
-        let supply = decode::<ITIP20::totalSupplyCall, _>(token, outputs.next())?;
-        let supply_cap = optional(
-            views,
-            decode::<ITIP20::supplyCapCall, _>(token, outputs.next()),
-        )?;
+        let mut batch = Batch::default();
+        let supply = batch.push(None, token, &ITIP20::totalSupplyCall {});
+        let supply_cap = batch.push(None, token, &ITIP20::supplyCapCall {});
+        let reads: Vec<_> = accounts
+            .iter()
+            .map(|&account| batch.push(None, token, &ITIP20::balanceOfCall { account }))
+            .collect();
+        let answers = batch.run(views)?;
+        let supply = answers.decode(&supply)?;
+        let supply_cap = optional(views, answers.decode(&supply_cap))?;
         let mut balances = BTreeMap::new();
-        for &account in accounts {
-            let balance = decode::<ITIP20::balanceOfCall, _>(token, outputs.next());
-            if let Some(balance) = optional(views, balance)? {
+        for (&account, read) in accounts.iter().zip(&reads) {
+            if let Some(balance) = optional(views, answers.decode(read))? {
                 balances.insert(account, balance);
             }
         }
@@ -348,6 +374,21 @@ mod tests {
             to,
             amount: U256::from(amount),
         }
+    }
+
+    #[test]
+    fn common_borrows_ledgers_over_the_same_accounts_and_trims_the_others() {
+        let pre = ledger(10, 0, 10);
+        let (this, that) = pre.common(&pre);
+        assert!(matches!((this, that), (Cow::Borrowed(_), Cow::Borrowed(_))));
+
+        let mut wider = ledger(11, 0, 10);
+        wider.balances.insert(TOKEN, U256::from(1));
+        let (this, that) = pre.common(&wider);
+        assert!(matches!(this, Cow::Owned(_)));
+        assert_eq!(this.balances, pre.balances);
+        assert_eq!(that.balances, ledger(11, 0, 10).balances);
+        assert_eq!(that.supply, U256::from(11));
     }
 
     #[test]
