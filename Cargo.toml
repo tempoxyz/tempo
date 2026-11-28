@@ -403,6 +403,7 @@ p384 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 parking_lot = "0.12.5"
 prometheus-client = "0.25.1"
 sysinfo = { version = "0.38.4", default-features = false, features = ["disk", "system"] }
+ephyra = "0.0.1"
 proptest = "1.9"
 proptest-arbitrary-interop = "0.1.0"
 rand = "0.10"

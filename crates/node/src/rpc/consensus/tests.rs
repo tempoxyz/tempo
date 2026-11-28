@@ -476,13 +476,67 @@ async fn height_lookups_are_rejected_as_busy_once_limit_is_reached() {
 }
 
 #[test]
-fn lookup_limit_above_semaphore_capacity_is_clamped() {
+fn limits_above_semaphore_capacity_are_clamped() {
     let limits = Limits {
         max_concurrent_lookups: NonZeroUsize::MAX,
+        max_subscriptions: NonZeroUsize::new(Semaphore::MAX_PERMITS + 1).unwrap(),
         ..Default::default()
     };
 
     let rpc = TempoConsensusRpc::new(StalledFeed::default(), limits);
 
     assert_eq!(rpc.lookups.available_permits(), Semaphore::MAX_PERMITS);
+    assert_eq!(
+        rpc.subscriptions.available_permits(),
+        Semaphore::MAX_PERMITS
+    );
+}
+
+#[ephyra::test(tests = 256)]
+fn ephyra_consensus_limits(subscriptions: usize, lookups: usize) {
+    let limits = Limits {
+        max_subscriptions: NonZeroUsize::new(subscriptions).unwrap_or(NonZeroUsize::MIN),
+        max_concurrent_lookups: NonZeroUsize::new(lookups).unwrap_or(NonZeroUsize::MIN),
+        ..Default::default()
+    };
+    let rpc = TempoConsensusRpc::new(StalledFeed::default(), limits);
+    assert_eq!(
+        rpc.subscriptions.available_permits(),
+        subscriptions.clamp(1, Semaphore::MAX_PERMITS)
+    );
+    assert_eq!(
+        rpc.lookups.available_permits(),
+        lookups.clamp(1, Semaphore::MAX_PERMITS)
+    );
+}
+
+#[ephyra::test(tests = 256)]
+fn ephyra_connection_claims(
+    #[ephyra(gen = ephyra::gens::int(1usize..=4))] max: usize,
+    #[ephyra(gen = ephyra::gens::vec((ephyra::any::<bool>(), ephyra::gens::int(0usize..4))).len(1..=64))]
+    operations: Vec<(bool, usize)>,
+) {
+    let cap = ConnectionCap {
+        counts: Default::default(),
+        max,
+    };
+    let mut claims: [Vec<SubscriptionGuard>; 4] = Default::default();
+    for (subscribe, id) in operations {
+        if subscribe {
+            let guard = SubscriptionGuard::try_claim(&cap, ConnectionId(id));
+            assert_eq!(guard.is_some(), claims[id].len() < max);
+            claims[id].extend(guard);
+        } else {
+            drop(claims[id].pop());
+        }
+        let counts = cap.counts.lock();
+        for (id, held) in claims.iter().enumerate() {
+            assert_eq!(
+                counts.get(&ConnectionId(id)).copied(),
+                (!held.is_empty()).then_some(held.len())
+            );
+        }
+    }
+    drop(claims);
+    assert!(cap.counts.lock().is_empty());
 }
